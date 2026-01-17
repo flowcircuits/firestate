@@ -1,0 +1,67 @@
+{
+    "name": "firestate",
+    "version": "0.1.0",
+    "description": "Schema-first Firestore state management for React with real-time sync, undo/redo, and optimistic updates",
+    "author": "HVAKR",
+    "license": "MIT",
+    "type": "module",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "types": "./dist/index.d.ts"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "sideEffects": false,
+    "engines": {
+        "node": ">=18"
+    },
+    "scripts": {
+        "build": "tsup src/index.ts --format esm --dts --clean",
+        "dev": "tsup src/index.ts --format esm --dts --watch",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "typecheck": "tsc --noEmit",
+        "prepublishOnly": "npm run build"
+    },
+    "peerDependencies": {
+        "firebase": "^10.0.0 || ^11.0.0",
+        "react": "^18.0.0 || ^19.0.0",
+        "zod": "^3.24.0 || ^4.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.3.12",
+        "firebase": "^11.1.0",
+        "react": "^18.3.1",
+        "tsup": "^8.3.5",
+        "typescript": "^5.7.2",
+        "vitest": "^2.1.8",
+        "zod": "^4.0.0"
+    },
+    "keywords": [
+        "firestore",
+        "firebase",
+        "react",
+        "state-management",
+        "zod",
+        "schema",
+        "real-time",
+        "sync",
+        "undo-redo",
+        "optimistic-updates"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/hvakr/firestate.git"
+    },
+    "homepage": "https://github.com/hvakr/firestate#readme",
+    "bugs": {
+        "url": "https://github.com/hvakr/firestate/issues"
+    }
+}
