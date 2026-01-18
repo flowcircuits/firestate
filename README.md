@@ -31,6 +31,7 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Examples](#examples)
 - [Core Concepts](#core-concepts)
 - [API Reference](#api-reference)
 - [Diff Utilities](#diff-utilities)
@@ -175,6 +176,12 @@ function ProjectEditor({ projectId }: { projectId: string }) {
     )
 }
 ```
+
+## Examples
+
+Check out the [examples](./examples) directory for complete, runnable examples:
+
+- **[React Tasks](./examples/react-tasks)** - A simple task manager demonstrating documents, collections, undo/redo, sync indicators, and real-time updates.
 
 ## Core Concepts
 
