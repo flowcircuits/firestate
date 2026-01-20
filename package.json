@@ -1,8 +1,8 @@
 {
-    "name": "firestate",
+    "name": "@flowcircuits/firestate",
     "version": "0.1.0",
     "description": "Schema-first Firestore state management for React with real-time sync, undo/redo, and optimistic updates",
-    "author": "HVAKR",
+    "author": "Flow Circuits",
     "license": "MIT",
     "type": "module",
     "main": "./dist/index.mjs",
@@ -58,10 +58,10 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/hvakr/firestate.git"
+        "url": "git+https://github.com/flowcircuits/firestate.git"
     },
-    "homepage": "https://github.com/hvakr/firestate#readme",
+    "homepage": "https://github.com/flowcircuits/firestate#readme",
     "bugs": {
-        "url": "https://github.com/hvakr/firestate/issues"
+        "url": "https://github.com/flowcircuits/firestate/issues"
     }
 }
