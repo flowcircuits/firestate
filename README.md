@@ -2,7 +2,7 @@
 
 Schema-first Firestore state management for React with real-time sync, undo/redo, and optimistic updates.
 
-[![npm version](https://badge.fury.io/js/firestate.svg)](https://www.npmjs.com/package/firestate)
+[![npm version](https://badge.fury.io/js/@hvakr%2Ffirestate.svg)](https://www.npmjs.com/package/@hvakr/firestate)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Why Firestate?
@@ -42,11 +42,11 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 ## Installation
 
 ```bash
-pnpm add firestate
+pnpm add @hvakr/firestate
 # or
-npm install firestate
+npm install @hvakr/firestate
 # or
-yarn add firestate
+yarn add @hvakr/firestate
 ```
 
 ### Peer Dependencies
@@ -68,7 +68,7 @@ Firestate requires the following peer dependencies:
 ```typescript
 // schemas.ts
 import { z } from 'zod'
-import { defineDocument, defineCollection } from 'firestate'
+import { defineDocument, defineCollection } from '@hvakr/firestate'
 
 // Define the project document schema
 const ProjectSchema = z.object({
@@ -105,7 +105,7 @@ export const spacesCollection = defineCollection({
 
 ```tsx
 // App.tsx
-import { FirestateProvider } from 'firestate'
+import { FirestateProvider } from '@hvakr/firestate'
 import { db } from './firebase'
 
 function App() {
@@ -125,7 +125,7 @@ function App() {
 
 ```tsx
 // ProjectEditor.tsx
-import { useDocument, useCollection, useUndoManager } from 'firestate'
+import { useDocument, useCollection, useUndoManager } from '@hvakr/firestate'
 import { projectDoc, spacesCollection } from './schemas'
 
 function ProjectEditor({ projectId }: { projectId: string }) {
@@ -254,7 +254,7 @@ spaces.load() // Start subscription
 The library tracks whether all documents/collections are synced:
 
 ```tsx
-import { useIsSynced, useUnsavedChangesBlocker } from 'firestate'
+import { useIsSynced, useUnsavedChangesBlocker } from '@hvakr/firestate'
 
 function App() {
     const isSynced = useIsSynced()
@@ -319,7 +319,7 @@ const spacesCollection = defineCollection({
 Validates data against a Zod schema, throwing on failure.
 
 ```typescript
-import { validate } from 'firestate'
+import { validate } from '@hvakr/firestate'
 
 const validated = validate(ProjectSchema, unknownData)
 // Throws ZodError if invalid
@@ -330,7 +330,7 @@ const validated = validate(ProjectSchema, unknownData)
 Validates data against a Zod schema, returning undefined on failure.
 
 ```typescript
-import { validateSafe } from 'firestate'
+import { validateSafe } from '@hvakr/firestate'
 
 const validated = validateSafe(ProjectSchema, unknownData)
 if (validated) {
@@ -343,7 +343,7 @@ if (validated) {
 Creates a partial version of a Zod object schema where all fields are optional.
 
 ```typescript
-import { partialSchema } from 'firestate'
+import { partialSchema } from '@hvakr/firestate'
 
 const PartialProjectSchema = partialSchema(ProjectSchema)
 // All fields are now optional
@@ -354,7 +354,7 @@ const PartialProjectSchema = partialSchema(ProjectSchema)
 Extends a Zod object schema with an `id: string` field.
 
 ```typescript
-import { withId } from 'firestate'
+import { withId } from '@hvakr/firestate'
 
 const ProjectWithIdSchema = withId(ProjectSchema)
 // Now includes { id: string, ...originalFields }
@@ -491,7 +491,7 @@ Main provider component.
 Use with a pre-created store for more control.
 
 ```tsx
-import { createStore, FirestateStoreProvider } from 'firestate'
+import { createStore, FirestateStoreProvider } from '@hvakr/firestate'
 
 const store = createStore({ firestore: db })
 
@@ -512,7 +512,7 @@ import {
     applyDiff,
     applyDiffMutable,
     computeUndoDiff,
-} from 'firestate'
+} from '@hvakr/firestate'
 
 // Compute minimal diff between two objects
 const diff = computeDiff(oldState, newState)
@@ -531,7 +531,7 @@ const undoDiff = computeUndoDiff(startState, diff)
 ### Flattening for Firestore
 
 ```typescript
-import { flattenDiff, unflattenDiff } from 'firestate'
+import { flattenDiff, unflattenDiff } from '@hvakr/firestate'
 
 // Flatten nested diff to dot-notation for Firestore's updateDoc
 const nested = { building: { floors: 5, height: 100 } }
@@ -546,7 +546,7 @@ const restored = unflattenDiff(flat)
 ### Path-Based Utilities
 
 ```typescript
-import { diffContainsPath, extractDiffValue, createDiffAtPath } from 'firestate'
+import { diffContainsPath, extractDiffValue, createDiffAtPath } from '@hvakr/firestate'
 
 const diff = { building: { floors: 5 }, name: 'Test' }
 
@@ -565,7 +565,7 @@ createDiffAtPath('building.config.enabled', true)
 ### General Utilities
 
 ```typescript
-import { isDeepEqual, deepClone, isDiffEmpty, mergeDiffs } from 'firestate'
+import { isDeepEqual, deepClone, isDiffEmpty, mergeDiffs } from '@hvakr/firestate'
 
 // Deep equality check (handles Timestamps, arrays, nested objects)
 isDeepEqual(obj1, obj2)
@@ -587,7 +587,7 @@ const combined = mergeDiffs(diff1, diff2)
 For advanced use cases, you can create and manage the store yourself:
 
 ```typescript
-import { createStore, createDocumentSubscription } from 'firestate'
+import { createStore, createDocumentSubscription } from '@hvakr/firestate'
 
 const store = createStore({
     firestore: db,
@@ -620,7 +620,7 @@ subscription.stop()
 Create a standalone undo manager with navigation support:
 
 ```typescript
-import { createUndoManager } from 'firestate'
+import { createUndoManager } from '@hvakr/firestate'
 
 const undoManager = createUndoManager({
     maxLength: 50,
@@ -724,9 +724,9 @@ When testing components that use Firestate, you can mock the hooks:
 
 ```typescript
 import { vi } from 'vitest'
-import * as firestate from 'firestate'
+import * as firestate from '@hvakr/firestate'
 
-vi.mock('firestate', () => ({
+vi.mock('@hvakr/firestate', () => ({
     useDocument: vi.fn(() => ({
         data: { id: '123', name: 'Test Project' },
         update: vi.fn(),

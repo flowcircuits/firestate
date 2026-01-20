@@ -1,5 +1,5 @@
 {
-    "name": "firestate",
+    "name": "@hvakr/firestate",
     "version": "0.1.0",
     "description": "Schema-first Firestore state management for React with real-time sync, undo/redo, and optimistic updates",
     "author": "HVAKR",

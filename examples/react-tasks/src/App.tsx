@@ -6,7 +6,7 @@ import {
   useUndoManager,
   useUndoKeyboardShortcuts,
   useIsSynced,
-} from 'firestate'
+} from '@hvakr/firestate'
 import { db } from './firebase'
 import { taskListDoc, tasksCollection, type Task } from './schemas'
 
