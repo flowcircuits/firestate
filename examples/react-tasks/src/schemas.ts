@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { defineDocument, defineCollection } from '@flowcircuits/firestate'
+import { defineDocument, defineCollection } from '@hvakr/firestate'
 
 // Schema for a task list (document)
 export const TaskListSchema = z.object({

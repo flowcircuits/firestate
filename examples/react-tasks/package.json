@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "firebase": "^11.1.0",
-    "@flowcircuits/firestate": "link:../..",
+    "@hvakr/firestate": "link:../..",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^4.0.0"
