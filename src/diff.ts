@@ -94,9 +94,11 @@ export const computeDiff = <T extends FirestoreObject>(
         }
     }
 
-    // Check for removed fields
+    // Check for removed fields. Only `undefined` triggers a delete — `null`
+    // is a valid Firestore value and is preserved via the primitive-comparison
+    // branch above.
     for (const key of Object.keys(from)) {
-        if (to[key] === undefined || to[key] === null) {
+        if (to[key] === undefined) {
             diff[key] = deleteField()
         }
     }

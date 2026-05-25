@@ -16,6 +16,8 @@ export type {
     // Definition types
     DocumentDefinition,
     CollectionDefinition,
+    // Standard Schema interop
+    StandardSchemaV1,
     // Undo types
     UndoAction,
     UndoManager,
@@ -26,25 +28,14 @@ export type {
     FirestoreObject,
     FirestateConfig,
     ErrorContext,
-    InferData,
-    InferDocument,
 } from './types'
 
-// Schema utilities
-export {
-    defineDocument,
-    defineCollection,
-    validate,
-    validateSafe,
-    partialSchema,
-    getFieldMeta,
-    collectMeta,
-    withId,
-} from './schema'
+// Definition helpers
+export { defineDocument, defineCollection } from './schema'
 
 export type {
     InferDocumentData,
-    InferDocument as InferDocumentType,
+    InferDocument,
     InferCollectionData,
     InferCollectionDocument,
 } from './schema'

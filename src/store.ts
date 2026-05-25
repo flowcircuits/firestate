@@ -16,10 +16,21 @@ export interface FirestateStore {
     readonly minLoadTime: number
     /** Report an error */
     reportError: (error: Error, context: ErrorContext) => void
+    /**
+     * Replace the error handler at runtime. Used by FirestateProvider to keep
+     * the store identity stable when consumers pass an inline `onError`
+     * callback that changes reference on every render.
+     */
+    setOnError: (handler?: (error: Error, context: ErrorContext) => void) => void
     /** Subscribe to sync state changes */
     subscribeToSyncState: (fn: Subscriber<boolean>) => Unsubscribe
     /** Report a document/collection sync state change */
     reportSyncState: (key: string, isSynced: boolean) => void
+    /**
+     * Remove a sync-state key. Subscriptions call this on stop() so an
+     * unmounted hook does not leave the global isSynced stuck at false.
+     */
+    unregisterSyncState: (key: string) => void
     /** Get whether all tracked resources are synced */
     readonly isSynced: boolean
 }
@@ -49,8 +60,10 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
         autosave = 1000,
         minLoadTime = 0,
         maxUndoLength = 20,
-        onError,
     } = config
+
+    // Mutable so the provider can update it without re-creating the store.
+    let onError = config.onError
 
     const undoManager = createUndoManager({
         maxLength: maxUndoLength,
@@ -89,10 +102,12 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
             }
         },
 
+        setOnError: (handler) => {
+            onError = handler
+        },
+
         subscribeToSyncState: (fn) => {
             syncSubscribers.add(fn)
-            // Immediately notify with current state
-            fn(computeIsSynced())
             return () => syncSubscribers.delete(fn)
         },
 
@@ -100,6 +115,16 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
             const prev = syncStates.get(key)
             if (prev !== isSynced) {
                 syncStates.set(key, isSynced)
+                notifySyncSubscribers()
+            }
+        },
+
+        unregisterSyncState: (key) => {
+            const prev = syncStates.get(key)
+            if (prev === undefined) return
+            syncStates.delete(key)
+            // Removing a `false` entry can flip global isSynced to true.
+            if (prev === false) {
                 notifySyncSubscribers()
             }
         },

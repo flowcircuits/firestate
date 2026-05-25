@@ -1,25 +1,30 @@
-import React, { useEffect, useMemo } from 'react'
-import type { Firestore } from 'firebase/firestore'
-import { createStore, type FirestateStore } from './store'
-import { FirestateContext } from './hooks'
-import type { ErrorContext } from './types'
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
+import type { Firestore } from "firebase/firestore";
+import { createStore, type FirestateStore } from "./store";
+import { FirestateContext } from "./hooks";
+import type { ErrorContext } from "./types";
 
 /**
  * Props for FirestateProvider
  */
 export interface FirestateProviderProps {
-    /** Firestore instance */
-    firestore: Firestore
-    /** Default autosave interval (ms), default 1000 */
-    autosave?: number
-    /** Default minimum load time (ms), default 0 */
-    minLoadTime?: number
-    /** Maximum undo stack length, default 20 */
-    maxUndoLength?: number
-    /** Custom error handler */
-    onError?: (error: Error, context: ErrorContext) => void
-    /** React children */
-    children: React.ReactNode
+  /** Firestore instance */
+  firestore: Firestore;
+  /** Default autosave interval (ms), default 1000 */
+  autosave?: number;
+  /** Default minimum load time (ms), default 0 */
+  minLoadTime?: number;
+  /** Maximum undo stack length, default 20 */
+  maxUndoLength?: number;
+  /** Custom error handler */
+  onError?: (error: Error, context: ErrorContext) => void;
+  /** React children */
+  children: React.ReactNode;
 }
 
 /**
@@ -45,40 +50,48 @@ export interface FirestateProviderProps {
  * ```
  */
 export const FirestateProvider: React.FC<FirestateProviderProps> = ({
-    firestore,
-    autosave = 1000,
-    minLoadTime = 0,
-    maxUndoLength = 20,
-    onError,
-    children,
+  firestore,
+  autosave = 1000,
+  minLoadTime = 0,
+  maxUndoLength = 20,
+  onError,
+  children,
 }) => {
-    const store = useMemo(
-        () =>
-            createStore({
-                firestore,
-                autosave,
-                minLoadTime,
-                maxUndoLength,
-                onError,
-            }),
-        [firestore, autosave, minLoadTime, maxUndoLength, onError]
-    )
+  // onError is intentionally excluded from the deps so that an inline
+  // callback (new reference per render) does not re-create the store and
+  // drop every existing subscription. The store exposes setOnError so the
+  // latest handler can be applied without store re-creation.
+  const store = useMemo(
+    () =>
+      createStore({
+        firestore,
+        autosave,
+        minLoadTime,
+        maxUndoLength,
+        onError,
+      }),
+    [firestore, autosave, minLoadTime, maxUndoLength]
+  );
 
-    return (
-        <FirestateContext.Provider value={store}>
-            {children}
-        </FirestateContext.Provider>
-    )
-}
+  useEffect(() => {
+    store.setOnError(onError);
+  }, [store, onError]);
+
+  return (
+    <FirestateContext.Provider value={store}>
+      {children}
+    </FirestateContext.Provider>
+  );
+};
 
 /**
  * Props for using an existing store
  */
 export interface FirestateStoreProviderProps {
-    /** Pre-created store instance */
-    store: FirestateStore
-    /** React children */
-    children: React.ReactNode
+  /** Pre-created store instance */
+  store: FirestateStore;
+  /** React children */
+  children: React.ReactNode;
 }
 
 /**
@@ -99,13 +112,13 @@ export interface FirestateStoreProviderProps {
  * ```
  */
 export const FirestateStoreProvider: React.FC<FirestateStoreProviderProps> = ({
-    store,
-    children,
+  store,
+  children,
 }) => (
-    <FirestateContext.Provider value={store}>
-        {children}
-    </FirestateContext.Provider>
-)
+  <FirestateContext.Provider value={store}>
+    {children}
+  </FirestateContext.Provider>
+);
 
 /**
  * Hook to use navigation blocker when there are unsaved changes.
@@ -134,15 +147,18 @@ export const FirestateStoreProvider: React.FC<FirestateStoreProviderProps> = ({
  * ```
  */
 export const useUnsavedChangesBlocker = (): boolean => {
-    const store = React.useContext(FirestateContext)
-    const [shouldBlock, setShouldBlock] = React.useState(false)
+  const store = React.useContext(FirestateContext);
 
-    useEffect(() => {
-        if (!store) return
-        return store.subscribeToSyncState((isSynced) => {
-            setShouldBlock(!isSynced)
-        })
-    }, [store])
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      store ? store.subscribeToSyncState(() => onChange()) : () => {},
+    [store]
+  );
 
-    return shouldBlock
-}
+  const getSnapshot = useCallback(
+    () => (store ? !store.isSynced : false),
+    [store]
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+};

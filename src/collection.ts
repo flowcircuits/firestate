@@ -8,7 +8,6 @@ import {
     WithFieldValue,
     QueryConstraint,
 } from 'firebase/firestore'
-import type { z } from 'zod'
 import type {
     CollectionDefinition,
     CollectionHandle,
@@ -29,7 +28,7 @@ export interface CollectionOptions<TData extends FirestoreObject> {
     /** The store instance */
     store: FirestateStore
     /** Collection definition from defineCollection() */
-    definition: CollectionDefinition<z.ZodType<TData>>
+    definition: CollectionDefinition<TData>
     /** Route/path parameters for dynamic paths */
     params?: Record<string, string>
     /** Override read-only setting */
@@ -127,8 +126,12 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     const subscribers = new Set<Subscriber<CollectionState<TData>>>()
     let unsubscribeListener: Unsubscribe | null = null
     let autosaveTimeout: ReturnType<typeof setTimeout> | null = null
+    let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
+    // Cached handle — returns the same reference until notify() invalidates
+    // it. Lets useSyncExternalStore consumers rely on handle identity.
+    let cachedHandle: CollectionHandle<TData> | null = null
 
     // Unique key for sync tracking
     const syncKey = `col:${collectionPath}`
@@ -145,6 +148,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     })
 
     const notify = () => {
+        cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
@@ -220,8 +224,13 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const sync = async () => {
-        if (!state.localState || !state.syncState) return
-        if (isDeepEqual(state.localState, state.syncState)) {
+        if (!state.localState) return
+
+        // Treat a missing syncState as an empty collection. Lets add() before
+        // the first snapshot still reach Firestore as batch.set operations.
+        const effectiveSyncState: Record<string, TData> = state.syncState ?? {}
+
+        if (isDeepEqual(state.localState, effectiveSyncState)) {
             state.localState = undefined
             state.inflightLocalState = undefined
             notify()
@@ -229,7 +238,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
 
         const diff = computeDiff(
-            state.syncState as FirestoreObject,
+            effectiveSyncState as FirestoreObject,
             state.localState as FirestoreObject
         )
         state.inflightLocalState = deepClone(state.localState)
@@ -240,7 +249,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         if (currentUndoOptions?.undoable !== false && onPushUndo) {
             const undoDiff = computeDiff(
                 state.localState as FirestoreObject,
-                state.syncState as FirestoreObject
+                effectiveSyncState as FirestoreObject
             )
             const redoDiff = diff
             onPushUndo(
@@ -268,7 +277,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                     (docDiff as { isEqual: (v: unknown) => boolean }).isEqual(deleteFieldSentinel)
                 ) {
                     batch.delete(docRef)
-                } else if (state.syncState && !(docId in state.syncState)) {
+                } else if (!(docId in effectiveSyncState)) {
                     // New document - use set to create it
                     batch.set(docRef, docDiff as Record<string, unknown>)
                 } else {
@@ -284,11 +293,17 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             console.error('Collection sync failed:', error)
             state.waitingForUpdate = false
             state.inflightLocalState = undefined
+            // Surface to React: handle.error reflects the failure and the
+            // listener will keep state.localState so consumers can retry by
+            // calling sync(). Autosave is not automatically rescheduled to
+            // avoid retry loops on permission errors.
+            state.error = error as Error
             store.reportError(error as Error, {
                 type: 'collection',
                 path: collectionPath,
                 operation: 'write',
             })
+            notify()
         }
     }
 
@@ -299,6 +314,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
 
         state.syncState = newSyncState
+        // A successful snapshot supersedes any previous read or write error.
+        state.error = undefined
 
         if (state.waitingForUpdate) {
             state.waitingForUpdate = false
@@ -334,11 +351,23 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             state.isLoading = false
         }
         loaded = true
+
+        // If local edits exist and aren't currently being synced, schedule an
+        // autosave. Covers the case where add()/update() ran before the first
+        // snapshot arrived and the initial sync attempt bailed early.
+        if (state.localState !== undefined) {
+            scheduleAutosave()
+        }
+
         notify()
     }
 
     const handleError = (error: Error) => {
         state.error = error
+        // Don't leave consumers stuck on a loading spinner — the listener
+        // has reported a terminal error, so loading is done.
+        state.isLoading = false
+        loaded = true
         store.reportError(error, {
             type: 'collection',
             path: collectionPath,
@@ -369,8 +398,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             handleError
         )
 
-        // Min load time handler
-        setTimeout(() => {
+        // Min load time handler — tracked so stop() can cancel it.
+        minLoadTimeout = setTimeout(() => {
+            minLoadTimeout = null
             if (loaded) {
                 state.isLoading = false
                 notify()
@@ -380,10 +410,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const load = () => {
-        if (state.isActive) return
-        state.isActive = true
-        state.isLoading = true
-        notify()
+        // Listener-level idempotency so the hook can safely call load() on
+        // every mount (including Strict Mode's mount-cleanup-remount cycle).
+        if (unsubscribeListener) return
+        if (!state.isActive) {
+            state.isActive = true
+            state.isLoading = true
+            notify()
+        }
         startListener()
     }
 
@@ -396,6 +430,13 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             clearTimeout(autosaveTimeout)
             autosaveTimeout = null
         }
+        if (minLoadTimeout) {
+            clearTimeout(minLoadTimeout)
+            minLoadTimeout = null
+        }
+        // Drop this subscription's entry from the global sync-state map so
+        // an unmounted hook does not leave useIsSynced stuck at false.
+        store.unregisterSyncState(syncKey)
     }
 
     const subscribe = (fn: Subscriber<CollectionState<TData>>): Unsubscribe => {
@@ -403,7 +444,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         return () => subscribers.delete(fn)
     }
 
-    const getHandle = (): CollectionHandle<TData> => ({
+    const buildHandle = (): CollectionHandle<TData> => ({
         data: getMergedData(),
         update: updateState,
         add: addDocument,
@@ -416,10 +457,16 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         error: state.error,
     })
 
-    // Auto-start for non-lazy collections
-    if (!lazy) {
-        startListener()
+    const getHandle = (): CollectionHandle<TData> => {
+        if (cachedHandle === null) {
+            cachedHandle = buildHandle()
+        }
+        return cachedHandle
     }
+
+    // No constructor-side auto-start: callers (the hook for non-lazy, or
+    // users directly for lazy) invoke load() to attach the listener. This
+    // keeps subscription creation side-effect-free, matching document.ts.
 
     return {
         load,

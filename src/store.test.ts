@@ -134,8 +134,9 @@ describe('createStore', () => {
 
             store.subscribeToSyncState(subscriber)
 
-            // Should be called immediately with current state
-            expect(subscriber).toHaveBeenCalledWith(true)
+            // Initial state is read via store.isSynced, not by an eager
+            // synchronous notification on subscribe.
+            expect(subscriber).not.toHaveBeenCalled()
 
             store.reportSyncState('doc:test', false)
             expect(subscriber).toHaveBeenCalledWith(false)
@@ -151,7 +152,6 @@ describe('createStore', () => {
             const subscriber = vi.fn()
 
             const unsubscribe = store.subscribeToSyncState(subscriber)
-            subscriber.mockClear() // Clear the immediate call
 
             unsubscribe()
             store.reportSyncState('doc:test', false)

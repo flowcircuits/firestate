@@ -1,173 +1,111 @@
-import { z } from 'zod'
-import type { DocumentDefinition, CollectionDefinition } from './types'
+import type {
+  CollectionDefinition,
+  DocumentDefinition,
+  FirestoreObject,
+  StandardSchemaV1,
+} from "./types";
 
 /**
- * Define a document schema for use with Firestate.
- * This creates a type-safe document definition with all necessary metadata.
+ * Define a typed document. `TData` is the document's TypeScript shape.
  *
- * @example
+ * Two ways to use:
+ *
+ * 1. Plain TypeScript type (no validator dependency):
  * ```ts
- * const ProjectSchema = z.object({
- *   name: z.string(),
- *   createdAt: z.number(),
- * })
+ * interface Project { name: string; createdAt: number }
  *
+ * const projectDoc = defineDocument<Project>({
+ *     collection: 'projects',
+ *     id: (params) => params.projectId,
+ * })
+ * ```
+ *
+ * 2. With a Standard Schema validator (zod 3.24+/4, valibot, arktype, etc.) —
+ *    `TData` is inferred from the schema's output type. Firestate stores the
+ *    schema on the definition but does not invoke validation; consumers run it
+ *    at their own boundaries.
+ * ```ts
  * const projectDoc = defineDocument({
- *   schema: ProjectSchema,
- *   collection: 'projects',
- *   id: (params) => params.projectId,
+ *     schema: ProjectSchema,
+ *     collection: 'projects',
+ *     id: (params) => params.projectId,
  * })
  * ```
  */
-export const defineDocument = <T extends z.ZodType>(
-    definition: DocumentDefinition<T>
-): DocumentDefinition<T> => definition
+export function defineDocument<
+  S extends StandardSchemaV1<unknown, FirestoreObject>
+>(
+  definition: Omit<
+    DocumentDefinition<StandardSchemaV1.InferOutput<S>>,
+    "schema"
+  > & {
+    schema: S;
+  }
+): DocumentDefinition<StandardSchemaV1.InferOutput<S>>;
+export function defineDocument<TData extends FirestoreObject>(
+  definition: DocumentDefinition<TData>
+): DocumentDefinition<TData>;
+export function defineDocument(
+  definition: DocumentDefinition<FirestoreObject>
+): DocumentDefinition<FirestoreObject> {
+  return definition;
+}
 
 /**
- * Define a collection schema for use with Firestate.
- * This creates a type-safe collection definition with all necessary metadata.
+ * Define a typed collection. `TData` is the shape of each document in the
+ * collection. See {@link defineDocument} for the schema/plain-type tradeoff.
  *
  * @example
  * ```ts
- * const SpaceSchema = z.object({
- *   name: z.string(),
- *   area: z.number(),
- * })
+ * interface Space { name: string; area: number }
  *
- * const spacesCollection = defineCollection({
- *   schema: SpaceSchema,
- *   path: (params) => `projects/${params.projectId}/spaces`,
- *   lazy: true,
+ * const spacesCollection = defineCollection<Space>({
+ *     path: (params) => `projects/${params.projectId}/spaces`,
+ *     lazy: true,
  * })
  * ```
  */
-export const defineCollection = <T extends z.ZodType>(
-    definition: CollectionDefinition<T>
-): CollectionDefinition<T> => definition
-
-/**
- * Validate data against a Zod schema, returning the parsed data or undefined.
- * Useful for safe parsing without throwing errors.
- */
-export const validateSafe = <T extends z.ZodType>(
-    schema: T,
-    data: unknown
-): z.infer<T> | undefined => {
-    const result = schema.safeParse(data)
-    return result.success ? result.data : undefined
+export function defineCollection<
+  S extends StandardSchemaV1<unknown, FirestoreObject>
+>(
+  definition: Omit<
+    CollectionDefinition<StandardSchemaV1.InferOutput<S>>,
+    "schema"
+  > & {
+    schema: S;
+  }
+): CollectionDefinition<StandardSchemaV1.InferOutput<S>>;
+export function defineCollection<TData extends FirestoreObject>(
+  definition: CollectionDefinition<TData>
+): CollectionDefinition<TData>;
+export function defineCollection(
+  definition: CollectionDefinition<FirestoreObject>
+): CollectionDefinition<FirestoreObject> {
+  return definition;
 }
 
 /**
- * Validate data against a Zod schema, throwing on failure.
- * Use at API boundaries where invalid data should fail fast.
+ * Infer the document data type from a {@link DocumentDefinition}.
  */
-export const validate = <T extends z.ZodType>(
-    schema: T,
-    data: unknown
-): z.infer<T> => schema.parse(data)
+export type InferDocumentData<T extends DocumentDefinition<FirestoreObject>> =
+  T extends DocumentDefinition<infer D> ? D : never;
 
 /**
- * Create a partial schema that makes all fields optional.
- * Useful for update operations where you only specify changed fields.
+ * Infer the document data type (with `id` field) from a {@link DocumentDefinition}.
  */
-export const partialSchema = <T extends z.ZodObject<z.ZodRawShape>>(
-    schema: T
-): z.ZodObject<{
-    [K in keyof T['shape']]: z.ZodOptional<T['shape'][K]>
-}> => schema.partial() as z.ZodObject<{
-    [K in keyof T['shape']]: z.ZodOptional<T['shape'][K]>
-}>
+export type InferDocument<T extends DocumentDefinition<FirestoreObject>> =
+  InferDocumentData<T> & { id: string };
 
 /**
- * Extract metadata from a Zod schema field.
- * Returns the metadata object if defined, or undefined.
- * Works with Zod 3 and Zod 4 schemas that have metadata attached via .meta()
+ * Infer the document data type from a {@link CollectionDefinition}.
  */
-export const getFieldMeta = <T extends z.ZodType>(
-    schema: T
-): Record<string, unknown> | undefined => {
-    // In Zod 4, meta is stored in _zod.meta
-    // In Zod 3, meta is stored in _def.meta (when using zod-meta or similar)
-    const def = schema._def as unknown as Record<string, unknown>
-    const zod = def._zod as Record<string, unknown> | undefined
-    const meta = zod?.meta ?? def.meta
-    return meta as Record<string, unknown> | undefined
-}
+export type InferCollectionData<
+  T extends CollectionDefinition<FirestoreObject>
+> = T extends CollectionDefinition<infer D> ? D : never;
 
 /**
- * Walk a Zod object schema and collect all field metadata.
- * Returns a map of dotted paths to metadata objects.
- *
- * @example
- * ```ts
- * const meta = collectMeta(ProjectSchema)
- * // { 'name': { title: 'Project Name', ... }, 'building.floors': { ... } }
- * ```
- */
-export const collectMeta = <T extends z.ZodObject<z.ZodRawShape>>(
-    schema: T,
-    prefix = ''
-): Record<string, Record<string, unknown>> => {
-    const result: Record<string, Record<string, unknown>> = {}
-
-    for (const [key, fieldSchema] of Object.entries(schema.shape)) {
-        const path = prefix ? `${prefix}.${key}` : key
-        const meta = getFieldMeta(fieldSchema as z.ZodType)
-
-        if (meta) {
-            result[path] = meta
-        }
-
-        // Recurse into nested objects
-        if (fieldSchema instanceof z.ZodObject) {
-            Object.assign(result, collectMeta(fieldSchema, path))
-        }
-
-        // Handle optional wrappers
-        if (fieldSchema instanceof z.ZodOptional) {
-            const inner = fieldSchema.unwrap()
-            if (inner instanceof z.ZodObject) {
-                Object.assign(result, collectMeta(inner, path))
-            }
-        }
-    }
-
-    return result
-}
-
-/**
- * Create an "extends" version of a document type that adds the id field.
- * This mirrors the pattern: `interface User extends UserData { id: string }`
- */
-export const withId = <T extends z.ZodObject<z.ZodRawShape>>(
-    schema: T
-): z.ZodObject<T['shape'] & { id: z.ZodString }> =>
-    schema.extend({ id: z.string() }) as z.ZodObject<
-        T['shape'] & { id: z.ZodString }
-    >
-
-/**
- * Type helper to infer the data type from a document definition
- */
-export type InferDocumentData<T extends DocumentDefinition<z.ZodType>> =
-    z.infer<T['schema']>
-
-/**
- * Type helper to infer the full document type (with id) from a definition
- */
-export type InferDocument<T extends DocumentDefinition<z.ZodType>> = z.infer<
-    T['schema']
-> & { id: string }
-
-/**
- * Type helper to infer the data type from a collection definition
- */
-export type InferCollectionData<T extends CollectionDefinition<z.ZodType>> =
-    z.infer<T['schema']>
-
-/**
- * Type helper to infer the full document type from a collection definition
+ * Infer the document data type (with `id` field) from a {@link CollectionDefinition}.
  */
 export type InferCollectionDocument<
-    T extends CollectionDefinition<z.ZodType>,
-> = z.infer<T['schema']> & { id: string }
+  T extends CollectionDefinition<FirestoreObject>
+> = InferCollectionData<T> & { id: string };

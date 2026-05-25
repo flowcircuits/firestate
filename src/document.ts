@@ -8,7 +8,6 @@ import {
     DocumentReference,
     WithFieldValue,
 } from 'firebase/firestore'
-import type { z } from 'zod'
 import type {
     DeepPartial,
     DocumentDefinition,
@@ -29,7 +28,7 @@ export interface DocumentOptions<TData extends FirestoreObject> {
     /** The store instance */
     store: FirestateStore
     /** Document definition from defineDocument() */
-    definition: DocumentDefinition<z.ZodType<TData>>
+    definition: DocumentDefinition<TData>
     /** Route/path parameters for dynamic paths */
     params?: Record<string, string>
     /** Override read-only setting */
@@ -130,8 +129,12 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     let unsubscribeListener: Unsubscribe | null = null
     let autosaveTimeout: ReturnType<typeof setTimeout> | null = null
     let retryTimeout: ReturnType<typeof setTimeout> | null = null
+    let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
+    // Cached handle — returns the same reference until notify() invalidates
+    // it. Lets useSyncExternalStore consumers rely on handle identity.
+    let cachedHandle: DocumentHandle<TData> | null = null
 
     // Unique key for sync tracking
     const syncKey = `doc:${collectionPath}/${documentId}`
@@ -147,6 +150,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     })
 
     const notify = () => {
+        cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
@@ -201,11 +205,13 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             await deleteDoc(docRef)
         } catch (error) {
             console.error('Delete failed:', error)
+            state.error = error as Error
             store.reportError(error as Error, {
                 type: 'document',
                 path: `${collectionPath}/${documentId}`,
                 operation: 'write',
             })
+            notify()
         }
     }
 
@@ -221,38 +227,61 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const sync = async () => {
-        if (!state.localState || !state.syncState) return
-        if (isDeepEqual(state.localState, state.syncState)) {
+        if (!state.localState) return
+
+        // No-op if local state already matches what the server holds.
+        if (state.syncState && isDeepEqual(state.localState, state.syncState)) {
             state.localState = undefined
             state.inflightLocalState = undefined
             notify()
             return
         }
 
-        const diff = computeDiff(state.syncState, state.localState)
+        const wasSetOperation = state.isSetOperation
+        state.isSetOperation = false
+
+        // A creation occurs when there's no server state to diff against —
+        // either the user explicitly called set() to create the document, or
+        // the listener has reported the doc as missing. In both cases we use
+        // setDoc and push a creation-aware undo (delete to undo, set to redo).
+        const isCreation = !state.syncState
+        const useSetDoc = wasSetOperation || isCreation
+
+        const diff = state.syncState
+            ? computeDiff(state.syncState, state.localState)
+            : undefined
+
         state.inflightLocalState = deepClone(state.localState)
         const currentUndoOptions = state.pendingUndoOptions
         state.pendingUndoOptions = undefined
 
         // Push undo action if enabled
         if (currentUndoOptions?.undoable !== false && onPushUndo) {
-            const undoDiff = computeDiff(state.localState, state.syncState)
-            const redoDiff = diff
-            onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                currentUndoOptions
-            )
+            if (isCreation) {
+                // Undo a creation by deleting the doc; redo by setting it
+                // again with the data that was just written.
+                const dataForRedo = deepClone(state.localState)
+                onPushUndo(
+                    () => deleteDocument({ undoable: false }),
+                    () => setData(dataForRedo, { undoable: false }),
+                    currentUndoOptions
+                )
+            } else if (diff) {
+                const undoDiff = computeDiff(state.localState, state.syncState!)
+                onPushUndo(
+                    () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                    () => updateState(diff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                    currentUndoOptions
+                )
+            }
         }
 
         state.waitingForUpdate = true
-        const wasSetOperation = state.isSetOperation
-        state.isSetOperation = false
 
         try {
-            if (wasSetOperation) {
-                // Full set operation - use setDoc to create or completely replace
-                // This is intentional when the user calls set() to create a document
+            if (useSetDoc) {
+                // Full set / creation — use setDoc to create or completely
+                // replace the document.
                 await setDoc(docRef, state.localState as TData)
             } else {
                 // Partial update - use updateDoc with flattened diff to prevent
@@ -265,16 +294,25 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             console.error('Sync failed:', error)
             state.waitingForUpdate = false
             state.inflightLocalState = undefined
+            // Surface to React: handle.error reflects the failure and the
+            // listener will keep state.localState so consumers can retry by
+            // calling sync() or by issuing another update. Autosave is not
+            // automatically rescheduled to avoid retry loops on permission
+            // errors — that policy is left to the consumer.
+            state.error = error as Error
             store.reportError(error as Error, {
                 type: 'document',
                 path: `${collectionPath}/${documentId}`,
                 operation: 'write',
             })
+            notify()
         }
     }
 
     const handleSnapshot = (newSyncData: TData) => {
         state.syncState = newSyncData
+        // A successful snapshot supersedes any previous read or write error.
+        state.error = undefined
 
         if (state.waitingForUpdate) {
             state.waitingForUpdate = false
@@ -301,6 +339,31 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             state.isLoading = false
         }
         loaded = true
+
+        // If local edits exist and aren't currently being synced, schedule an
+        // autosave. Covers the case where set() ran before the first snapshot
+        // arrived and the initial sync attempt bailed early.
+        if (state.localState !== undefined) {
+            scheduleAutosave()
+        }
+
+        notify()
+    }
+
+    // A document that does not exist is not an error condition — consumers
+    // commonly use that state to render a "create" UI. Clear loading and
+    // leave error undefined; data will be undefined via getMergedData().
+    const handleMissingDocument = () => {
+        state.syncState = undefined
+        state.error = undefined
+        if (state.waitingForUpdate) {
+            state.waitingForUpdate = false
+            state.inflightLocalState = undefined
+        }
+        if (minLoadTimeElapsed) {
+            state.isLoading = false
+        }
+        loaded = true
         notify()
     }
 
@@ -313,6 +376,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             }, retryInterval)
         } else {
             state.error = error
+            // Don't leave consumers stuck on a loading spinner — the listener
+            // has reported a terminal error, so loading is done.
+            state.isLoading = false
+            loaded = true
             store.reportError(error, {
                 type: 'document',
                 path: `${collectionPath}/${documentId}`,
@@ -333,17 +400,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             (snapshot) => {
                 if (snapshot.exists()) {
                     handleSnapshot(snapshot.data())
-                } else {
-                    if (!snapshot.metadata.fromCache) {
-                        handleError(new Error('Document not found'))
-                    }
+                } else if (!snapshot.metadata.fromCache) {
+                    handleMissingDocument()
                 }
             },
             handleError
         )
 
-        // Min load time handler
-        setTimeout(() => {
+        // Min load time handler — tracked so stop() can cancel it.
+        minLoadTimeout = setTimeout(() => {
+            minLoadTimeout = null
             if (loaded) {
                 state.isLoading = false
                 notify()
@@ -365,6 +431,13 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             clearTimeout(retryTimeout)
             retryTimeout = null
         }
+        if (minLoadTimeout) {
+            clearTimeout(minLoadTimeout)
+            minLoadTimeout = null
+        }
+        // Drop this subscription's entry from the global sync-state map so
+        // an unmounted hook does not leave useIsSynced stuck at false.
+        store.unregisterSyncState(syncKey)
     }
 
     const subscribe = (fn: Subscriber<DocumentState<TData>>): Unsubscribe => {
@@ -372,7 +445,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         return () => subscribers.delete(fn)
     }
 
-    const getHandle = (): DocumentHandle<TData> => ({
+    const buildHandle = (): DocumentHandle<TData> => ({
         data: getMergedData(),
         update: updateState,
         set: setData,
@@ -383,6 +456,13 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         error: state.error,
         ref: docRef,
     })
+
+    const getHandle = (): DocumentHandle<TData> => {
+        if (cachedHandle === null) {
+            cachedHandle = buildHandle()
+        }
+        return cachedHandle
+    }
 
     return {
         start,
