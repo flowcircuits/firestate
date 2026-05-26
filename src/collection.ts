@@ -172,11 +172,28 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         store.reportSyncState(syncKey, publicState.isSynced)
     }
 
+    // Pre-snapshot mutations are unsafe because computing a partial-update
+    // local state without knowing the existing server fields would cause the
+    // subsequent diff to mark unrelated fields as deleted. Document mutations
+    // bail the same way when there's no current data.
+    const warnNoSnapshot = (method: string) => {
+        if (process.env.NODE_ENV !== 'production') {
+            console.warn(
+                `[firestate] ${method}() on ${collectionPath} was ignored: the first snapshot has not arrived yet. ` +
+                    `Gate calls on the collection's isLoading/isActive state, or await the first data before mutating.`
+            )
+        }
+    }
+
     const updateState = (
         diff: WithFieldValue<DeepPartial<Record<string, TData>>>,
         undoOptions: UpdateOptions = {}
     ) => {
         if (isReadOnly) return
+        if (state.syncState === undefined) {
+            warnNoSnapshot('update')
+            return
+        }
 
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
@@ -221,6 +238,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             : (dataOrOptions as UpdateOptions | undefined)) ?? {}
 
         if (isReadOnly) return id
+        if (state.syncState === undefined) {
+            // Even add() bails — an explicit id that happens to exist on the
+            // server would round-trip through computeDiff and clobber any
+            // remote-only fields. The id we returned is still a valid Firestore
+            // id but the caller's data was not queued.
+            warnNoSnapshot('add')
+            return id
+        }
 
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
@@ -237,6 +262,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
     const removeDocument = (id: string, undoOptions: UpdateOptions = {}) => {
         if (isReadOnly) return
+        if (state.syncState === undefined) {
+            warnNoSnapshot('remove')
+            return
+        }
 
         const currentData = getMergedData()
         if (!(id in currentData)) return
@@ -264,12 +293,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
     const sync = async () => {
         if (!state.localState) return
+        // syncState is guaranteed defined here: every mutation that can set
+        // localState bails when syncState is undefined. This guard is purely
+        // defensive against a direct sync() call after stop().
+        if (state.syncState === undefined) return
 
-        // Treat a missing syncState as an empty collection. Lets add() before
-        // the first snapshot still reach Firestore as batch.set operations.
-        const effectiveSyncState: Record<string, TData> = state.syncState ?? {}
+        const syncState = state.syncState
 
-        if (isDeepEqual(state.localState, effectiveSyncState)) {
+        if (isDeepEqual(state.localState, syncState)) {
             state.localState = undefined
             state.inflightLocalState = undefined
             notify()
@@ -277,7 +308,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
 
         const diff = computeDiff(
-            effectiveSyncState as FirestoreObject,
+            syncState as FirestoreObject,
             state.localState as FirestoreObject
         )
         state.inflightLocalState = deepClone(state.localState)
@@ -288,7 +319,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         if (currentUndoOptions?.undoable !== false && onPushUndo) {
             const undoDiff = computeDiff(
                 state.localState as FirestoreObject,
-                effectiveSyncState as FirestoreObject
+                syncState as FirestoreObject
             )
             const redoDiff = diff
             onPushUndo(
@@ -316,7 +347,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                     (docDiff as { isEqual: (v: unknown) => boolean }).isEqual(deleteFieldSentinel)
                 ) {
                     batch.delete(docRef)
-                } else if (!(docId in effectiveSyncState)) {
+                } else if (!(docId in syncState)) {
                     // New document - use set to create it
                     batch.set(docRef, docDiff as Record<string, unknown>)
                 } else {
@@ -391,9 +422,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
         loaded = true
 
-        // If local edits exist and aren't currently being synced, schedule an
-        // autosave. Covers the case where add()/update() ran before the first
-        // snapshot arrived and the initial sync attempt bailed early.
+        // If a rebase produced fresh local edits, ensure they flush. The
+        // user's update() during the inflight write already scheduled an
+        // autosave, so this is mostly defensive.
         if (state.localState !== undefined) {
             scheduleAutosave()
         }
