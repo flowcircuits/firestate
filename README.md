@@ -1,6 +1,6 @@
 # Firestate
 
-Schema-first Firestore state management for React with real-time sync, undo/redo, and optimistic updates.
+Firestore state management for React with real-time sync, undo/redo, optimistic updates, and optional Standard Schema validation.
 
 [![npm version](https://badge.fury.io/js/@hvakr%2Ffirestate.svg)](https://www.npmjs.com/package/@hvakr/firestate)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -8,6 +8,7 @@ Schema-first Firestore state management for React with real-time sync, undo/redo
 ## Why Firestate?
 
 Managing Firestore state in React applications typically involves:
+
 - Setting up real-time listeners with proper cleanup
 - Handling optimistic updates and conflict resolution
 - Tracking sync state across multiple documents/collections
@@ -18,14 +19,14 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 
 ## Features
 
-- **Schema-first**: Define your data structure with Zod schemas, get type safety everywhere
+- **TypeScript-first**: Plain TS interfaces define your data shape — no validator dependency required
+- **Optional validation**: Bring your own [Standard Schema](https://standardschema.dev) validator (zod, valibot, arktype, effect, etc.) and use it at your own boundaries
 - **Real-time sync**: Automatic Firestore listeners with proper lifecycle management
 - **Optimistic updates**: Changes reflect immediately, sync in background
 - **Conflict resolution**: Automatic rebasing when concurrent changes occur
 - **Undo/redo**: Built-in command pattern with action grouping
 - **Lazy loading**: Collections can defer subscription until needed
 - **Diff-based updates**: Only changed fields are sent to Firestore
-- **TypeScript-first**: Full type inference from schemas
 
 ## Table of Contents
 
@@ -56,21 +57,62 @@ Firestate requires the following peer dependencies:
 ```json
 {
   "firebase": "^10.0.0 || ^11.0.0",
-  "react": "^18.0.0 || ^19.0.0",
-  "zod": "^3.24.0 || ^4.0.0"
+  "react": "^18.0.0 || ^19.0.0"
 }
 ```
 
+Firestate has no runtime validation dependency. If you want to validate at
+your boundaries, pass any [Standard Schema](https://standardschema.dev)
+compatible validator (zod 3.24+/4, valibot, arktype, effect schema, etc.)
+via the optional `schema` field on a definition.
+
 ## Quick Start
 
-### 1. Define your schemas
+### 1. Define your data
 
 ```typescript
 // schemas.ts
-import { z } from 'zod'
 import { defineDocument, defineCollection } from '@hvakr/firestate'
 
-// Define the project document schema
+// Plain TypeScript interfaces — no runtime validator required
+interface Project {
+    name: string
+    description?: string
+    createdAt: number
+    updatedAt: number
+}
+
+interface Space {
+    name: string
+    area: number
+    floor: number
+}
+
+// Create a document definition
+export const projectDoc = defineDocument<Project>({
+    collection: 'projects',
+    id: (params) => params.projectId,
+    autosave: 1000, // Debounce writes by 1 second
+})
+
+// Create a collection definition
+export const spacesCollection = defineCollection<Space>({
+    path: (params) => `projects/${params.projectId}/spaces`,
+    lazy: true, // Only subscribe when load() is called
+})
+```
+
+#### Optional: validating with Standard Schema
+
+If you want runtime validation at your boundaries, pass any
+[Standard Schema](https://standardschema.dev) compatible validator. Firestate
+stores it on the definition but never invokes it — you call it where it
+matters (on submit, in tests, at a server route, etc.):
+
+```typescript
+import { z } from 'zod'
+import { defineDocument } from '@hvakr/firestate'
+
 const ProjectSchema = z.object({
     name: z.string(),
     description: z.string().optional(),
@@ -78,27 +120,15 @@ const ProjectSchema = z.object({
     updatedAt: z.number(),
 })
 
-// Create a document definition
+// TData is inferred from the schema's output type
 export const projectDoc = defineDocument({
     schema: ProjectSchema,
     collection: 'projects',
     id: (params) => params.projectId,
-    autosave: 1000, // Debounce writes by 1 second
 })
 
-// Define a subcollection schema
-const SpaceSchema = z.object({
-    name: z.string(),
-    area: z.number(),
-    floor: z.number(),
-})
-
-// Create a collection definition
-export const spacesCollection = defineCollection({
-    schema: SpaceSchema,
-    path: (params) => `projects/${params.projectId}/spaces`,
-    lazy: true, // Only subscribe when load() is called
-})
+// Use the schema at a boundary you control:
+const result = projectDoc.schema!['~standard'].validate(unknownInput)
 ```
 
 ### 2. Set up the provider
@@ -193,6 +223,7 @@ Check out the [examples](./examples) directory for complete, runnable examples:
 ### Optimistic Updates
 
 When you call `update()`, the change is applied immediately to local state. The library then:
+
 1. Computes the minimal diff
 2. Debounces writes (configurable `autosave` interval)
 3. Sends only changed fields to Firestore using dot-notation (flattened keys)
@@ -229,6 +260,7 @@ spaces.update({ space1: { name: 'Updated' } }, { undoGroupId: groupId })
 ```
 
 To skip undo tracking:
+
 ```tsx
 project.update({ lastViewed: Date.now() }, { undoable: false })
 ```
@@ -277,17 +309,33 @@ function App() {
 }
 ```
 
+### Pending edits on unmount
+
+Writes are debounced by `autosave` (default 1000 ms). If a component unmounts
+while there are unflushed local edits, those edits are dropped silently — the
+subscription is gone and the autosave timer is cleared. To handle this:
+
+- **Block navigation** with `useUnsavedChangesBlocker` (shown above) so users
+  can't navigate away while writes are pending.
+- **Force a flush** by calling `handle.sync()` before triggering the unmount
+  (e.g., in a custom save-and-close button).
+- **Lower `autosave`** if the debounce window is the source of risk.
+
+There is no automatic flush in the subscription's `stop()` because `stop()`
+is synchronous and consumers may unmount during route transitions where
+awaiting writes is not feasible.
+
 ## API Reference
 
-### Schema Functions
+### Definition Helpers
 
 #### `defineDocument(definition)`
 
-Creates a document definition.
+Creates a document definition. Provide the document shape via the `TData`
+type parameter, or let it be inferred from a Standard Schema validator.
 
 ```typescript
-const projectDoc = defineDocument({
-    schema: ProjectSchema,      // Zod schema
+const projectDoc = defineDocument<Project>({
     collection: 'projects',     // Collection path
     id: (params) => params.id,  // Document ID (string or function)
     autosave: 1000,             // Optional: debounce interval (ms)
@@ -295,6 +343,7 @@ const projectDoc = defineDocument({
     readOnly: false,            // Optional: prevent updates
     retryOnError: false,        // Optional: retry on listener errors
     retryInterval: 5000,        // Optional: retry interval (ms)
+    schema: ProjectSchema,      // Optional: Standard Schema validator
 })
 ```
 
@@ -303,61 +352,15 @@ const projectDoc = defineDocument({
 Creates a collection definition.
 
 ```typescript
-const spacesCollection = defineCollection({
-    schema: SpaceSchema,                              // Zod schema for documents
+const spacesCollection = defineCollection<Space>({
     path: (params) => `projects/${params.id}/spaces`, // Collection path
     autosave: 1000,                                   // Optional: debounce interval
     minLoadTime: 0,                                   // Optional: minimum loading time
     readOnly: false,                                  // Optional: prevent updates
     lazy: false,                                      // Optional: defer subscription
     queryConstraints: [],                             // Optional: Firestore constraints
+    schema: SpaceSchema,                              // Optional: Standard Schema validator
 })
-```
-
-#### `validate(schema, data)`
-
-Validates data against a Zod schema, throwing on failure.
-
-```typescript
-import { validate } from '@hvakr/firestate'
-
-const validated = validate(ProjectSchema, unknownData)
-// Throws ZodError if invalid
-```
-
-#### `validateSafe(schema, data)`
-
-Validates data against a Zod schema, returning undefined on failure.
-
-```typescript
-import { validateSafe } from '@hvakr/firestate'
-
-const validated = validateSafe(ProjectSchema, unknownData)
-if (validated) {
-    // Use validated data
-}
-```
-
-#### `partialSchema(schema)`
-
-Creates a partial version of a Zod object schema where all fields are optional.
-
-```typescript
-import { partialSchema } from '@hvakr/firestate'
-
-const PartialProjectSchema = partialSchema(ProjectSchema)
-// All fields are now optional
-```
-
-#### `withId(schema)`
-
-Extends a Zod object schema with an `id: string` field.
-
-```typescript
-import { withId } from '@hvakr/firestate'
-
-const ProjectWithIdSchema = withId(ProjectSchema)
-// Now includes { id: string, ...originalFields }
 ```
 
 ### React Hooks
@@ -393,7 +396,7 @@ Subscribe to a collection.
 const {
     data,           // Record<string, T> of documents
     update,         // Update one or more documents
-    add,            // Add a new document
+    add,            // Add a new document (explicit or auto-generated id)
     remove,         // Remove a document
     isLoading,      // Whether initial data is loading
     isSynced,       // Whether all changes are synced
@@ -401,6 +404,7 @@ const {
     load,           // Activate a lazy subscription
     sync,           // Force sync immediately
     error,          // Error from listener, if any
+    ref,            // Firestore CollectionReference
 } = useCollection({
     definition: spacesCollection,
     params: { projectId: '123' },
@@ -411,26 +415,14 @@ const {
 // Update existing documents
 update({ space1: { name: 'Updated Name' } })
 
-// Add a new document
+// Add a new document with an explicit id
 add('newSpaceId', { name: 'New Space', area: 500, floor: 1 })
+
+// Or let Firestore generate the id — returned synchronously
+const id = add({ name: 'New Space', area: 500, floor: 1 })
 
 // Remove a document
 remove('oldSpaceId')
-```
-
-#### `useLazyCollection(options)`
-
-Get a lazy-loadable collection value.
-
-```typescript
-const spaces = useLazyCollection({
-    definition: spacesCollection,
-    params: { projectId: '123' },
-})
-
-// spaces.value - current data
-// spaces.load() - activate subscription
-// spaces.loaded - whether data is loaded
 ```
 
 #### `useUndoManager()`
@@ -580,6 +572,14 @@ if (isDiffEmpty(diff)) return
 const combined = mergeDiffs(diff1, diff2)
 ```
 
+## Notes
+
+- **`enabled` flag** — pass `enabled: false` to `useDocument`/`useCollection` to skip the subscription when params aren't ready (e.g., during a route transition).
+- **Navigation flicker** — changing `params` rebuilds the listener and briefly shows `isLoading: true`. To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
+- **No cross-doc transactions** — writes are atomic per document and per collection (via `writeBatch`), but not across them. For now, use Firestore's `runTransaction` directly via `handle.ref`.
+- **Per-client undo** — `useUndoManager` is local; one user's undo doesn't propagate to others.
+- **Multi-tab sync** — handled automatically by Firestore's listeners; no extra setup.
+
 ## Advanced Usage
 
 ### Creating a Store Manually
@@ -602,14 +602,14 @@ const store = createStore({
 const subscription = createDocumentSubscription({
     store,
     definition: projectDoc,
-    params: { projectId: '123' },
+    docId: '123',
 })
 
 subscription.subscribe((state) => {
     console.log('State changed:', state)
 })
 
-subscription.start()
+subscription.load()
 
 // Later: cleanup
 subscription.stop()
@@ -668,10 +668,13 @@ const project = useDocument({
     params: { projectId: '123' },
 })
 
+// Missing documents are not errors — `data` is undefined and `isLoading`
+// is false. Render a create/empty state for that case.
+if (!project.isLoading && !project.data) {
+    return <CreateProject />
+}
+
 if (project.error) {
-    if (project.error.message === 'Document not found') {
-        return <NotFound />
-    }
     return <ErrorDisplay error={project.error} />
 }
 ```
@@ -786,14 +789,12 @@ export const ProjectProvider = ({ children }) => {
 
 ```tsx
 // schemas.ts
-export const projectDoc = defineDocument({
-    schema: ProjectSchema,
+export const projectDoc = defineDocument<Project>({
     collection: 'projects',
     id: (params) => params.projectId,
 })
 
-export const spacesCollection = defineCollection({
-    schema: SpaceSchema,
+export const spacesCollection = defineCollection<Space>({
     path: (params) => `projects/${params.projectId}/spaces`,
     lazy: true,
 })
@@ -810,7 +811,7 @@ function ProjectEditor({ projectId }) {
 
 ## Design Philosophy
 
-1. **Schema as source of truth**: Your Zod schemas define both runtime validation and TypeScript types
+1. **Type-first, validator-optional**: Plain TypeScript interfaces drive the API; validation is an opt-in escape hatch via Standard Schema
 2. **Declarative over imperative**: Define what you want, not how to get it
 3. **Batteries included**: Undo/redo, sync tracking, and conflict resolution work out of the box
 4. **Escape hatches**: Low-level APIs available when you need them

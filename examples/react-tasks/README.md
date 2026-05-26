@@ -85,21 +85,24 @@ src/
 ### Schema Definitions
 
 ```typescript
-// Define your data shape with Zod
-const TaskSchema = z.object({
-  title: z.string(),
-  completed: z.boolean(),
-  priority: z.enum(['low', 'medium', 'high']),
-  createdAt: z.number(),
-})
+// Define your data shape with a TypeScript interface
+interface Task {
+  title: string
+  completed: boolean
+  priority: 'low' | 'medium' | 'high'
+  createdAt: number
+}
 
 // Create a collection definition
-const tasksCollection = defineCollection({
-  schema: TaskSchema,
+const tasksCollection = defineCollection<Task>({
   path: (params) => `taskLists/${params.listId}/tasks`,
   autosave: 500,
 })
 ```
+
+Validators that implement [Standard Schema](https://standardschema.dev)
+(zod 3.24+/4, valibot, arktype, effect, etc.) can be passed via an optional
+`schema` field if you want to validate at your own boundaries.
 
 ### Using in Components
 
@@ -130,4 +133,4 @@ useUndoKeyboardShortcuts()
 
 - [Firestate Documentation](../../README.md)
 - [Firebase Documentation](https://firebase.google.com/docs)
-- [Zod Documentation](https://zod.dev/)
+- [Standard Schema](https://standardschema.dev/) (optional validator interop)

@@ -54,16 +54,20 @@ export const createUndoManager = (
         if (action.groupId && undoStack.length > 0) {
             const last = undoStack[undoStack.length - 1]
             if (last?.groupId === action.groupId) {
-                // Pop and merge
+                // Pop and merge. Undo walks the group newest→oldest so each
+                // step reverses its specific change in reverse order; redo
+                // walks oldest→newest to re-apply in original order. The
+                // previous (older) order produced incorrect cumulative state
+                // whenever grouped actions touched the same field.
                 undoStack.pop()
                 undoStack.push({
                     undo: async () => {
-                        await last.undo()
                         await action.undo()
+                        await last.undo()
                     },
                     redo: async () => {
-                        await action.redo()
                         await last.redo()
+                        await action.redo()
                     },
                     groupId: action.groupId,
                     path: action.path ?? last.path,

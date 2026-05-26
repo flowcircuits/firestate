@@ -191,6 +191,41 @@ describe('createUndoManager', () => {
 
             expect(manager.undoStack.length).toBe(2)
         })
+
+        it('undo of merged group restores pre-group state when actions touch the same field', async () => {
+            const manager = createUndoManager()
+            const groupId = 'slider-drag'
+
+            // Simulate three slider updates on the same value, each capturing
+            // its own pre/post snapshot. Undo of the merged entry must walk
+            // newest→oldest so the field ends up at its true pre-group value.
+            let value = 0
+            const push = (from: number, to: number) =>
+                manager.push({
+                    undo: () => {
+                        value = from
+                    },
+                    redo: () => {
+                        value = to
+                    },
+                    groupId,
+                })
+
+            push(0, 5)
+            value = 5
+            push(5, 10)
+            value = 10
+            push(10, 15)
+            value = 15
+
+            expect(manager.undoStack.length).toBe(1)
+
+            await manager.undo()
+            expect(value).toBe(0)
+
+            await manager.redo()
+            expect(value).toBe(15)
+        })
     })
 
     describe('path navigation', () => {
