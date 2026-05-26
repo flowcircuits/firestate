@@ -236,36 +236,41 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     // Overloaded: callers can pass (id, data, opts) or (data, opts). The
     // no-id form generates a Firestore auto-id via doc(collectionRef).id and
     // returns it so the caller can reference the new doc immediately.
+    // Returns undefined when the mutation is dropped so callers can't
+    // accidentally route on or persist an id that was never queued.
     function addDocument(
         id: string,
         data: Omit<TData, 'id'>,
         undoOptions?: UpdateOptions
-    ): string
+    ): string | undefined
     function addDocument(
         data: Omit<TData, 'id'>,
         undoOptions?: UpdateOptions
-    ): string
+    ): string | undefined
     function addDocument(
         idOrData: string | Omit<TData, 'id'>,
         dataOrOptions?: Omit<TData, 'id'> | UpdateOptions,
         maybeUndoOptions?: UpdateOptions
-    ): string {
+    ): string | undefined {
         const hasExplicitId = typeof idOrData === 'string'
-        const id = hasExplicitId ? idOrData : doc(collectionRef).id
         const data = (hasExplicitId ? dataOrOptions : idOrData) as Omit<TData, 'id'>
         const undoOptions = (hasExplicitId
             ? maybeUndoOptions
             : (dataOrOptions as UpdateOptions | undefined)) ?? {}
 
-        if (isReadOnly) return id
+        if (isReadOnly) return undefined
         if (state.syncState === undefined) {
-            // Even add() bails — an explicit id that happens to exist on the
-            // server would round-trip through computeDiff and clobber any
-            // remote-only fields. The id we returned is still a valid Firestore
-            // id but the caller's data was not queued.
+            // Bail rather than queueing: an explicit id that happens to exist
+            // on the server would round-trip through computeDiff and clobber
+            // any remote-only fields, and we have no way to know without a
+            // first snapshot.
             warnNoSnapshot('add')
-            return id
+            return undefined
         }
+
+        // Only allocate an auto-id once we know we're going to queue the
+        // write — otherwise the caller might persist an id that was dropped.
+        const id = hasExplicitId ? (idOrData as string) : doc(collectionRef).id
 
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)

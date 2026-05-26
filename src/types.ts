@@ -117,10 +117,14 @@ export interface CollectionHandle<T extends FirestoreObject> {
   /**
    * Add a new document to the collection. Either pass an explicit `id`, or
    * omit it to have Firestore generate an auto-id (returned synchronously).
+   *
+   * Returns `undefined` if the mutation was dropped (read-only handle, or
+   * called before the first snapshot has arrived). Callers should narrow
+   * before using the id to navigate or persist references.
    */
   add: {
-    (id: string, data: Omit<T, "id">, options?: UpdateOptions): string;
-    (data: Omit<T, "id">, options?: UpdateOptions): string;
+    (id: string, data: Omit<T, "id">, options?: UpdateOptions): string | undefined;
+    (data: Omit<T, "id">, options?: UpdateOptions): string | undefined;
   };
   /** Remove a document from the collection */
   remove: (id: string, options?: UpdateOptions) => void;

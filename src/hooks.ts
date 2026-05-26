@@ -44,10 +44,11 @@ const DISABLED_DOCUMENT_HANDLE: DocumentHandle<FirestoreObject> = {
   ref: undefined,
 };
 
-// The disabled add() satisfies both overloads (it returns a string id) but
-// performs no work; consumers using `enabled: false` should not be calling
-// mutation methods on the disabled handle.
-const DISABLED_ADD = () => "";
+// The disabled add() satisfies both overloads but performs no work and
+// returns undefined to match the bail-path contract from collection.ts.
+// Consumers using `enabled: false` should not be calling mutation methods
+// on the disabled handle.
+const DISABLED_ADD = () => undefined;
 
 const DISABLED_COLLECTION_HANDLE: CollectionHandle<FirestoreObject> = {
   data: EMPTY_RECORD,
