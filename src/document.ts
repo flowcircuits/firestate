@@ -86,14 +86,14 @@ interface DocumentInternalState<T extends FirestoreObject> {
  *   console.log('Document state:', state)
  * })
  *
- * subscription.start()
+ * subscription.load()
  * ```
  */
 export const createDocumentSubscription = <TData extends FirestoreObject>(
     options: DocumentOptions<TData>
 ): {
-    /** Start the Firestore listener */
-    start: () => void
+    /** Attach the Firestore listener */
+    load: () => void
     /** Stop the Firestore listener */
     stop: () => void
     /** Subscribe to state changes */
@@ -458,7 +458,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             console.warn('Document listener error, retrying:', error)
             retryTimeout = setTimeout(() => {
                 stop()
-                start()
+                load()
             }, retryInterval)
         } else {
             state.error = error
@@ -475,7 +475,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         }
     }
 
-    const start = () => {
+    const load = () => {
         if (unsubscribeListener) return
 
         loaded = false
@@ -551,7 +551,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     return {
-        start,
+        load,
         stop,
         subscribe,
         getState: getPublicState,

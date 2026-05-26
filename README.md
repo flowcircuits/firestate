@@ -602,14 +602,14 @@ const store = createStore({
 const subscription = createDocumentSubscription({
     store,
     definition: projectDoc,
-    params: { projectId: '123' },
+    docId: '123',
 })
 
 subscription.subscribe((state) => {
     console.log('State changed:', state)
 })
 
-subscription.start()
+subscription.load()
 
 // Later: cleanup
 subscription.stop()

@@ -111,6 +111,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         readOnly: definitionReadOnly,
         lazy = false,
         queryConstraints: definitionConstraints,
+        retryOnError = false,
+        retryInterval = 5000,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -144,6 +146,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     let unsubscribeListener: Unsubscribe | null = null
     let autosaveTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
     // Cached handle — returns the same reference until notify() invalidates
@@ -433,17 +436,25 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const handleError = (error: Error) => {
-        state.error = error
-        // Don't leave consumers stuck on a loading spinner — the listener
-        // has reported a terminal error, so loading is done.
-        state.isLoading = false
-        loaded = true
-        store.reportError(error, {
-            type: 'collection',
-            path: collectionPath,
-            operation: 'read',
-        })
-        notify()
+        if (retryOnError) {
+            console.warn('Collection listener error, retrying:', error)
+            retryTimeout = setTimeout(() => {
+                stop()
+                startListener()
+            }, retryInterval)
+        } else {
+            state.error = error
+            // Don't leave consumers stuck on a loading spinner — the listener
+            // has reported a terminal error, so loading is done.
+            state.isLoading = false
+            loaded = true
+            store.reportError(error, {
+                type: 'collection',
+                path: collectionPath,
+                operation: 'read',
+            })
+            notify()
+        }
     }
 
     const startListener = () => {
@@ -492,6 +503,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const stop = () => {
+        if (retryTimeout) {
+            clearTimeout(retryTimeout)
+            retryTimeout = null
+        }
         if (unsubscribeListener) {
             unsubscribeListener()
             unsubscribeListener = null

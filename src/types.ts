@@ -239,6 +239,10 @@ export interface CollectionDefinition<TData extends FirestoreObject> {
   lazy?: boolean;
   /** Query constraints */
   queryConstraints?: QueryConstraint[];
+  /** Retry the snapshot listener on transient errors */
+  retryOnError?: boolean;
+  /** Retry interval (ms), default 5000 */
+  retryInterval?: number;
 }
 
 /**

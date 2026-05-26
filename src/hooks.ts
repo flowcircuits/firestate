@@ -251,7 +251,7 @@ export const useDocument = <TData extends FirestoreObject>(
     (onChange: () => void) => {
       if (!subscription) return NOOP;
       const unsub = subscription.subscribe(() => onChange());
-      subscription.start();
+      subscription.load();
       return () => {
         unsub();
         subscription.stop();
