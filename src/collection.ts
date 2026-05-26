@@ -7,6 +7,7 @@ import {
     deleteField,
     WithFieldValue,
     QueryConstraint,
+    type CollectionReference,
 } from 'firebase/firestore'
 import type {
     CollectionDefinition,
@@ -21,6 +22,10 @@ import type {
 import type { FirestateStore } from './store'
 import { applyDiffMutable, computeDiff, deepClone, flattenDiff, isDeepEqual } from './diff'
 
+// Module-level counter so each subscription instance gets a unique sync key,
+// even when multiple instances target the same collection path.
+let syncKeyCounter = 0
+
 /**
  * Options for creating a collection subscription
  */
@@ -29,8 +34,12 @@ export interface CollectionOptions<TData extends FirestoreObject> {
     store: FirestateStore
     /** Collection definition from defineCollection() */
     definition: CollectionDefinition<TData>
-    /** Route/path parameters for dynamic paths */
-    params?: Record<string, string>
+    /**
+     * Resolved collection path. If omitted and `definition.path` is a string,
+     * that value is used. If `definition.path` is a function, this option is
+     * required.
+     */
+    collectionPath?: string
     /** Override read-only setting */
     readOnly?: boolean
     /** Additional query constraints */
@@ -66,7 +75,7 @@ interface CollectionInternalState<T extends FirestoreObject> {
  * const subscription = createCollectionSubscription({
  *   store,
  *   definition: spacesCollection,
- *   params: { projectId: '123' },
+ *   collectionPath: 'projects/123/spaces',
  * })
  *
  * const unsubscribe = subscription.subscribe((state) => {
@@ -92,7 +101,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, params = {}, readOnly, queryConstraints: extraConstraints, onPushUndo } = options
+    const { store, definition, collectionPath: resolvedPath, readOnly, queryConstraints: extraConstraints, onPushUndo } = options
     const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
 
     const {
@@ -105,11 +114,19 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
-    const collectionPath = typeof path === 'function' ? path(params) : path
+    // Prefer the caller-resolved path. Fall back to a string `definition.path`
+    // for ergonomic direct use; if both are missing, the caller forgot to
+    // resolve a function path.
+    const collectionPath = resolvedPath ?? (typeof path === 'string' ? path : undefined)
+    if (collectionPath === undefined) {
+        throw new Error(
+            `createCollectionSubscription: definition.path is a function; pass a resolved collectionPath in options.`
+        )
+    }
     const allConstraints = [...(definitionConstraints ?? []), ...(extraConstraints ?? [])]
 
     // Create collection reference
-    const collectionRef = collection(firestore, collectionPath)
+    const collectionRef = collection(firestore, collectionPath) as CollectionReference<TData>
 
     // Internal state
     const state: CollectionInternalState<TData> = {
@@ -133,8 +150,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     // it. Lets useSyncExternalStore consumers rely on handle identity.
     let cachedHandle: CollectionHandle<TData> | null = null
 
-    // Unique key for sync tracking
-    const syncKey = `col:${collectionPath}`
+    // Unique key for sync tracking, scoped per-instance so multiple
+    // subscriptions to the same path don't share (or clobber) one entry.
+    const syncKey = `col:${collectionPath}#${++syncKeyCounter}`
 
     const getMergedData = (): Record<string, TData> =>
         state.localState ?? state.syncState ?? {}
@@ -178,12 +196,31 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         scheduleAutosave()
     }
 
-    const addDocument = (
+    // Overloaded: callers can pass (id, data, opts) or (data, opts). The
+    // no-id form generates a Firestore auto-id via doc(collectionRef).id and
+    // returns it so the caller can reference the new doc immediately.
+    function addDocument(
         id: string,
         data: Omit<TData, 'id'>,
-        undoOptions: UpdateOptions = {}
-    ) => {
-        if (isReadOnly) return
+        undoOptions?: UpdateOptions
+    ): string
+    function addDocument(
+        data: Omit<TData, 'id'>,
+        undoOptions?: UpdateOptions
+    ): string
+    function addDocument(
+        idOrData: string | Omit<TData, 'id'>,
+        dataOrOptions?: Omit<TData, 'id'> | UpdateOptions,
+        maybeUndoOptions?: UpdateOptions
+    ): string {
+        const hasExplicitId = typeof idOrData === 'string'
+        const id = hasExplicitId ? idOrData : doc(collectionRef).id
+        const data = (hasExplicitId ? dataOrOptions : idOrData) as Omit<TData, 'id'>
+        const undoOptions = (hasExplicitId
+            ? maybeUndoOptions
+            : (dataOrOptions as UpdateOptions | undefined)) ?? {}
+
+        if (isReadOnly) return id
 
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
@@ -194,6 +231,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
         notify()
         scheduleAutosave()
+
+        return id
     }
 
     const removeDocument = (id: string, undoOptions: UpdateOptions = {}) => {
@@ -455,6 +494,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         load,
         sync,
         error: state.error,
+        ref: collectionRef,
     })
 
     const getHandle = (): CollectionHandle<TData> => {

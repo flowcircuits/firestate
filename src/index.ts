@@ -9,7 +9,6 @@ export type {
     // State types
     DocumentState,
     CollectionState,
-    LazyValue,
     // Handle types
     DocumentHandle,
     CollectionHandle,
@@ -84,7 +83,6 @@ export {
     useStore,
     useDocument,
     useCollection,
-    useLazyCollection,
     useUndoManager,
     useIsSynced,
     useUndoKeyboardShortcuts,

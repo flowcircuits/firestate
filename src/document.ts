@@ -21,6 +21,10 @@ import type {
 import type { FirestateStore } from './store'
 import { applyDiffMutable, computeDiff, deepClone, flattenDiff, isDeepEqual } from './diff'
 
+// Module-level counter so each subscription instance gets a unique sync key,
+// even when multiple instances target the same document path.
+let syncKeyCounter = 0
+
 /**
  * Options for creating a document subscription
  */
@@ -29,8 +33,11 @@ export interface DocumentOptions<TData extends FirestoreObject> {
     store: FirestateStore
     /** Document definition from defineDocument() */
     definition: DocumentDefinition<TData>
-    /** Route/path parameters for dynamic paths */
-    params?: Record<string, string>
+    /**
+     * Resolved document id. If omitted and `definition.id` is a string, that
+     * value is used. If `definition.id` is a function, this option is required.
+     */
+    docId?: string
     /** Override read-only setting */
     readOnly?: boolean
     /** Callback for pushing undo actions */
@@ -42,15 +49,22 @@ export interface DocumentOptions<TData extends FirestoreObject> {
 }
 
 /**
- * Internal state for a document subscription
+ * Internal state for a document subscription.
+ *
+ * `localState` uses three distinct values:
+ * - `undefined`: no pending local changes
+ * - `null`: pending delete (the autosave-driven sync will issue deleteDoc)
+ * - object: pending update/set (synced via updateDoc/setDoc)
+ *
+ * The same convention applies to `inflightLocalState`.
  */
 interface DocumentInternalState<T extends FirestoreObject> {
     syncState: T | undefined
-    localState: T | undefined
+    localState: T | null | undefined
     isLoading: boolean
     error: Error | undefined
     waitingForUpdate: boolean
-    inflightLocalState: T | undefined
+    inflightLocalState: T | null | undefined
     pendingUndoOptions: UpdateOptions | undefined
     /** Whether the pending operation is a full set (create/replace) vs a partial update */
     isSetOperation: boolean
@@ -65,7 +79,7 @@ interface DocumentInternalState<T extends FirestoreObject> {
  * const subscription = createDocumentSubscription({
  *   store,
  *   definition: projectDoc,
- *   params: { projectId: '123' },
+ *   docId: '123',
  * })
  *
  * const unsubscribe = subscription.subscribe((state) => {
@@ -91,7 +105,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, params = {}, readOnly, onPushUndo } = options
+    const { store, definition, docId, readOnly, onPushUndo } = options
     const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
 
     const {
@@ -105,7 +119,15 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
-    const documentId = typeof id === 'function' ? id(params) : id
+    // Prefer the caller-resolved docId. Fall back to a string `definition.id`
+    // for ergonomic direct use; if both are missing, the caller forgot to
+    // resolve a function id and we surface that immediately.
+    const documentId = docId ?? (typeof id === 'string' ? id : undefined)
+    if (documentId === undefined) {
+        throw new Error(
+            `createDocumentSubscription: definition.id is a function; pass a resolved docId in options.`
+        )
+    }
 
     // Create document reference
     const docRef = doc(
@@ -136,11 +158,15 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     // it. Lets useSyncExternalStore consumers rely on handle identity.
     let cachedHandle: DocumentHandle<TData> | null = null
 
-    // Unique key for sync tracking
-    const syncKey = `doc:${collectionPath}/${documentId}`
+    // Unique key for sync tracking, scoped per-instance so multiple
+    // subscriptions to the same path don't share (or clobber) one entry.
+    const syncKey = `doc:${collectionPath}/${documentId}#${++syncKeyCounter}`
 
-    const getMergedData = (): TData | undefined =>
-        state.localState ?? state.syncState
+    const getMergedData = (): TData | undefined => {
+        // null localState marks a pending delete — surface as no data.
+        if (state.localState === null) return undefined
+        return state.localState ?? state.syncState
+    }
 
     const getPublicState = (): DocumentState<TData> => ({
         data: getMergedData(),
@@ -163,7 +189,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         if (isReadOnly) return
 
         const currentData = getMergedData()
-        if (!currentData) return
+        if (!currentData) {
+            if (process.env.NODE_ENV !== 'production') {
+                console.warn(
+                    `[firestate] update() on ${collectionPath}/${documentId} was ignored: there is no current data to diff against. ` +
+                        `This happens when the document is still loading, has been deleted, or doesn't exist yet. ` +
+                        `Use set() to create the document, or gate update calls on a non-undefined data value.`
+                )
+            }
+            return
+        }
 
         const newLocalState = deepClone(currentData)
         applyDiffMutable(newLocalState, diff as Record<string, unknown>)
@@ -186,13 +221,18 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         scheduleAutosave()
     }
 
-    const deleteDocument = async (undoOptions: UpdateOptions = {}) => {
+    const deleteDocument = (undoOptions: UpdateOptions = {}) => {
         if (isReadOnly) return
 
         const currentData = getMergedData()
+        // Nothing to delete — bail rather than queueing a no-op deleteDoc.
+        if (currentData === undefined) return
 
-        // Push undo action if enabled
-        if (undoOptions?.undoable !== false && onPushUndo && currentData) {
+        // Push undo action against the pre-delete data (which includes any
+        // pending local edits at this moment). Symmetric with set/update,
+        // even though those defer their undo push until sync() time: deletes
+        // know their full pre-image immediately, so there's no reason to wait.
+        if (undoOptions?.undoable !== false && onPushUndo) {
             const dataToRestore = deepClone(currentData)
             onPushUndo(
                 () => setData(dataToRestore, { undoable: false }),
@@ -201,18 +241,14 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             )
         }
 
-        try {
-            await deleteDoc(docRef)
-        } catch (error) {
-            console.error('Delete failed:', error)
-            state.error = error as Error
-            store.reportError(error as Error, {
-                type: 'document',
-                path: `${collectionPath}/${documentId}`,
-                operation: 'write',
-            })
-            notify()
-        }
+        // Mark localState as a pending delete and let scheduleAutosave drive
+        // the actual deleteDoc call — same flow as set/update.
+        state.localState = null
+        state.pendingUndoOptions = undefined
+        state.isSetOperation = false
+
+        notify()
+        scheduleAutosave()
     }
 
     const scheduleAutosave = () => {
@@ -227,7 +263,31 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const sync = async () => {
-        if (!state.localState) return
+        if (state.localState === undefined) return
+
+        // Pending delete — issue deleteDoc and let the listener confirm via
+        // handleMissingDocument. The undo was already pushed at delete() time.
+        if (state.localState === null) {
+            state.inflightLocalState = null
+            state.pendingUndoOptions = undefined
+            state.waitingForUpdate = true
+
+            try {
+                await deleteDoc(docRef)
+            } catch (error) {
+                console.error('Sync failed:', error)
+                state.waitingForUpdate = false
+                state.inflightLocalState = undefined
+                state.error = error as Error
+                store.reportError(error as Error, {
+                    type: 'document',
+                    path: `${collectionPath}/${documentId}`,
+                    operation: 'write',
+                })
+                notify()
+            }
+            return
+        }
 
         // No-op if local state already matches what the server holds.
         if (state.syncState && isDeepEqual(state.localState, state.syncState)) {
@@ -320,12 +380,22 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             state.inflightLocalState = undefined
             const currentLocal = state.localState
 
-            // Rebase local changes if they changed since we started the sync
-            if (
+            if (inflightState === null) {
+                // Inflight was a delete but the listener fired with the doc
+                // still present. The deleteDoc result is still in flight (or
+                // failed and reverted). Leave localState alone — it's either
+                // still null (we still want the delete) or non-null (user
+                // changed their mind), and either way the next sync handles it.
+            } else if (currentLocal === null) {
+                // User issued a delete while a set/update was inflight. The
+                // pending delete is the latest intent; preserve it for the
+                // next sync.
+            } else if (
                 inflightState &&
                 currentLocal &&
                 !isDeepEqual(currentLocal, inflightState)
             ) {
+                // Rebase local changes onto the new sync state.
                 const changesSinceInflight = computeDiff(inflightState, currentLocal)
                 const rebasedLocalState = deepClone(newSyncData)
                 applyDiffMutable(rebasedLocalState, changesSinceInflight as Record<string, unknown>)
@@ -356,6 +426,22 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const handleMissingDocument = () => {
         state.syncState = undefined
         state.error = undefined
+
+        // The only localState that should clear when the doc goes missing is
+        // our own pending-delete marker. Any other pending edits (object
+        // value) represent the user's intent to recreate the doc — the next
+        // sync() will issue a setDoc against the now-missing doc and create
+        // it from scratch.
+        if (state.localState === null) {
+            state.localState = undefined
+            state.pendingUndoOptions = undefined
+            state.isSetOperation = false
+            if (autosaveTimeout) {
+                clearTimeout(autosaveTimeout)
+                autosaveTimeout = null
+            }
+        }
+
         if (state.waitingForUpdate) {
             state.waitingForUpdate = false
             state.inflightLocalState = undefined

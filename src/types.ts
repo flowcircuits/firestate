@@ -1,4 +1,5 @@
 import type {
+  CollectionReference,
   DocumentReference,
   Firestore,
   QueryConstraint,
@@ -73,18 +74,6 @@ export interface CollectionState<T> {
 }
 
 /**
- * A lazy-loaded value that can be activated on demand
- */
-export interface LazyValue<T> {
-  /** Current value */
-  value: T;
-  /** Activate the subscription */
-  load: () => void;
-  /** Whether data has been loaded */
-  loaded: boolean;
-}
-
-/**
  * Document handle returned by useDocument hook
  */
 export interface DocumentHandle<T extends FirestoreObject> {
@@ -107,8 +96,11 @@ export interface DocumentHandle<T extends FirestoreObject> {
   sync: () => Promise<void>;
   /** Error from listener, if any */
   error: Error | undefined;
-  /** Firestore document reference */
-  ref: DocumentReference<T>;
+  /**
+   * Firestore document reference. Undefined when the hook was called with
+   * `enabled: false` (no subscription was created).
+   */
+  ref: DocumentReference<T> | undefined;
 }
 
 /**
@@ -122,8 +114,14 @@ export interface CollectionHandle<T extends FirestoreObject> {
     diff: WithFieldValue<DeepPartial<Record<string, T>>>,
     options?: UpdateOptions
   ) => void;
-  /** Add a new document to the collection */
-  add: (id: string, data: Omit<T, "id">, options?: UpdateOptions) => void;
+  /**
+   * Add a new document to the collection. Either pass an explicit `id`, or
+   * omit it to have Firestore generate an auto-id (returned synchronously).
+   */
+  add: {
+    (id: string, data: Omit<T, "id">, options?: UpdateOptions): string;
+    (data: Omit<T, "id">, options?: UpdateOptions): string;
+  };
   /** Remove a document from the collection */
   remove: (id: string, options?: UpdateOptions) => void;
   /** Whether initial data is loading */
@@ -138,6 +136,11 @@ export interface CollectionHandle<T extends FirestoreObject> {
   sync: () => Promise<void>;
   /** Error from listener, if any */
   error: Error | undefined;
+  /**
+   * Firestore collection reference. Undefined when the hook was called with
+   * `enabled: false` (no subscription was created).
+   */
+  ref: CollectionReference<T> | undefined;
 }
 
 /**

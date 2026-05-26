@@ -396,7 +396,7 @@ Subscribe to a collection.
 const {
     data,           // Record<string, T> of documents
     update,         // Update one or more documents
-    add,            // Add a new document
+    add,            // Add a new document (explicit or auto-generated id)
     remove,         // Remove a document
     isLoading,      // Whether initial data is loading
     isSynced,       // Whether all changes are synced
@@ -404,6 +404,7 @@ const {
     load,           // Activate a lazy subscription
     sync,           // Force sync immediately
     error,          // Error from listener, if any
+    ref,            // Firestore CollectionReference
 } = useCollection({
     definition: spacesCollection,
     params: { projectId: '123' },
@@ -414,26 +415,14 @@ const {
 // Update existing documents
 update({ space1: { name: 'Updated Name' } })
 
-// Add a new document
+// Add a new document with an explicit id
 add('newSpaceId', { name: 'New Space', area: 500, floor: 1 })
+
+// Or let Firestore generate the id — returned synchronously
+const id = add({ name: 'New Space', area: 500, floor: 1 })
 
 // Remove a document
 remove('oldSpaceId')
-```
-
-#### `useLazyCollection(options)`
-
-Get a lazy-loadable collection value.
-
-```typescript
-const spaces = useLazyCollection({
-    definition: spacesCollection,
-    params: { projectId: '123' },
-})
-
-// spaces.value - current data
-// spaces.load() - activate subscription
-// spaces.loaded - whether data is loaded
 ```
 
 #### `useUndoManager()`
@@ -582,6 +571,14 @@ if (isDiffEmpty(diff)) return
 // Merge two diffs (second takes precedence)
 const combined = mergeDiffs(diff1, diff2)
 ```
+
+## Notes
+
+- **`enabled` flag** — pass `enabled: false` to `useDocument`/`useCollection` to skip the subscription when params aren't ready (e.g., during a route transition).
+- **Navigation flicker** — changing `params` rebuilds the listener and briefly shows `isLoading: true`. To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
+- **No cross-doc transactions** — writes are atomic per document and per collection (via `writeBatch`), but not across them. For now, use Firestore's `runTransaction` directly via `handle.ref`.
+- **Per-client undo** — `useUndoManager` is local; one user's undo doesn't propagate to others.
+- **Multi-tab sync** — handled automatically by Firestore's listeners; no extra setup.
 
 ## Advanced Usage
 

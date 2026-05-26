@@ -159,6 +159,31 @@ describe('createStore', () => {
             expect(subscriber).not.toHaveBeenCalled()
         })
 
+        it('tracks multiple instances of the same resource independently', () => {
+            // Regression: previously, sync state was keyed only by resource
+            // path, so two subscriptions to the same path shared one entry
+            // and unmounting one would erase tracking for the other.
+            const store = createStore({
+                firestore: mockFirestore,
+            })
+
+            // Two instances of `doc:users/123`, distinguished by suffix.
+            const instanceA = 'doc:users/123#1'
+            const instanceB = 'doc:users/123#2'
+
+            store.reportSyncState(instanceA, false)
+            store.reportSyncState(instanceB, true)
+            expect(store.isSynced).toBe(false)
+
+            // Unmount instance B — A is still unsynced, so global stays false.
+            store.unregisterSyncState(instanceB)
+            expect(store.isSynced).toBe(false)
+
+            // A finally syncs — global flips to true.
+            store.reportSyncState(instanceA, true)
+            expect(store.isSynced).toBe(true)
+        })
+
         it('only notifies when sync state actually changes', () => {
             const store = createStore({
                 firestore: mockFirestore,

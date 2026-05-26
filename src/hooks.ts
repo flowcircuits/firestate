@@ -14,7 +14,6 @@ import type {
   DocumentDefinition,
   DocumentHandle,
   FirestoreObject,
-  LazyValue,
   UndoManager,
   UndoManagerState,
   UpdateOptions,
@@ -22,6 +21,47 @@ import type {
 import type { FirestateStore } from "./store";
 import { createDocumentSubscription } from "./document";
 import { createCollectionSubscription } from "./collection";
+
+/**
+ * Returned when a hook is called with `enabled: false`. Module-level constants
+ * so getSnapshot returns a stable reference and useSyncExternalStore doesn't
+ * re-render. Cast at the call site to the generic handle type — every method
+ * is a no-op so the cast is sound.
+ */
+const NOOP = () => {};
+const ASYNC_NOOP = async () => {};
+const EMPTY_RECORD: Record<string, never> = {};
+
+const DISABLED_DOCUMENT_HANDLE: DocumentHandle<FirestoreObject> = {
+  data: undefined,
+  update: NOOP,
+  set: NOOP,
+  delete: NOOP,
+  isLoading: false,
+  isSynced: true,
+  sync: ASYNC_NOOP,
+  error: undefined,
+  ref: undefined,
+};
+
+// The disabled add() satisfies both overloads (it returns a string id) but
+// performs no work; consumers using `enabled: false` should not be calling
+// mutation methods on the disabled handle.
+const DISABLED_ADD = () => "";
+
+const DISABLED_COLLECTION_HANDLE: CollectionHandle<FirestoreObject> = {
+  data: EMPTY_RECORD,
+  update: NOOP,
+  add: DISABLED_ADD,
+  remove: NOOP,
+  isLoading: false,
+  isSynced: true,
+  isActive: false,
+  load: NOOP,
+  sync: ASYNC_NOOP,
+  error: undefined,
+  ref: undefined,
+};
 
 /**
  * Context for providing the Firestate store
@@ -103,16 +143,26 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
   readOnly?: boolean;
   /** Enable undo/redo for this document (default: true) */
   undoable?: boolean;
+  /**
+   * If false, no subscription is created and a no-op handle is returned
+   * (`{ data: undefined, isLoading: false, isSynced: true, ref: undefined }`).
+   * Use this to gate subscriptions on route params that aren't ready yet.
+   * Default: true.
+   */
+  enabled?: boolean;
 }
 
 /**
  * Hook to subscribe to a Firestore document with real-time updates.
  *
  * The subscription is keyed on the resolved document path (`definition` +
- * computed id). When that key changes — typically because `params` produces a
- * different id — the hook tears down the old Firestore listener and attaches
- * a new one. Toggling `undoable` does not rebuild the subscription; toggling
- * `readOnly` does.
+ * computed id) and `readOnly`. When that key changes — typically because
+ * `params` produces a different id — the hook tears down the old Firestore
+ * listener and attaches a new one. Toggling `undoable` does not rebuild the
+ * subscription.
+ *
+ * Use `enabled: false` to suppress the subscription entirely (e.g., when
+ * route params aren't ready yet).
  *
  * **SSR.** On the server there is no Firestore listener, so this hook returns
  * the initial handle (`{ data: undefined, isLoading: true }`). Mutations like
@@ -146,7 +196,13 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
 export const useDocument = <TData extends FirestoreObject>(
   options: UseDocumentOptions<TData>
 ): DocumentHandle<TData> => {
-  const { definition, params = {}, readOnly, undoable = true } = options;
+  const {
+    definition,
+    params = {},
+    readOnly,
+    undoable = true,
+    enabled = true,
+  } = options;
   const store = useStore();
   const undoManager = store.undoManager;
 
@@ -168,30 +224,32 @@ export const useDocument = <TData extends FirestoreObject>(
     [undoManager]
   );
 
-  // Hold the latest params in a ref so the useMemo factory below can read
-  // them without `params` (typically an inline object with unstable ref)
-  // appearing in the deps. The key is derived from params via the resolved
-  // id below, which IS stable when the content is stable.
-  const paramsRef = useRef(params);
-  paramsRef.current = params;
-
-  const docId =
-    typeof definition.id === "function" ? definition.id(params) : definition.id;
+  // Resolve the doc id at render time. When disabled we skip resolution —
+  // consumers commonly pass `enabled: false` precisely because params aren't
+  // ready and definition.id(params) would fail.
+  const docId = enabled
+    ? typeof definition.id === "function"
+      ? definition.id(params)
+      : definition.id
+    : undefined;
 
   const subscription = useMemo(
     () =>
-      createDocumentSubscription({
-        store,
-        definition,
-        params: paramsRef.current,
-        readOnly,
-        onPushUndo,
-      }),
-    [store, definition, docId, readOnly, onPushUndo]
+      enabled && docId !== undefined
+        ? createDocumentSubscription({
+            store,
+            definition,
+            docId,
+            readOnly,
+            onPushUndo,
+          })
+        : null,
+    [enabled, store, definition, docId, readOnly, onPushUndo]
   );
 
   const subscribe = useCallback(
     (onChange: () => void) => {
+      if (!subscription) return NOOP;
       const unsub = subscription.subscribe(() => onChange());
       subscription.start();
       return () => {
@@ -202,11 +260,15 @@ export const useDocument = <TData extends FirestoreObject>(
     [subscription]
   );
 
-  return useSyncExternalStore(
-    subscribe,
-    subscription.getHandle,
-    subscription.getHandle
+  const getSnapshot = useCallback(
+    () =>
+      subscription
+        ? subscription.getHandle()
+        : (DISABLED_DOCUMENT_HANDLE as DocumentHandle<TData>),
+    [subscription]
   );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 };
 
 /**
@@ -223,6 +285,12 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
   queryConstraints?: QueryConstraint[];
   /** Enable undo/redo for this collection (default: true) */
   undoable?: boolean;
+  /**
+   * If false, no subscription is created and a no-op handle is returned
+   * (`{ data: {}, isLoading: false, isActive: false }`). Use this to gate on
+   * route params that aren't ready yet. Default: true.
+   */
+  enabled?: boolean;
 }
 
 /**
@@ -236,6 +304,9 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * **Memoize `queryConstraints`.** An inline array (`queryConstraints={[where(...)]}`)
  * creates a new reference every render, which will thrash the listener.
  * Wrap in `useMemo` with the underlying filter values as deps.
+ *
+ * Use `enabled: false` to suppress the subscription entirely (e.g., when
+ * route params aren't ready yet).
  *
  * **SSR.** On the server there is no Firestore listener, so this hook returns
  * the initial handle (`{ data: {}, isLoading: true }` for non-lazy, or
@@ -279,6 +350,7 @@ export const useCollection = <TData extends FirestoreObject>(
     readOnly,
     queryConstraints,
     undoable = true,
+    enabled = true,
   } = options;
   const store = useStore();
   const undoManager = store.undoManager;
@@ -298,31 +370,43 @@ export const useCollection = <TData extends FirestoreObject>(
     [undoManager]
   );
 
-  const paramsRef = useRef(params);
-  paramsRef.current = params;
-
-  const collectionPath =
-    typeof definition.path === "function"
+  // Resolve the collection path at render time. When disabled we skip
+  // resolution — consumers commonly pass `enabled: false` precisely because
+  // params aren't ready.
+  const collectionPath = enabled
+    ? typeof definition.path === "function"
       ? definition.path(params)
-      : definition.path;
+      : definition.path
+    : undefined;
 
   const subscription = useMemo(
     () =>
-      createCollectionSubscription({
-        store,
-        definition,
-        params: paramsRef.current,
-        readOnly,
-        queryConstraints,
-        onPushUndo,
-      }),
-    [store, definition, collectionPath, readOnly, queryConstraints, onPushUndo]
+      enabled && collectionPath !== undefined
+        ? createCollectionSubscription({
+            store,
+            definition,
+            collectionPath,
+            readOnly,
+            queryConstraints,
+            onPushUndo,
+          })
+        : null,
+    [
+      enabled,
+      store,
+      definition,
+      collectionPath,
+      readOnly,
+      queryConstraints,
+      onPushUndo,
+    ]
   );
 
   const isLazy = definition.lazy ?? false;
 
   const subscribe = useCallback(
     (onChange: () => void) => {
+      if (!subscription) return NOOP;
       const unsub = subscription.subscribe(() => onChange());
       if (!isLazy) {
         subscription.load();
@@ -335,45 +419,15 @@ export const useCollection = <TData extends FirestoreObject>(
     [subscription, isLazy]
   );
 
-  return useSyncExternalStore(
-    subscribe,
-    subscription.getHandle,
-    subscription.getHandle
+  const getSnapshot = useCallback(
+    () =>
+      subscription
+        ? subscription.getHandle()
+        : (DISABLED_COLLECTION_HANDLE as CollectionHandle<TData>),
+    [subscription]
   );
-};
 
-/**
- * Hook to create a lazy-loadable collection value.
- * Useful for deferring expensive collection subscriptions.
- *
- * @example
- * ```tsx
- * const spaces = useLazyCollection({
- *   definition: spacesCollection,
- *   params: { projectId },
- * })
- *
- * // Somewhere in the UI
- * <LazyComponent
- *   value={spaces.value}
- *   onLoad={spaces.load}
- *   loaded={spaces.loaded}
- * />
- * ```
- */
-export const useLazyCollection = <TData extends FirestoreObject>(
-  options: UseCollectionOptions<TData>
-): LazyValue<Record<string, TData>> => {
-  const handle = useCollection(options);
-
-  return useMemo(
-    () => ({
-      value: handle.data,
-      load: handle.load,
-      loaded: handle.isActive && !handle.isLoading,
-    }),
-    [handle.data, handle.load, handle.isActive, handle.isLoading]
-  );
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 };
 
 /**
