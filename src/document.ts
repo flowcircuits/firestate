@@ -65,7 +65,6 @@ interface DocumentInternalState<T extends FirestoreObject> {
     error: Error | undefined
     waitingForUpdate: boolean
     inflightLocalState: T | null | undefined
-    pendingUndoOptions: UpdateOptions | undefined
     /** Whether the pending operation is a full set (create/replace) vs a partial update */
     isSetOperation: boolean
 }
@@ -143,7 +142,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         error: undefined,
         waitingForUpdate: false,
         inflightLocalState: undefined,
-        pendingUndoOptions: undefined,
         isSetOperation: false,
     }
 
@@ -202,8 +200,28 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
         const newLocalState = deepClone(currentData)
         applyDiffMutable(newLocalState, diff as Record<string, unknown>)
+
+        // Push undo eagerly against the pre-mutation state. Cmd+Z within the
+        // autosave window pops this entry, applies the inverse via updateState,
+        // and the sync() no-op shortcut absorbs the resulting same-as-syncState
+        // case without a Firestore write.
+        if (undoOptions?.undoable !== false && onPushUndo) {
+            const undoDiff = computeDiff(
+                newLocalState as FirestoreObject,
+                currentData as FirestoreObject
+            )
+            const redoDiff = computeDiff(
+                currentData as FirestoreObject,
+                newLocalState as FirestoreObject
+            )
+            onPushUndo(
+                () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                () => updateState(redoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                undoOptions
+            )
+        }
+
         state.localState = newLocalState
-        state.pendingUndoOptions = undoOptions
         state.isSetOperation = false
 
         notify()
@@ -213,8 +231,31 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const setData = (data: TData, undoOptions: UpdateOptions = {}) => {
         if (isReadOnly) return
 
+        const currentData = getMergedData()
+
+        // Push undo eagerly. A set against undefined data is a creation;
+        // its undo is a delete. Otherwise we restore the prior snapshot via
+        // setData, which is symmetric and handles full-replace semantics
+        // (including field removals) correctly.
+        if (undoOptions?.undoable !== false && onPushUndo) {
+            const dataForRedo = deepClone(data)
+            if (currentData === undefined) {
+                onPushUndo(
+                    () => deleteDocument({ undoable: false }),
+                    () => setData(dataForRedo, { undoable: false }),
+                    undoOptions
+                )
+            } else {
+                const dataToRestore = deepClone(currentData)
+                onPushUndo(
+                    () => setData(dataToRestore, { undoable: false }),
+                    () => setData(dataForRedo, { undoable: false }),
+                    undoOptions
+                )
+            }
+        }
+
         state.localState = deepClone(data)
-        state.pendingUndoOptions = undoOptions
         state.isSetOperation = true
 
         notify()
@@ -228,10 +269,8 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // Nothing to delete — bail rather than queueing a no-op deleteDoc.
         if (currentData === undefined) return
 
-        // Push undo action against the pre-delete data (which includes any
-        // pending local edits at this moment). Symmetric with set/update,
-        // even though those defer their undo push until sync() time: deletes
-        // know their full pre-image immediately, so there's no reason to wait.
+        // Push undo against the pre-delete data (which includes any pending
+        // local edits at this moment).
         if (undoOptions?.undoable !== false && onPushUndo) {
             const dataToRestore = deepClone(currentData)
             onPushUndo(
@@ -244,7 +283,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // Mark localState as a pending delete and let scheduleAutosave drive
         // the actual deleteDoc call — same flow as set/update.
         state.localState = null
-        state.pendingUndoOptions = undefined
         state.isSetOperation = false
 
         notify()
@@ -266,10 +304,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         if (state.localState === undefined) return
 
         // Pending delete — issue deleteDoc and let the listener confirm via
-        // handleMissingDocument. The undo was already pushed at delete() time.
+        // handleMissingDocument. Undo was already pushed at mutation time.
         if (state.localState === null) {
             state.inflightLocalState = null
-            state.pendingUndoOptions = undefined
             state.waitingForUpdate = true
 
             try {
@@ -289,7 +326,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             return
         }
 
-        // No-op if local state already matches what the server holds.
+        // No-op if local state already matches what the server holds. This is
+        // the path that an undo-of-pending-local takes: the inverse update
+        // brings localState back to syncState, and we exit without a write.
         if (state.syncState && isDeepEqual(state.localState, state.syncState)) {
             state.localState = undefined
             state.inflightLocalState = undefined
@@ -303,7 +342,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // A creation occurs when there's no server state to diff against —
         // either the user explicitly called set() to create the document, or
         // the listener has reported the doc as missing. In both cases we use
-        // setDoc and push a creation-aware undo (delete to undo, set to redo).
+        // setDoc.
         const isCreation = !state.syncState
         const useSetDoc = wasSetOperation || isCreation
 
@@ -312,29 +351,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             : undefined
 
         state.inflightLocalState = deepClone(state.localState)
-        const currentUndoOptions = state.pendingUndoOptions
-        state.pendingUndoOptions = undefined
-
-        // Push undo action if enabled
-        if (currentUndoOptions?.undoable !== false && onPushUndo) {
-            if (isCreation) {
-                // Undo a creation by deleting the doc; redo by setting it
-                // again with the data that was just written.
-                const dataForRedo = deepClone(state.localState)
-                onPushUndo(
-                    () => deleteDocument({ undoable: false }),
-                    () => setData(dataForRedo, { undoable: false }),
-                    currentUndoOptions
-                )
-            } else if (diff) {
-                const undoDiff = computeDiff(state.localState, state.syncState!)
-                onPushUndo(
-                    () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                    () => updateState(diff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                    currentUndoOptions
-                )
-            }
-        }
 
         state.waitingForUpdate = true
 
@@ -434,7 +450,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // it from scratch.
         if (state.localState === null) {
             state.localState = undefined
-            state.pendingUndoOptions = undefined
             state.isSetOperation = false
             if (autosaveTimeout) {
                 clearTimeout(autosaveTimeout)

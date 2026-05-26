@@ -63,7 +63,6 @@ interface CollectionInternalState<T extends FirestoreObject> {
     error: Error | undefined
     waitingForUpdate: boolean
     inflightLocalState: Record<string, T> | undefined
-    pendingUndoOptions: UpdateOptions | undefined
 }
 
 /**
@@ -139,7 +138,6 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         error: undefined,
         waitingForUpdate: false,
         inflightLocalState: undefined,
-        pendingUndoOptions: undefined,
     }
 
     const subscribers = new Set<Subscriber<CollectionState<TData>>>()
@@ -209,8 +207,27 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             }
         }
 
+        // Push undo eagerly against the pre-mutation snapshot. Cmd+Z within
+        // the autosave window pops this entry, applies the inverse via
+        // updateState, and the sync() no-op shortcut absorbs the resulting
+        // same-as-syncState case without a Firestore write.
+        if (undoOptions?.undoable !== false && onPushUndo) {
+            const undoDiff = computeDiff(
+                newLocalState as FirestoreObject,
+                currentData as FirestoreObject
+            )
+            const redoDiff = computeDiff(
+                currentData as FirestoreObject,
+                newLocalState as FirestoreObject
+            )
+            onPushUndo(
+                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                undoOptions
+            )
+        }
+
         state.localState = newLocalState
-        state.pendingUndoOptions = undoOptions
 
         notify()
         scheduleAutosave()
@@ -254,8 +271,24 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const newLocalState = deepClone(currentData)
         newLocalState[id] = { ...data, id } as unknown as TData
 
+        // Push undo eagerly. Inverse diff deletes the just-added doc.
+        if (undoOptions?.undoable !== false && onPushUndo) {
+            const undoDiff = computeDiff(
+                newLocalState as FirestoreObject,
+                currentData as FirestoreObject
+            )
+            const redoDiff = computeDiff(
+                currentData as FirestoreObject,
+                newLocalState as FirestoreObject
+            )
+            onPushUndo(
+                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                undoOptions
+            )
+        }
+
         state.localState = newLocalState
-        state.pendingUndoOptions = undoOptions
 
         notify()
         scheduleAutosave()
@@ -276,8 +309,24 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const newLocalState = deepClone(currentData)
         delete newLocalState[id]
 
+        // Push undo eagerly. Inverse diff re-adds the removed doc.
+        if (undoOptions?.undoable !== false && onPushUndo) {
+            const undoDiff = computeDiff(
+                newLocalState as FirestoreObject,
+                currentData as FirestoreObject
+            )
+            const redoDiff = computeDiff(
+                currentData as FirestoreObject,
+                newLocalState as FirestoreObject
+            )
+            onPushUndo(
+                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                undoOptions
+            )
+        }
+
         state.localState = newLocalState
-        state.pendingUndoOptions = undoOptions
 
         notify()
         scheduleAutosave()
@@ -315,22 +364,6 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             state.localState as FirestoreObject
         )
         state.inflightLocalState = deepClone(state.localState)
-        const currentUndoOptions = state.pendingUndoOptions
-        state.pendingUndoOptions = undefined
-
-        // Push undo action if enabled
-        if (currentUndoOptions?.undoable !== false && onPushUndo) {
-            const undoDiff = computeDiff(
-                state.localState as FirestoreObject,
-                syncState as FirestoreObject
-            )
-            const redoDiff = diff
-            onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                currentUndoOptions
-            )
-        }
 
         state.waitingForUpdate = true
 
