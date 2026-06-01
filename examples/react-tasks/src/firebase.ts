@@ -1,15 +1,23 @@
 import { initializeApp } from 'firebase/app'
 import { getFirestore } from 'firebase/firestore'
 
-// Replace with your Firebase project configuration
-// Get this from: Firebase Console > Project Settings > Your apps > Config
+function requireEnv(name: keyof ImportMetaEnv): string {
+  const value = import.meta.env[name]
+  if (!value) {
+    throw new Error(
+      `Missing ${name}. Copy .env.example to .env and add your Firebase web app config.`,
+    )
+  }
+  return value
+}
+
 const firebaseConfig = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT_ID.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT_ID.appspot.com',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
+  apiKey: requireEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: requireEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: requireEnv('VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: requireEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: requireEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: requireEnv('VITE_FIREBASE_APP_ID'),
 }
 
 const app = initializeApp(firebaseConfig)

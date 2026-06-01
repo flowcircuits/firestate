@@ -22,29 +22,30 @@ A simple task manager demonstrating Firestate's key features in a React applicat
    - Click "Create database"
    - Start in test mode for development
 
-### 2. Get Your Firebase Config
+### 2. Add Firebase Config via .env
 
 1. In Firebase Console, go to Project Settings (gear icon)
 2. Scroll down to "Your apps"
 3. Click "Add app" and select Web (</>)
-4. Register your app and copy the config object
+4. Register your app and copy the config values
+5. Copy the example env file and fill in your credentials:
 
-### 3. Update Firebase Config
-
-Edit `src/firebase.ts` and replace the placeholder config with your values:
-
-```typescript
-const firebaseConfig = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'your-project.firebaseapp.com',
-  projectId: 'your-project',
-  storageBucket: 'your-project.appspot.com',
-  messagingSenderId: '123456789',
-  appId: '1:123456789:web:abcdef123456',
-}
+```bash
+cp .env.example .env
 ```
 
-### 4. Install Dependencies and Run
+Edit `.env` (gitignored) with your Firebase web app config:
+
+```bash
+VITE_FIREBASE_API_KEY=your-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project
+VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=123456789
+VITE_FIREBASE_APP_ID=1:123456789:web:abcdef123456
+```
+
+### 3. Install Dependencies and Run
 
 ```bash
 # Install dependencies
@@ -74,7 +75,7 @@ Open the app in multiple browser tabs to see real-time synchronization in action
 
 ```
 src/
-├── firebase.ts    # Firebase initialization
+├── firebase.ts    # Firebase initialization (reads from .env)
 ├── schemas.ts     # Firestate schema definitions
 ├── App.tsx        # Main React component
 └── main.tsx       # React entry point
