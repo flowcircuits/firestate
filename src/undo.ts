@@ -30,21 +30,36 @@ export interface UndoManagerConfig {
  */
 export const createUndoManager = (
     config: UndoManagerConfig = {}
-): UndoManager & { subscribe: (fn: Subscriber<UndoManagerState>) => Unsubscribe } => {
+): UndoManager & {
+    subscribe: (fn: Subscriber<UndoManagerState>) => Unsubscribe
+    getState: () => UndoManagerState
+} => {
     const { maxLength = 20, onNavigate } = config
 
     let undoStack: UndoAction[] = []
     let redoStack: UndoAction[] = []
     const subscribers = new Set<Subscriber<UndoManagerState>>()
+    // Cached snapshot — returns the same reference until notify() invalidates
+    // it. Required so React's useSyncExternalStore consumers (useUndoManager)
+    // see a stable snapshot across the multiple getSnapshot() calls React
+    // makes per commit; otherwise the inequality on Object.is triggers an
+    // infinite re-render and the "getSnapshot should be cached" warning.
+    let cachedState: UndoManagerState | null = null
 
-    const getState = (): UndoManagerState => ({
-        undoStack,
-        redoStack,
-        canUndo: undoStack.length > 0,
-        canRedo: redoStack.length > 0,
-    })
+    const getState = (): UndoManagerState => {
+        if (cachedState === null) {
+            cachedState = {
+                undoStack,
+                redoStack,
+                canUndo: undoStack.length > 0,
+                canRedo: redoStack.length > 0,
+            }
+        }
+        return cachedState
+    }
 
     const notify = () => {
+        cachedState = null
         const state = getState()
         subscribers.forEach((fn) => fn(state))
     }
@@ -170,6 +185,7 @@ export const createUndoManager = (
         redo,
         clear,
         subscribe,
+        getState,
     }
 }
 

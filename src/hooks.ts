@@ -92,13 +92,12 @@ export const useUndoManager = (): UndoManager => {
     [undoManager]
   );
 
+  // Delegate to the manager's cached snapshot so getSnapshot returns a stable
+  // reference across React's multiple per-commit calls. Building the snapshot
+  // inline here would create a new object every call and trip the
+  // "getSnapshot should be cached" warning + an infinite re-render loop.
   const getSnapshot = useCallback(
-    (): UndoManagerState => ({
-      undoStack: undoManager.undoStack,
-      redoStack: undoManager.redoStack,
-      canUndo: undoManager.canUndo,
-      canRedo: undoManager.canRedo,
-    }),
+    (): UndoManagerState => undoManager.getState(),
     [undoManager]
   );
 
