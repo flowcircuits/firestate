@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Production / build
+dist/
+
+archive/
+public/
+data/
+storybook-static/
+isolate/
+firebase_export/
+.astro/
+
+# Testing / coverage
+coverage/
+
+# Logs
+*.log
+
+# Runtime data
+pnpm-lock.yaml
+firebase-export-*.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

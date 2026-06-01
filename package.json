@@ -37,6 +37,7 @@
     "devDependencies": {
         "@types/react": "^18.3.12",
         "firebase": "^11.1.0",
+        "prettier": "^3.8.3",
         "react": "^18.3.1",
         "tsdown": "^0.20.0-beta.3",
         "typescript": "^5.7.2",
