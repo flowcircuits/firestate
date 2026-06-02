@@ -247,4 +247,53 @@ describe('createStore', () => {
             expect(value).toBe('new')
         })
     })
+
+    describe('setOnError (runtime handler swap)', () => {
+        // FirestateProvider depends on this so that an inline onError prop
+        // (new reference per render) can be applied without recreating the
+        // store and tearing down every subscription.
+        it('directs subsequent errors to the swapped-in handler', () => {
+            const initial = vi.fn()
+            const next = vi.fn()
+            const store = createStore({
+                firestore: {} as never,
+                onError: initial,
+            })
+            const ctx = {
+                type: 'document' as const,
+                path: 'projects/p1',
+                operation: 'read' as const,
+            }
+
+            store.reportError(new Error('first'), ctx)
+            expect(initial).toHaveBeenCalledOnce()
+            expect(next).not.toHaveBeenCalled()
+
+            store.setOnError(next)
+            store.reportError(new Error('second'), ctx)
+            expect(initial).toHaveBeenCalledOnce()
+            expect(next).toHaveBeenCalledOnce()
+        })
+
+        it('reverts to console.error when cleared with undefined', () => {
+            const initial = vi.fn()
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+            const store = createStore({
+                firestore: {} as never,
+                onError: initial,
+            })
+            const ctx = {
+                type: 'document' as const,
+                path: 'p/x',
+                operation: 'read' as const,
+            }
+
+            store.setOnError(undefined)
+            store.reportError(new Error('after clear'), ctx)
+
+            expect(initial).not.toHaveBeenCalled()
+            expect(consoleSpy).toHaveBeenCalled()
+            consoleSpy.mockRestore()
+        })
+    })
 })

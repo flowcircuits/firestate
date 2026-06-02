@@ -419,4 +419,74 @@ describe('createUndoManager', () => {
             expect(value).toBe('new')
         })
     })
+
+    describe('snapshot caching (regression for the useSyncExternalStore loop)', () => {
+        // Background: `useUndoManager` used to build a fresh snapshot object on
+        // every getSnapshot() call. React calls getSnapshot multiple times per
+        // commit and compares with Object.is — fresh objects fail the check
+        // and trigger an infinite re-render. We now cache the snapshot at the
+        // manager level and invalidate it inside notify(). These tests pin
+        // that invariant.
+
+        it('getState() returns the same identity across consecutive calls', () => {
+            const manager = createUndoManager()
+            const a = manager.getState()
+            const b = manager.getState()
+            const c = manager.getState()
+            expect(b).toBe(a)
+            expect(c).toBe(a)
+        })
+
+        it('getState() returns a new identity after push()', () => {
+            const manager = createUndoManager()
+            const before = manager.getState()
+            manager.push({ undo: vi.fn(), redo: vi.fn() })
+            const after = manager.getState()
+            expect(after).not.toBe(before)
+            expect(after.canUndo).toBe(true)
+        })
+
+        it('getState() returns a new identity after undo()', async () => {
+            const manager = createUndoManager()
+            manager.push({ undo: vi.fn(), redo: vi.fn() })
+            const before = manager.getState()
+            await manager.undo()
+            const after = manager.getState()
+            expect(after).not.toBe(before)
+            expect(after.canUndo).toBe(false)
+            expect(after.canRedo).toBe(true)
+        })
+
+        it('getState() returns a new identity after redo()', async () => {
+            const manager = createUndoManager()
+            manager.push({ undo: vi.fn(), redo: vi.fn() })
+            await manager.undo()
+            const before = manager.getState()
+            await manager.redo()
+            const after = manager.getState()
+            expect(after).not.toBe(before)
+            expect(after.canUndo).toBe(true)
+        })
+
+        it('getState() returns a new identity after clear()', () => {
+            const manager = createUndoManager()
+            manager.push({ undo: vi.fn(), redo: vi.fn() })
+            const before = manager.getState()
+            manager.clear()
+            const after = manager.getState()
+            expect(after).not.toBe(before)
+            expect(after.canUndo).toBe(false)
+        })
+
+        it('getState() returns a new identity after group merge in push()', () => {
+            const manager = createUndoManager()
+            manager.push({ undo: vi.fn(), redo: vi.fn(), groupId: 'g1' })
+            const beforeMerge = manager.getState()
+            manager.push({ undo: vi.fn(), redo: vi.fn(), groupId: 'g1' })
+            const afterMerge = manager.getState()
+            expect(afterMerge).not.toBe(beforeMerge)
+            // Still one entry in the stack (merged).
+            expect(afterMerge.undoStack).toHaveLength(1)
+        })
+    })
 })
