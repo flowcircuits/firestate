@@ -170,36 +170,66 @@ describe('createDocumentSubscription', () => {
     })
 
     describe('rebase: local edit during inflight write', () => {
-        it('preserves local edits made between sync start and snapshot return', async () => {
-            mockFirestore.seed('notes/n1', { body: 'server' })
+        // Synchronous mock listener delivery is too eager to exercise the
+        // rebase branch — the listener fires inside updateDoc, before any
+        // follow-up `update()` call has a chance to mutate localState. We
+        // defer listener delivery, queue the follow-up edit while sync is
+        // resolved but the snapshot is pending, then flush. That's the
+        // sequence that drives handleSnapshot down the rebase path.
+        it('rebases a local edit issued while a write was in flight', async () => {
+            interface NoteWithMeta extends Record<string, unknown> {
+                body: string
+                note?: string
+            }
+            const metaDoc = defineDocument<NoteWithMeta>({
+                collection: 'notes',
+                id: 'n1',
+            })
+
+            mockFirestore.seed('notes/n1', { body: 'server', note: 'orig' })
             const store = createStore({
                 firestore: mockFirestore.firestore,
-                autosave: 50,
+                autosave: 1000,
             })
-            const sub = createDocumentSubscription({
-                store,
-                definition: noteDoc,
-            })
+            const sub = createDocumentSubscription({ store, definition: metaDoc })
             sub.load()
             await vi.advanceTimersByTimeAsync(0)
 
+            // First edit: change body. Sync this immediately — it's the
+            // "in-flight" write whose snapshot we want to delay.
             sub.getHandle().update({ body: 'local-1' })
 
-            // Begin the sync flush (would normally be awaited).
+            mockFirestore.setDeferListenerFires(true)
             const syncPromise = sub.sync()
+            // updateDoc has now mutated mock state.data to {body:'local-1',
+            // note:'orig'}, and queued the listener fire instead of running it.
 
-            // Issue another local edit while the write is "in flight".
-            sub.getHandle().update({ body: 'local-2' })
+            // Second edit: change a DIFFERENT field. With sync delivery this
+            // edit would be applied AFTER the snapshot cleared localState; now
+            // it lands while inflightLocalState is still {body:'local-1',
+            // note:'orig'} and the snapshot hasn't arrived.
+            sub.getHandle().update({ note: 'rebased' })
 
             await syncPromise
 
-            // The first write committed "local-1" to the mock; the snapshot
-            // listener then fired with that value, but the lib rebased the
-            // pending "local-2" edit on top.
-            expect(sub.getState().data).toEqual({ body: 'local-2' })
-            // Pending edit should be flushed on the next autosave cycle.
-            await vi.advanceTimersByTimeAsync(50)
-            expect(mockFirestore.getDoc('notes/n1')).toEqual({ body: 'local-2' })
+            // Inflight: {body:'local-1', note:'orig'}. Current local:
+            // {body:'local-1', note:'rebased'}. Snapshot data (about to be
+            // delivered): {body:'local-1', note:'orig'}. The rebase branch
+            // should compute the diff (note: 'orig' → 'rebased') and apply
+            // it on top of the new sync state.
+            mockFirestore.flushListeners()
+            mockFirestore.setDeferListenerFires(false)
+
+            // syncState now reflects 'local-1'/'orig' (the write). localState
+            // must be the rebased {body:'local-1', note:'rebased'} — proving
+            // the rebase branch ran. If it had taken the `else { localState =
+            // undefined }` path instead, mergedData would equal syncState
+            // ({note:'orig'}) and the assertion below would fail.
+            expect(sub.getState().data).toEqual({
+                body: 'local-1',
+                note: 'rebased',
+            })
+            expect(sub.getState().isSynced).toBe(false)
         })
     })
 })

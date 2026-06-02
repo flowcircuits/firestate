@@ -87,6 +87,13 @@ const state = {
     data: new Map<string, Record<string, unknown>>(),
     listeners: new Set<Listener>(),
     autoIdSeq: 0,
+    // When true, listener fires triggered by mutations are queued instead of
+    // delivered. Tests use this to interleave a second mutation between a
+    // sync's write and the resulting snapshot — exercising code paths (like
+    // handleSnapshot's rebase branch) that require the listener to fire AFTER
+    // a follow-up local edit.
+    deferFires: false,
+    pendingFires: new Set<Listener>(),
 }
 
 const FIRESTORE_INSTANCE = { __type: 'mock-firestore' } as const
@@ -280,6 +287,13 @@ const fireCollectionListener = (l: CollectionListener) => {
 }
 
 const fireListener = (l: Listener) => {
+    if (state.deferFires) {
+        // Queue with the listener as the key — multiple writes to the same
+        // path while deferred coalesce into one delivery, mirroring real
+        // Firestore's snapshot batching.
+        state.pendingFires.add(l)
+        return
+    }
     if (l.type === 'doc') fireDocListener(l)
     else fireCollectionListener(l)
 }
@@ -296,11 +310,15 @@ const notifyAffected = (docPaths: Iterable<string>) => {
         affectedDocPaths.add(p)
         affectedCollectionPaths.add(parentCollectionPath(p))
     }
-    for (const l of state.listeners) {
+    // Route through fireListener so deferred-fire mode (used by tests that
+    // need to interleave a follow-up mutation before the snapshot lands) is
+    // honored. Iterate a snapshot of the Set so listener-triggered re-subs
+    // during sync delivery don't get double-fired in this loop.
+    for (const l of [...state.listeners]) {
         if (l.type === 'doc' && affectedDocPaths.has(l.ref.path)) {
-            fireDocListener(l)
+            fireListener(l)
         } else if (l.type === 'collection' && affectedCollectionPaths.has(l.ref.path)) {
-            fireCollectionListener(l)
+            fireListener(l)
         }
     }
 }
@@ -699,10 +717,46 @@ export const mockFirestore = {
         return state.listeners.size
     },
 
+    /**
+     * Turn deferred-fire mode on/off. While on, mutations that would normally
+     * fire snapshot listeners synchronously instead queue the listeners — use
+     * `flushListeners()` to deliver. Lets tests interleave a second mutation
+     * between a write and its resulting snapshot.
+     */
+    setDeferListenerFires(deferred: boolean) {
+        state.deferFires = deferred
+    },
+
+    /**
+     * Deliver any listener fires queued while in deferred mode. Each pending
+     * listener is fired exactly once with the current state (matching real
+     * Firestore's batched-snapshot behavior). Does not change the deferred
+     * flag — call `setDeferListenerFires(false)` separately to resume sync
+     * delivery.
+     */
+    flushListeners() {
+        const toFire = [...state.pendingFires]
+        state.pendingFires.clear()
+        // Temporarily exit deferred mode while firing so any synchronous
+        // re-subscribes from the listener body don't get queued.
+        const wasDeferred = state.deferFires
+        state.deferFires = false
+        try {
+            for (const l of toFire) {
+                if (l.type === 'doc') fireDocListener(l)
+                else fireCollectionListener(l)
+            }
+        } finally {
+            state.deferFires = wasDeferred
+        }
+    },
+
     /** Reset everything: data, listeners, sequence, spy history. */
     reset() {
         state.data.clear()
         state.listeners.clear()
+        state.pendingFires.clear()
+        state.deferFires = false
         state.autoIdSeq = 0
         vi.clearAllMocks()
     },

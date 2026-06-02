@@ -9,10 +9,10 @@ import {
     useUndoKeyboardShortcuts,
     useUndoManager,
 } from './hooks'
-import { useUnsavedChangesBlocker } from './provider'
+import { FirestateProvider, useUnsavedChangesBlocker } from './provider'
 import { defineCollection, defineDocument } from './schema'
 import { mockFirestore } from './test-utils/firestore-mock'
-import { renderHookWithProvider, renderWithProvider } from './test-utils/render-helpers'
+import { renderHookWithProvider } from './test-utils/render-helpers'
 import { where } from 'firebase/firestore'
 
 vi.mock('firebase/firestore', async () => {
@@ -720,65 +720,87 @@ describe('useUndoKeyboardShortcuts', () => {
 // ---------------------------------------------------------------------------
 
 describe('FirestateProvider', () => {
-    it('keeps the same store across re-renders when only onError changes', () => {
-        // Inline onError changes reference every render; we must NOT recreate
-        // the store, otherwise every existing subscription is torn down.
-        const stores: unknown[] = []
-        const Reader: React.FC = () => {
-            const s = useStore()
-            stores.push(s)
-            return null
-        }
+    // Both tests below use `renderHook` with `initialProps` and rerender with
+    // *new* prop values so the provider actually receives a changing onError
+    // reference across renders. The earlier versions wrapped the provider in
+    // a closure that captured one onError, so rerenders kept the same ref —
+    // the protections being tested were never actually exercised.
 
-        const { rerender } = renderWithProvider(<Reader />, {
-            provider: { onError: () => {} },
+    // RTL renderHook's wrapper only receives { children }, so we can't thread
+    // initialProps through it directly. We stash the current onError in a
+    // closure variable that the wrapper reads each render. Reassigning the
+    // variable + rerendering gives the FirestateProvider a fresh onError
+    // reference per render — exactly the scenario the deps-exclusion was
+    // built for.
+    it('keeps the same store across re-renders when onError reference changes', () => {
+        // Failure mode: if onError leaks into the useMemo deps in provider.tsx,
+        // each render with a fresh arrow recreates the store and every active
+        // subscription is torn down.
+        let currentOnError: (e: Error, c: unknown) => void = () => {}
+        const Wrapper = ({ children }: { children: React.ReactNode }) => (
+            <FirestateProvider
+                firestore={mockFirestore.firestore}
+                onError={currentOnError}
+            >
+                {children}
+            </FirestateProvider>
+        )
+
+        const { result, rerender } = renderHook(() => useStore(), {
+            wrapper: Wrapper,
         })
-        rerender(<Reader />)
-        rerender(<Reader />)
 
-        expect(stores.length).toBeGreaterThan(1)
-        // All collected store references should be the same instance.
-        const first = stores[0]
-        for (const s of stores) expect(s).toBe(first)
+        const first = result.current
+        currentOnError = () => {} // brand-new arrow ref
+        rerender()
+        currentOnError = () => {}
+        rerender()
+        currentOnError = () => {}
+        rerender()
+
+        expect(result.current).toBe(first)
     })
 
-    it('routes errors to the latest onError after the inline ref changes', () => {
-        const handlers: Array<ReturnType<typeof vi.fn>> = []
-        const Reader: React.FC = () => {
-            const store = useStore()
-            // Stash so the test can call reportError directly.
-            ;(globalThis as { __store?: typeof store }).__store = store
-            return null
-        }
-
+    it('swaps the active onError handler when the prop changes', () => {
+        // Failure mode: if provider.tsx's `useEffect(() => store.setOnError(
+        // onError))` is removed, the store keeps invoking the handler it was
+        // constructed with even though the consumer passed a new one.
         const first = vi.fn()
         const second = vi.fn()
-        handlers.push(first, second)
-
-        const { rerender } = renderWithProvider(<Reader />, {
-            provider: { onError: first },
-        })
-
-        const store = (globalThis as { __store?: ReturnType<typeof useStore> })
-            .__store!
         const ctx = {
             type: 'document' as const,
             path: 'p/x',
             operation: 'read' as const,
         }
+
+        let currentOnError: typeof first = first
+        const Wrapper = ({ children }: { children: React.ReactNode }) => (
+            <FirestateProvider
+                firestore={mockFirestore.firestore}
+                onError={currentOnError}
+            >
+                {children}
+            </FirestateProvider>
+        )
+
+        const { result, rerender } = renderHook(() => useStore(), {
+            wrapper: Wrapper,
+        })
+
+        const store = result.current
         store.reportError(new Error('one'), ctx)
         expect(first).toHaveBeenCalledOnce()
+        expect(second).not.toHaveBeenCalled()
 
-        rerender(
-            // Same wrapper but with a different onError.
-            <Reader />
-        )
-        // Render alone doesn't swap — the provider needs to pass the new
-        // handler in via its prop. Re-render with explicit new provider.
-        renderWithProvider(<Reader />, { provider: { onError: second } })
-        const newStore = (globalThis as { __store?: ReturnType<typeof useStore> })
-            .__store!
-        newStore.reportError(new Error('two'), ctx)
+        currentOnError = second
+        rerender()
+
+        // Same store instance — the setOnError effect must have swapped the
+        // active handler in place.
+        expect(result.current).toBe(store)
+        store.reportError(new Error('two'), ctx)
+
+        expect(first).toHaveBeenCalledOnce() // still 1, NOT 2
         expect(second).toHaveBeenCalledOnce()
     })
 })
