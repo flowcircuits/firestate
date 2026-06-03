@@ -28,8 +28,31 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 - **Lazy loading**: Collections can defer subscription until needed
 - **Diff-based updates**: Only changed fields are sent to Firestore
 
+## Choosing an API
+
+Firestate exposes two layers. Pick one based on what you're building:
+
+- **`defineFirestate` + `doc` / `col`** (recommended for app code) — declare every Firestore thing in a single registry object; the library generates one typed React hook per entry. Path templates with `{name}` placeholders type-check the params at the call site:
+
+  ```ts
+  export const { useTaskList, useTasks } = defineFirestate({
+    taskList: doc<TaskList>('taskLists/{listId}'),
+    tasks:    col<Task>('taskLists/{listId}/tasks'),
+  })
+
+  // useTaskList({ listId }) — { listId: string } is required by the type system
+  ```
+
+- **`defineDocument` / `defineCollection` + `useDocument` / `useCollection`** (lower-level escape hatch) — write the path-derivation function yourself, use the standalone hooks. Reach for these when:
+  - your path doesn't fit the `{name}` template (computed from non-string state, conditional segments)
+  - you need the definition outside React (Node scripts, server-side, tests)
+  - your control flow doesn't fit a module-level registry
+
+Both layers share the same store, undo manager, sync semantics, and validation contract — the registry is a thin layer on top of the lower-level primitives. The path DSL today supports only `{name}` string placeholders with `Record<string, string>` params (the literal types are extracted automatically when the template is a string literal); per-entry param-typing is on the roadmap.
+
 ## Table of Contents
 
+- [Choosing an API](#choosing-an-api)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Examples](#examples)

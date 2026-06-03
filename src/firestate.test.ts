@@ -93,6 +93,44 @@ describe('interpolatePath', () => {
             interpolatePath('taskLists/{listId}/tasks', {})
         ).toThrow(/missing param "listId"/)
     })
+
+    it('throws on empty-string param values', () => {
+        // A `''` value would silently produce `taskLists//tasks` and crash
+        // deep in Firestore. Catch it at the boundary instead.
+        expect(() =>
+            interpolatePath('taskLists/{listId}/tasks', { listId: '' })
+        ).toThrow(/must not be an empty string/)
+    })
+})
+
+describe('template validation at registration time', () => {
+    it('rejects unclosed placeholders', () => {
+        expect(() => doc<TaskList>('taskLists/{listId/tasks')).toThrow(
+            /malformed placeholder/
+        )
+    })
+
+    it('rejects malformed placeholder names (hyphens, dots)', () => {
+        expect(() => doc<TaskList>('taskLists/{list-Id}')).toThrow(
+            /malformed placeholder/
+        )
+    })
+
+    it('rejects empty document collection or id segments', () => {
+        expect(() => doc<TaskList>('taskLists/')).toThrow(
+            /non-empty collection and id/
+        )
+        expect(() => doc<TaskList>('/listId')).toThrow(
+            /non-empty collection and id/
+        )
+    })
+
+    it('accepts well-formed placeholders including underscores', () => {
+        // Underscores in placeholder names should be fine.
+        expect(() =>
+            doc<TaskList>('projects/{project_id}')
+        ).not.toThrow()
+    })
 })
 
 describe('splitDocPath', () => {
@@ -229,6 +267,71 @@ describe('buildDocumentDefinition', () => {
         expect(() => collection({ revisionId: 'r1' })).toThrow(
             /missing param "projectId"/
         )
+    })
+})
+
+describe('type-level params extraction (probe)', () => {
+    // Compile-time probes so we can see what `ParamsOf` actually resolves to.
+    type _SingleParam = import('./firestate').ParamsOf<'taskLists/{listId}'>
+    type _NoParams = import('./firestate').ParamsOf<'settings'>
+    type _Multi = import('./firestate').ParamsOf<
+        'projects/{projectId}/revisions/{revisionId}'
+    >
+
+    // The next line errors if _SingleParam isn't `{ listId: string }`.
+    const _p1: _SingleParam = { listId: 'a' }
+    // Errors if _NoParams isn't `{}` (anything with no required keys).
+    const _p2: _NoParams = {}
+    // Errors if _Multi doesn't require both keys.
+    const _p3: _Multi = { projectId: 'a', revisionId: 'b' }
+    void _p1
+    void _p2
+    void _p3
+
+    it('exists (type-only probe)', () => {
+        expect(true).toBe(true)
+    })
+})
+
+describe('type-level params extraction', () => {
+    // These assertions are checked by tsc; vitest just verifies the
+    // wrapper function exists. `@ts-expect-error` errors the build if the
+    // line below does NOT produce a TS error, which is exactly what we
+    // want for "is this call signature actually enforced?".
+    it('requires the right param keys at call sites', () => {
+        function _typeTest() {
+            const api = defineFirestate({
+                taskList: doc<TaskList>('taskLists/{listId}'),
+                tasks: col<Task>('taskLists/{listId}/tasks'),
+                bare: col<Task>('settings'),
+            })
+
+            // Missing required param → error
+            // @ts-expect-error params object lacks `listId`
+            api.useTaskList({})
+
+            // Wrong key → error
+            // @ts-expect-error `wrongKey` is not part of the template
+            api.useTaskList({ wrongKey: 'a' })
+
+            // Calling with no args at all on a template that needs them → error
+            // @ts-expect-error template requires `listId`
+            api.useTaskList()
+
+            // Valid usage
+            api.useTaskList({ listId: 'a' })
+            api.useTasks({ listId: 'a' })
+
+            // Bare path (no placeholders) accepts no params
+            api.useBare()
+            api.useBare({})
+
+            // Options arg passes through
+            api.useTaskList({ listId: 'a' }, { enabled: false })
+        }
+        // Avoid 'declared but never used' on _typeTest.
+        void _typeTest
+        expect(true).toBe(true)
     })
 })
 
