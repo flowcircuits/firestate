@@ -204,8 +204,13 @@ export interface DocumentDefinition<TData extends FirestoreObject> {
    * stored on the definition for consumers to use at their own boundaries.
    */
   schema?: StandardSchemaV1<unknown, TData>;
-  /** Collection path (can include path segments) */
-  collection: string;
+  /**
+   * Collection path. Either a static string (may include multiple `/`-
+   * separated segments) or a function that derives the path from route/
+   * params. Use the function form when the collection lives under a dynamic
+   * parent, e.g. `projects/{projectId}/revisions`.
+   */
+  collection: string | ((params: Record<string, string>) => string);
   /** Document ID or function to derive it */
   id: string | ((params: Record<string, string>) => string);
   /** Debounce interval for autosave (ms), default 1000 */

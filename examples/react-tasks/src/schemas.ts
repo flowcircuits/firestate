@@ -1,30 +1,9 @@
-import { defineDocument, defineCollection } from "@hvakr/firestate";
+import { defineFirestate, doc, col } from '@hvakr/firestate'
+import { Task, TaskList } from './types'
 
-// Shape of a task list (document)
-export interface TaskList {
-  name: string;
-  description?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-// Shape of an individual task (collection document)
-export interface Task {
-  title: string;
-  completed: boolean;
-  priority: "low" | "medium" | "high";
-  createdAt: number;
-}
-
-// Define the task list document
-export const taskListDoc = defineDocument<TaskList>({
-  collection: "taskLists",
-  id: (params: Record<string, string>) => params.listId,
-  autosave: 500,
-});
-
-// Define the tasks collection (subcollection of a task list)
-export const tasksCollection = defineCollection<Task>({
-  path: (params: Record<string, string>) => `taskLists/${params.listId}/tasks`,
-  autosave: 500,
-});
+// One giant object describes every Firestore thing this app touches.
+// The library generates `useTaskList` and `useTasks` from it.
+export const { useTaskList, useTasks } = defineFirestate({
+    taskList: doc<TaskList>('taskLists/{listId}', { autosave: 500 }),
+    tasks: col<Task>('taskLists/{listId}/tasks', { autosave: 500 }),
+})

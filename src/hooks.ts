@@ -224,27 +224,34 @@ export const useDocument = <TData extends FirestoreObject>(
     [undoManager]
   );
 
-  // Resolve the doc id at render time. When disabled we skip resolution —
-  // consumers commonly pass `enabled: false` precisely because params aren't
-  // ready and definition.id(params) would fail.
+  // Resolve the doc id and collection path at render time. When disabled we
+  // skip resolution — consumers commonly pass `enabled: false` precisely
+  // because params aren't ready and definition.id(params) would fail.
   const docId = enabled
     ? typeof definition.id === "function"
       ? definition.id(params)
       : definition.id
     : undefined;
 
+  const collectionPath = enabled
+    ? typeof definition.collection === "function"
+      ? definition.collection(params)
+      : definition.collection
+    : undefined;
+
   const subscription = useMemo(
     () =>
-      enabled && docId !== undefined
+      enabled && docId !== undefined && collectionPath !== undefined
         ? createDocumentSubscription({
             store,
             definition,
             docId,
+            collectionPath,
             readOnly,
             onPushUndo,
           })
         : null,
-    [enabled, store, definition, docId, readOnly, onPushUndo]
+    [enabled, store, definition, docId, collectionPath, readOnly, onPushUndo]
   );
 
   const subscribe = useCallback(
