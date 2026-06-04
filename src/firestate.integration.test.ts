@@ -30,9 +30,15 @@ vi.mock('firebase/firestore', async () => {
 })
 
 import * as firestore from 'firebase/firestore'
-import { doc, col, buildDocumentDefinition, buildCollectionDefinition } from './firestate'
+import {
+    doc,
+    col,
+    buildDocumentDefinition,
+    buildCollectionDefinition,
+} from './firestate'
 import { createDocumentSubscription } from './document'
 import { createStore, type FirestateStore } from './store'
+import type { StandardSchemaV1 } from './types'
 
 interface Revision {
     title: string
@@ -40,6 +46,19 @@ interface Revision {
 interface Space {
     label: string
 }
+
+// Minimal Standard Schema validator — schema-only API requires one per entry.
+const standardSchema = <T>(): StandardSchemaV1<unknown, T> => ({
+    '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate: (value) => ({ value: value as T }),
+        types: undefined,
+    },
+})
+
+const revisionSchema = standardSchema<Revision>()
+const spaceSchema = standardSchema<Space>()
 
 describe('Firestate registry → Firestore path', () => {
     let store: FirestateStore
@@ -51,23 +70,18 @@ describe('Firestate registry → Firestore path', () => {
 
     it('resolves a flat document path through to collection() + doc()', () => {
         const definition = buildDocumentDefinition(
-            doc<Revision>('projects/{projectId}')
+            doc({ path: 'projects/{projectId}', schema: revisionSchema })
         )
         const params = { projectId: 'p1' }
 
         const collectionPath = (
             definition.collection as (p: Record<string, string>) => string
         )(params)
-        const docId = (
-            definition.id as (p: Record<string, string>) => string
-        )(params)
+        const docId = (definition.id as (p: Record<string, string>) => string)(
+            params
+        )
 
-        createDocumentSubscription({
-            store,
-            definition,
-            collectionPath,
-            docId,
-        })
+        createDocumentSubscription({ store, definition, collectionPath, docId })
 
         expect(firestore.collection).toHaveBeenCalledWith(
             store.firestore,
@@ -83,23 +97,21 @@ describe('Firestate registry → Firestore path', () => {
         // This is the case that motivated the function-form `collection`.
         // If the registry-to-Firestore handoff regresses, this test catches it.
         const definition = buildDocumentDefinition(
-            doc<Revision>('projects/{projectId}/revisions/{revisionId}')
+            doc({
+                path: 'projects/{projectId}/revisions/{revisionId}',
+                schema: revisionSchema,
+            })
         )
         const params = { projectId: 'p1', revisionId: 'r1' }
 
         const collectionPath = (
             definition.collection as (p: Record<string, string>) => string
         )(params)
-        const docId = (
-            definition.id as (p: Record<string, string>) => string
-        )(params)
+        const docId = (definition.id as (p: Record<string, string>) => string)(
+            params
+        )
 
-        createDocumentSubscription({
-            store,
-            definition,
-            collectionPath,
-            docId,
-        })
+        createDocumentSubscription({ store, definition, collectionPath, docId })
 
         expect(firestore.collection).toHaveBeenCalledWith(
             store.firestore,
@@ -113,11 +125,14 @@ describe('Firestate registry → Firestore path', () => {
 
     it('resolves a deep subcollection collection path', () => {
         const definition = buildCollectionDefinition(
-            col<Space>('projects/{projectId}/revisions/{revisionId}/spaces')
+            col({
+                path: 'projects/{projectId}/revisions/{revisionId}/spaces',
+                schema: spaceSchema,
+            })
         )
-        const path = (
-            definition.path as (p: Record<string, string>) => string
-        )({ projectId: 'p1', revisionId: 'r1' })
+        const path = (definition.path as (p: Record<string, string>) => string)(
+            { projectId: 'p1', revisionId: 'r1' }
+        )
 
         expect(path).toBe('projects/p1/revisions/r1/spaces')
     })

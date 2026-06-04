@@ -159,72 +159,63 @@ type ColOpts<T extends FirestoreObject> = Omit<ColEntry<T>, "__kind" | "__type" 
 /**
  * Declare a single-document entry for a Firestate registry.
  *
- * Two ways to use:
+ * **A `schema` field is required.** It must satisfy the Standard Schema
+ * interface (https://standardschema.dev) — Firestate doesn't invoke it,
+ * so any source works: a Standard-Schema-compatible validator library,
+ * or a hand-rolled no-op schema that only carries `T` for inference.
  *
- * 1. Plain TypeScript type:
- * ```ts
- * doc<TaskList>('taskLists/{listId}')
- * ```
+ * Both the data type (`T`) and the path's literal type (`P`) are inferred
+ * from the call — `T` from `schema`, `P` from `path` — so the generated
+ * hook can statically type-check the params object the caller passes.
  *
- * 2. With a Standard Schema validator (type inferred from the schema):
+ * If you'd rather not provide a schema at all, use {@link defineDocument}
+ * directly — that escape hatch keeps the plain-TypeScript form, at the
+ * cost of looser param typing on the hook.
+ *
  * ```ts
  * doc({ path: 'taskLists/{listId}', schema: TaskListSchema })
+ * // → DocEntry<TaskList, 'taskLists/{listId}'>
  * ```
  */
 export function doc<
   S extends StandardSchemaV1<unknown, FirestoreObject>,
-  P extends string = string
+  const P extends string = string
 >(
   opts: Omit<DocOpts<StandardSchemaV1.InferOutput<S>>, "schema"> & {
     schema: S;
     path: P;
   }
-): DocEntry<StandardSchemaV1.InferOutput<S>, P>;
-export function doc<T extends FirestoreObject, P extends string = string>(
-  path: P,
-  opts?: DocOpts<T>
-): DocEntry<T, P>;
-export function doc(
-  pathOrOpts: string | (DocOpts<FirestoreObject> & { path: string }),
-  opts: DocOpts<FirestoreObject> = {}
-): DocEntry<FirestoreObject> {
-  const path = typeof pathOrOpts === "string" ? pathOrOpts : pathOrOpts.path;
+): DocEntry<StandardSchemaV1.InferOutput<S>, P> {
+  const { path, ...rest } = opts;
   validateTemplate(path);
-  // Also bail at registration time if the path can't be split into
+  // Bail at registration time if the path can't be split into a non-empty
   // collection + id — same loud-at-the-boundary spirit as interpolate.
   splitDocPath(path);
-  if (typeof pathOrOpts === "string") {
-    return { __kind: "document", path, ...opts };
-  }
-  const { path: _omit, ...rest } = pathOrOpts;
-  return { __kind: "document", path, ...rest };
+  return { __kind: "document", path, ...rest } as DocEntry<
+    StandardSchemaV1.InferOutput<S>,
+    P
+  >;
 }
 
-/** Declare a collection entry for a Firestate registry. See {@link doc}. */
+/**
+ * Declare a collection entry for a Firestate registry. See {@link doc}
+ * for the schema/typing contract.
+ */
 export function col<
   S extends StandardSchemaV1<unknown, FirestoreObject>,
-  P extends string = string
+  const P extends string = string
 >(
   opts: Omit<ColOpts<StandardSchemaV1.InferOutput<S>>, "schema"> & {
     schema: S;
     path: P;
   }
-): ColEntry<StandardSchemaV1.InferOutput<S>, P>;
-export function col<T extends FirestoreObject, P extends string = string>(
-  path: P,
-  opts?: ColOpts<T>
-): ColEntry<T, P>;
-export function col(
-  pathOrOpts: string | (ColOpts<FirestoreObject> & { path: string }),
-  opts: ColOpts<FirestoreObject> = {}
-): ColEntry<FirestoreObject> {
-  const path = typeof pathOrOpts === "string" ? pathOrOpts : pathOrOpts.path;
+): ColEntry<StandardSchemaV1.InferOutput<S>, P> {
+  const { path, ...rest } = opts;
   validateTemplate(path);
-  if (typeof pathOrOpts === "string") {
-    return { __kind: "collection", path, ...opts };
-  }
-  const { path: _omit, ...rest } = pathOrOpts;
-  return { __kind: "collection", path, ...rest };
+  return { __kind: "collection", path, ...rest } as ColEntry<
+    StandardSchemaV1.InferOutput<S>,
+    P
+  >;
 }
 
 // ---------------------------------------------------------------------------

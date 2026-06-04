@@ -20,9 +20,9 @@ interface Task {
     completed: boolean
 }
 
-// Minimal Standard Schema validator for inference tests — mirrors the
-// helper in schema.test.ts. Sufficient to drive the schema-overload path.
-const standardSchema = <T>(vendor: string): StandardSchemaV1<unknown, T> => ({
+// Minimal Standard Schema validator. Sufficient to drive type inference
+// without pulling in a real validator dependency for the unit tests.
+const standardSchema = <T>(vendor = 'test'): StandardSchemaV1<unknown, T> => ({
     '~standard': {
         version: 1,
         vendor,
@@ -31,27 +31,28 @@ const standardSchema = <T>(vendor: string): StandardSchemaV1<unknown, T> => ({
     },
 })
 
+const tlSchema = standardSchema<TaskList>()
+const taskSchema = standardSchema<Task>()
+
 describe('doc', () => {
-    it('builds a document entry with an explicit type', () => {
-        const entry = doc<TaskList>('taskLists/{listId}', { autosave: 250 })
+    it('builds a document entry from a schema-form call', () => {
+        const entry = doc({
+            path: 'taskLists/{listId}',
+            schema: tlSchema,
+            autosave: 250,
+        })
         expect(entry.__kind).toBe('document')
         expect(entry.path).toBe('taskLists/{listId}')
         expect(entry.autosave).toBe(250)
-        expect(entry.schema).toBeUndefined()
-    })
-
-    it('accepts the object form with a schema', () => {
-        const schema = standardSchema<TaskList>('test')
-        const entry = doc({ path: 'taskLists/{listId}', schema })
-        expect(entry.__kind).toBe('document')
-        expect(entry.path).toBe('taskLists/{listId}')
-        expect(entry.schema).toBe(schema)
+        expect(entry.schema).toBe(tlSchema)
     })
 })
 
 describe('col', () => {
-    it('builds a collection entry with an explicit type', () => {
-        const entry = col<Task>('taskLists/{listId}/tasks', {
+    it('builds a collection entry from a schema-form call', () => {
+        const entry = col({
+            path: 'taskLists/{listId}/tasks',
+            schema: taskSchema,
             autosave: 250,
             lazy: true,
         })
@@ -59,12 +60,7 @@ describe('col', () => {
         expect(entry.path).toBe('taskLists/{listId}/tasks')
         expect(entry.autosave).toBe(250)
         expect(entry.lazy).toBe(true)
-    })
-
-    it('accepts the object form with a schema', () => {
-        const schema = standardSchema<Task>('test')
-        const entry = col({ path: 'taskLists/{listId}/tasks', schema })
-        expect(entry.schema).toBe(schema)
+        expect(entry.schema).toBe(taskSchema)
     })
 })
 
@@ -105,30 +101,29 @@ describe('interpolatePath', () => {
 
 describe('template validation at registration time', () => {
     it('rejects unclosed placeholders', () => {
-        expect(() => doc<TaskList>('taskLists/{listId/tasks')).toThrow(
-            /malformed placeholder/
-        )
+        expect(() =>
+            doc({ path: 'taskLists/{listId/tasks', schema: tlSchema })
+        ).toThrow(/malformed placeholder/)
     })
 
     it('rejects malformed placeholder names (hyphens, dots)', () => {
-        expect(() => doc<TaskList>('taskLists/{list-Id}')).toThrow(
-            /malformed placeholder/
-        )
+        expect(() =>
+            doc({ path: 'taskLists/{list-Id}', schema: tlSchema })
+        ).toThrow(/malformed placeholder/)
     })
 
     it('rejects empty document collection or id segments', () => {
-        expect(() => doc<TaskList>('taskLists/')).toThrow(
-            /non-empty collection and id/
-        )
-        expect(() => doc<TaskList>('/listId')).toThrow(
-            /non-empty collection and id/
-        )
+        expect(() =>
+            doc({ path: 'taskLists/', schema: tlSchema })
+        ).toThrow(/non-empty collection and id/)
+        expect(() =>
+            doc({ path: '/listId', schema: tlSchema })
+        ).toThrow(/non-empty collection and id/)
     })
 
     it('accepts well-formed placeholders including underscores', () => {
-        // Underscores in placeholder names should be fine.
         expect(() =>
-            doc<TaskList>('projects/{project_id}')
+            doc({ path: 'projects/{project_id}', schema: tlSchema })
         ).not.toThrow()
     })
 })
@@ -158,8 +153,11 @@ describe('splitDocPath', () => {
 describe('defineFirestate', () => {
     it('produces a hook per registry key', () => {
         const api = defineFirestate({
-            taskList: doc<TaskList>('taskLists/{listId}'),
-            tasks: col<Task>('taskLists/{listId}/tasks'),
+            taskList: doc({ path: 'taskLists/{listId}', schema: tlSchema }),
+            tasks: col({
+                path: 'taskLists/{listId}/tasks',
+                schema: taskSchema,
+            }),
         })
 
         expect(typeof api.useTaskList).toBe('function')
@@ -168,8 +166,8 @@ describe('defineFirestate', () => {
 
     it('capitalizes the first character of each key', () => {
         const api = defineFirestate({
-            a: doc<TaskList>('a/{id}'),
-            longerName: col<Task>('a/{id}/sub'),
+            a: doc({ path: 'a/{id}', schema: tlSchema }),
+            longerName: col({ path: 'a/{id}/sub', schema: taskSchema }),
         })
 
         expect(typeof (api as any).useA).toBe('function')
@@ -179,131 +177,35 @@ describe('defineFirestate', () => {
     it('rejects invalid keys', () => {
         expect(() =>
             defineFirestate({
-                '1bad': doc<TaskList>('a/{id}'),
+                '1bad': doc({ path: 'a/{id}', schema: tlSchema }),
             } as any)
         ).toThrow(/must start with a letter/)
 
         expect(() =>
             defineFirestate({
-                'bad-key': doc<TaskList>('a/{id}'),
+                'bad-key': doc({ path: 'a/{id}', schema: tlSchema }),
             } as any)
         ).toThrow(/must start with a letter/)
-    })
-})
-
-describe('buildDocumentDefinition', () => {
-    interface Project {
-        name: string
-    }
-    interface Revision {
-        title: string
-    }
-    interface Space {
-        label: string
-    }
-
-    it('resolves a flat doc path', () => {
-        const def = buildDocumentDefinition(doc<Project>('projects/{projectId}'))
-        // Both halves are functions so params can interpolate uniformly.
-        expect(typeof def.collection).toBe('function')
-        expect(typeof def.id).toBe('function')
-
-        const collection = def.collection as (
-            p: Record<string, string>
-        ) => string
-        const id = def.id as (p: Record<string, string>) => string
-
-        expect(collection({ projectId: 'p1' })).toBe('projects')
-        expect(id({ projectId: 'p1' })).toBe('p1')
-    })
-
-    it('resolves a doc nested under a dynamic parent (regression for hvakr-style paths)', () => {
-        // This is the case that used to silently break: the collection portion
-        // contained `{projectId}` and was passed verbatim to Firestore.
-        const def = buildDocumentDefinition(
-            doc<Revision>('projects/{projectId}/revisions/{revisionId}')
-        )
-
-        const collection = def.collection as (
-            p: Record<string, string>
-        ) => string
-        const id = def.id as (p: Record<string, string>) => string
-
-        const params = { projectId: 'p1', revisionId: 'r1' }
-        expect(collection(params)).toBe('projects/p1/revisions')
-        expect(id(params)).toBe('r1')
-    })
-
-    it('resolves a doc inside a deeper subcollection chain', () => {
-        const def = buildDocumentDefinition(
-            doc<Space>(
-                'projects/{projectId}/revisions/{revisionId}/spaces/{spaceId}'
-            )
-        )
-
-        const collection = def.collection as (
-            p: Record<string, string>
-        ) => string
-        const id = def.id as (p: Record<string, string>) => string
-
-        const params = {
-            projectId: 'p1',
-            revisionId: 'r1',
-            spaceId: 's1',
-        }
-        expect(collection(params)).toBe('projects/p1/revisions/r1/spaces')
-        expect(id(params)).toBe('s1')
-    })
-
-    it('throws when a required param is missing at resolution time', () => {
-        const def = buildDocumentDefinition(
-            doc<Revision>('projects/{projectId}/revisions/{revisionId}')
-        )
-
-        const collection = def.collection as (
-            p: Record<string, string>
-        ) => string
-
-        expect(() => collection({ revisionId: 'r1' })).toThrow(
-            /missing param "projectId"/
-        )
-    })
-})
-
-describe('type-level params extraction (probe)', () => {
-    // Compile-time probes so we can see what `ParamsOf` actually resolves to.
-    type _SingleParam = import('./firestate').ParamsOf<'taskLists/{listId}'>
-    type _NoParams = import('./firestate').ParamsOf<'settings'>
-    type _Multi = import('./firestate').ParamsOf<
-        'projects/{projectId}/revisions/{revisionId}'
-    >
-
-    // The next line errors if _SingleParam isn't `{ listId: string }`.
-    const _p1: _SingleParam = { listId: 'a' }
-    // Errors if _NoParams isn't `{}` (anything with no required keys).
-    const _p2: _NoParams = {}
-    // Errors if _Multi doesn't require both keys.
-    const _p3: _Multi = { projectId: 'a', revisionId: 'b' }
-    void _p1
-    void _p2
-    void _p3
-
-    it('exists (type-only probe)', () => {
-        expect(true).toBe(true)
     })
 })
 
 describe('type-level params extraction', () => {
     // These assertions are checked by tsc; vitest just verifies the
     // wrapper function exists. `@ts-expect-error` errors the build if the
-    // line below does NOT produce a TS error, which is exactly what we
-    // want for "is this call signature actually enforced?".
+    // line below does NOT produce a TS error, which is what we want for
+    // "is this call signature actually enforced?".
     it('requires the right param keys at call sites', () => {
         function _typeTest() {
             const api = defineFirestate({
-                taskList: doc<TaskList>('taskLists/{listId}'),
-                tasks: col<Task>('taskLists/{listId}/tasks'),
-                bare: col<Task>('settings'),
+                taskList: doc({
+                    path: 'taskLists/{listId}',
+                    schema: tlSchema,
+                }),
+                tasks: col({
+                    path: 'taskLists/{listId}/tasks',
+                    schema: taskSchema,
+                }),
+                bare: col({ path: 'settings', schema: taskSchema }),
             })
 
             // Missing required param → error
@@ -329,9 +231,100 @@ describe('type-level params extraction', () => {
             // Options arg passes through
             api.useTaskList({ listId: 'a' }, { enabled: false })
         }
-        // Avoid 'declared but never used' on _typeTest.
         void _typeTest
         expect(true).toBe(true)
+    })
+})
+
+describe('buildDocumentDefinition', () => {
+    interface Project {
+        name: string
+    }
+    interface Revision {
+        title: string
+    }
+    interface Space {
+        label: string
+    }
+
+    const projectSchema = standardSchema<Project>()
+    const revisionSchema = standardSchema<Revision>()
+    const spaceSchema = standardSchema<Space>()
+
+    it('resolves a flat doc path', () => {
+        const def = buildDocumentDefinition(
+            doc({ path: 'projects/{projectId}', schema: projectSchema })
+        )
+        // Both halves are functions so params can interpolate uniformly.
+        expect(typeof def.collection).toBe('function')
+        expect(typeof def.id).toBe('function')
+
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        const id = def.id as (p: Record<string, string>) => string
+
+        expect(collection({ projectId: 'p1' })).toBe('projects')
+        expect(id({ projectId: 'p1' })).toBe('p1')
+    })
+
+    it('resolves a doc nested under a dynamic parent (regression for hvakr-style paths)', () => {
+        // This is the case that used to silently break: the collection portion
+        // contained `{projectId}` and was passed verbatim to Firestore.
+        const def = buildDocumentDefinition(
+            doc({
+                path: 'projects/{projectId}/revisions/{revisionId}',
+                schema: revisionSchema,
+            })
+        )
+
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        const id = def.id as (p: Record<string, string>) => string
+
+        const params = { projectId: 'p1', revisionId: 'r1' }
+        expect(collection(params)).toBe('projects/p1/revisions')
+        expect(id(params)).toBe('r1')
+    })
+
+    it('resolves a doc inside a deeper subcollection chain', () => {
+        const def = buildDocumentDefinition(
+            doc({
+                path: 'projects/{projectId}/revisions/{revisionId}/spaces/{spaceId}',
+                schema: spaceSchema,
+            })
+        )
+
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        const id = def.id as (p: Record<string, string>) => string
+
+        const params = {
+            projectId: 'p1',
+            revisionId: 'r1',
+            spaceId: 's1',
+        }
+        expect(collection(params)).toBe('projects/p1/revisions/r1/spaces')
+        expect(id(params)).toBe('s1')
+    })
+
+    it('throws when a required param is missing at resolution time', () => {
+        const def = buildDocumentDefinition(
+            doc({
+                path: 'projects/{projectId}/revisions/{revisionId}',
+                schema: revisionSchema,
+            })
+        )
+
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+
+        expect(() => collection({ revisionId: 'r1' })).toThrow(
+            /missing param "projectId"/
+        )
     })
 })
 
@@ -340,9 +333,14 @@ describe('buildCollectionDefinition', () => {
         label: string
     }
 
+    const spaceSchema = standardSchema<Space>()
+
     it('resolves a collection nested under a dynamic parent', () => {
         const def = buildCollectionDefinition(
-            col<Space>('projects/{projectId}/revisions/{revisionId}/spaces')
+            col({
+                path: 'projects/{projectId}/revisions/{revisionId}/spaces',
+                schema: spaceSchema,
+            })
         )
 
         expect(typeof def.path).toBe('function')

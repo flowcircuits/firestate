@@ -101,9 +101,9 @@ const tasksCollection = defineCollection<Task>({
 })
 ```
 
-Validators that implement [Standard Schema](https://standardschema.dev)
-(zod 3.24+/4, valibot, arktype, effect, etc.) can be passed via an optional
-`schema` field if you want to validate at your own boundaries.
+Any validator that implements the [Standard Schema](https://standardschema.dev)
+interface can be passed via the `schema` field if you want to validate at
+your own boundaries.
 
 ### Using in Components
 
