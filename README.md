@@ -28,8 +28,57 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 - **Lazy loading**: Collections can defer subscription until needed
 - **Diff-based updates**: Only changed fields are sent to Firestore
 
+## Choosing an API
+
+Firestate exposes two layers. Pick one based on what you're building:
+
+- **`defineFirestate` + `doc` / `col`** (recommended for app code) — declare every Firestore thing in a single registry object; the library generates one typed React hook per entry. Each entry takes a `path` template and a `schema` field that satisfies the [Standard Schema](https://standardschema.dev) interface. In return you get:
+  - the data type (`TaskList`) inferred from the schema's output type
+  - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
+  - the schema available on the entry for you to invoke at your own boundaries (forms, server routes, tests)
+
+  Firestate doesn't invoke the schema or care which Standard-Schema-compatible source it came from — bring whichever validator library your project already uses, or hand-roll a minimal type-only schema if you don't want a validator dependency:
+
+  ```ts
+  import { defineFirestate, doc, col, type StandardSchemaV1 } from '@hvakr/firestate'
+
+  // Plain TS interfaces stay the source of truth here; a no-op Standard
+  // Schema just carries `T` for inference. Swap for any real Standard
+  // Schema validator when you want runtime checks.
+  interface TaskList { name: string; createdAt: number }
+  interface Task     { title: string; completed: boolean }
+
+  function typeSchema<T>(): StandardSchemaV1<unknown, T> {
+    return {
+      '~standard': {
+        version: 1,
+        vendor: 'app',
+        validate: (v) => ({ value: v as T }),
+        types: undefined,
+      },
+    }
+  }
+
+  export const { useTaskList, useTasks } = defineFirestate({
+    taskList: doc({ path: 'taskLists/{listId}',       schema: typeSchema<TaskList>() }),
+    tasks:    col({ path: 'taskLists/{listId}/tasks', schema: typeSchema<Task>() }),
+  })
+
+  // useTaskList({ listId })           — { listId: string } statically required
+  // useTaskList()                     — type error: missing listId
+  // useTaskList({ wrong: 'a' })       — type error: wrong key
+  ```
+
+- **`defineDocument` / `defineCollection` + `useDocument` / `useCollection`** (lower-level escape hatch) — write the path-derivation function yourself, use the standalone hooks. Reach for these when:
+  - your path doesn't fit the `{name}` template (computed from non-string state, conditional segments)
+  - you need the definition outside React (Node scripts, server-side, tests)
+  - your control flow doesn't fit a module-level registry
+
+Both layers share the same store, undo manager, and sync semantics — the registry is a thin layer on top of the lower-level primitives. Firestate never invokes your schema; it stores it on the entry and exposes it for you to call at your own boundaries.
+
 ## Table of Contents
 
+- [Choosing an API](#choosing-an-api)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Examples](#examples)
@@ -63,8 +112,8 @@ Firestate requires the following peer dependencies:
 
 Firestate has no runtime validation dependency. If you want to validate at
 your boundaries, pass any [Standard Schema](https://standardschema.dev)
-compatible validator (zod 3.24+/4, valibot, arktype, effect schema, etc.)
-via the optional `schema` field on a definition.
+compatible validator via the `schema` field on a definition. Firestate
+stores it on the entry and never invokes it — you call it where it matters.
 
 ## Quick Start
 
@@ -105,22 +154,15 @@ export const spacesCollection = defineCollection<Space>({
 #### Optional: validating with Standard Schema
 
 If you want runtime validation at your boundaries, pass any
-[Standard Schema](https://standardschema.dev) compatible validator. Firestate
-stores it on the definition but never invokes it — you call it where it
-matters (on submit, in tests, at a server route, etc.):
+[Standard Schema](https://standardschema.dev) compatible validator via the
+`schema` field. Firestate stores it on the definition but never invokes it
+— you call it where it matters (on submit, in tests, at a server route,
+etc.). `TData` is inferred from the schema's output type:
 
 ```typescript
-import { z } from 'zod'
 import { defineDocument } from '@hvakr/firestate'
+import { ProjectSchema } from './schemas'  // your Standard-Schema validator
 
-const ProjectSchema = z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    createdAt: z.number(),
-    updatedAt: z.number(),
-})
-
-// TData is inferred from the schema's output type
 export const projectDoc = defineDocument({
     schema: ProjectSchema,
     collection: 'projects',

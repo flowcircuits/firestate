@@ -39,6 +39,17 @@ export type {
     InferCollectionDocument,
 } from './schema'
 
+// Registry-driven API
+export { defineFirestate, doc, col } from './firestate'
+
+export type {
+    DocEntry,
+    ColEntry,
+    FirestateEntry,
+    FirestateRegistry,
+    FirestateApi,
+} from './firestate'
+
 // Diff utilities
 export {
     // Core diff operations

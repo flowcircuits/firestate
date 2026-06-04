@@ -38,6 +38,12 @@ export interface DocumentOptions<TData extends FirestoreObject> {
      * value is used. If `definition.id` is a function, this option is required.
      */
     docId?: string
+    /**
+     * Resolved collection path. If omitted and `definition.collection` is a
+     * string, that value is used. If `definition.collection` is a function,
+     * this option is required.
+     */
+    collectionPath?: string
     /** Override read-only setting */
     readOnly?: boolean
     /** Callback for pushing undo actions */
@@ -104,11 +110,11 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, docId, readOnly, onPushUndo } = options
+    const { store, definition, docId, collectionPath: resolvedCollectionPath, readOnly, onPushUndo } = options
     const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
 
     const {
-        collection: collectionPath,
+        collection: collectionConfig,
         id,
         autosave = defaultAutosave,
         minLoadTime = defaultMinLoadTime,
@@ -125,6 +131,15 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     if (documentId === undefined) {
         throw new Error(
             `createDocumentSubscription: definition.id is a function; pass a resolved docId in options.`
+        )
+    }
+    // Same shape as docId: prefer a caller-resolved path, fall back to a
+    // string `definition.collection` for direct use. Function definitions
+    // must come pre-resolved from the hook layer.
+    const collectionPath = resolvedCollectionPath ?? (typeof collectionConfig === 'string' ? collectionConfig : undefined)
+    if (collectionPath === undefined) {
+        throw new Error(
+            `createDocumentSubscription: definition.collection is a function; pass a resolved collectionPath in options.`
         )
     }
 
