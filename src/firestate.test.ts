@@ -189,6 +189,37 @@ describe('defineFirestate', () => {
     })
 })
 
+describe('type-level schema requirement', () => {
+    // Pin the contract that schema is REQUIRED on the entry interface,
+    // not just on the factory function. tsc validates these directives.
+    it('rejects entries without a schema field', () => {
+        function _typeTest() {
+            // @ts-expect-error schema field is required on the factory
+            doc({ path: 'taskLists/{listId}' })
+
+            // @ts-expect-error schema field is required on the factory
+            col({ path: 'taskLists/{listId}/tasks' })
+
+            // @ts-expect-error schema field is required on DocEntry itself
+            const _badDoc: import('./firestate').DocEntry<TaskList> = {
+                __kind: 'document',
+                path: 'taskLists/{listId}',
+            }
+
+            // @ts-expect-error schema field is required on ColEntry itself
+            const _badCol: import('./firestate').ColEntry<Task> = {
+                __kind: 'collection',
+                path: 'taskLists/{listId}/tasks',
+            }
+
+            void _badDoc
+            void _badCol
+        }
+        void _typeTest
+        expect(true).toBe(true)
+    })
+})
+
 describe('type-level params extraction', () => {
     // These assertions are checked by tsc; vitest just verifies the
     // wrapper function exists. `@ts-expect-error` errors the build if the

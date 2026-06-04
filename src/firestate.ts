@@ -88,14 +88,19 @@ export interface DocEntry<
   /** Path template, e.g. `'taskLists/{listId}'`. */
   path: P;
   /**
-   * Optional Standard Schema validator.
+   * Standard Schema validator. **Required** — firestate's registry API
+   * is opinionated about this. The schema is the source of `T` for the
+   * generated hooks and gives you a runtime artifact to call at your own
+   * boundaries (form submit, server route, test).
    *
-   * **Firestate does not run this validator.** It is stored on the entry
-   * for *you* to invoke at your own boundaries (form submit, server route,
-   * test). The field exists for type inference and convenient co-location;
-   * if you need automatic runtime validation, call the validator yourself.
+   * **Firestate does not run this validator itself.** Any source that
+   * satisfies the Standard Schema interface works: a validator library
+   * (zod, valibot, arktype, effect, etc.) or a hand-rolled no-op
+   * schema that only carries `T`. If you don't want a schema at all,
+   * use {@link defineDocument} directly — it's the escape hatch that
+   * keeps the plain-TypeScript form at the cost of looser param typing.
    */
-  schema?: StandardSchemaV1<unknown, T>;
+  schema: StandardSchemaV1<unknown, T>;
 }
 
 /** Collection entry in a Firestate registry. Produced by {@link col}. */
@@ -107,8 +112,8 @@ export interface ColEntry<
   readonly __type?: T;
   /** Path template, e.g. `'taskLists/{listId}/tasks'`. */
   path: P;
-  /** Optional Standard Schema validator. See {@link DocEntry.schema}. */
-  schema?: StandardSchemaV1<unknown, T>;
+  /** Standard Schema validator. Required. See {@link DocEntry.schema}. */
+  schema: StandardSchemaV1<unknown, T>;
   /** Only subscribe when `load()` is called. */
   lazy?: boolean;
   /** Additional Firestore query constraints. */
