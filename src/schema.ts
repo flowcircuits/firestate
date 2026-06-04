@@ -1,8 +1,8 @@
+import type { ZodType, z } from "zod";
 import type {
   CollectionDefinition,
   DocumentDefinition,
   FirestoreObject,
-  StandardSchemaV1,
 } from "./types";
 
 /**
@@ -17,7 +17,7 @@ import type {
  *
  * Two ways to use:
  *
- * 1. Plain TypeScript type (no validator dependency):
+ * 1. Plain TypeScript type (no schema, no runtime validation):
  * ```ts
  * interface Project { name: string; createdAt: number }
  *
@@ -27,11 +27,15 @@ import type {
  * })
  * ```
  *
- * 2. With a Standard Schema validator (zod 3.24+/4, valibot, arktype, etc.) —
- *    `TData` is inferred from the schema's output type. Firestate stores the
- *    schema on the definition but does not invoke validation; consumers run it
- *    at their own boundaries.
+ * 2. With a Zod schema — `TData` is inferred from `z.infer<S>`. Firestate
+ *    runs `schema.parse(...)` on full-payload writes (`set`/`add`) so bad
+ *    data throws at the call site. Partial `update(diff)` calls are not
+ *    validated (diffs frequently contain Firestore sentinels).
  * ```ts
+ * import { z } from 'zod'
+ *
+ * const ProjectSchema = z.object({ name: z.string(), createdAt: z.number() })
+ *
  * const projectDoc = defineDocument({
  *     schema: ProjectSchema,
  *     collection: 'projects',
@@ -39,16 +43,11 @@ import type {
  * })
  * ```
  */
-export function defineDocument<
-  S extends StandardSchemaV1<unknown, FirestoreObject>
->(
-  definition: Omit<
-    DocumentDefinition<StandardSchemaV1.InferOutput<S>>,
-    "schema"
-  > & {
+export function defineDocument<S extends ZodType<FirestoreObject>>(
+  definition: Omit<DocumentDefinition<z.infer<S>>, "schema"> & {
     schema: S;
   }
-): DocumentDefinition<StandardSchemaV1.InferOutput<S>>;
+): DocumentDefinition<z.infer<S>>;
 export function defineDocument<TData extends FirestoreObject>(
   definition: DocumentDefinition<TData>
 ): DocumentDefinition<TData>;
@@ -76,16 +75,11 @@ export function defineDocument(
  * })
  * ```
  */
-export function defineCollection<
-  S extends StandardSchemaV1<unknown, FirestoreObject>
->(
-  definition: Omit<
-    CollectionDefinition<StandardSchemaV1.InferOutput<S>>,
-    "schema"
-  > & {
+export function defineCollection<S extends ZodType<FirestoreObject>>(
+  definition: Omit<CollectionDefinition<z.infer<S>>, "schema"> & {
     schema: S;
   }
-): CollectionDefinition<StandardSchemaV1.InferOutput<S>>;
+): CollectionDefinition<z.infer<S>>;
 export function defineCollection<TData extends FirestoreObject>(
   definition: CollectionDefinition<TData>
 ): CollectionDefinition<TData>;

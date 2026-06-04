@@ -121,6 +121,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         readOnly: definitionReadOnly,
         retryOnError = false,
         retryInterval = 5000,
+        schema,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -245,6 +246,15 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
     const setData = (data: TData, undoOptions: UpdateOptions = {}) => {
         if (isReadOnly) return
+
+        // Validate the full payload at the call site so bad data throws
+        // synchronously instead of failing after a Firestore round trip.
+        // Partial update() diffs are intentionally NOT validated — diffs
+        // commonly carry Firestore sentinels (serverTimestamp, arrayUnion,
+        // deleteField) that aren't representable in a strict schema.
+        if (schema) {
+            data = schema.parse(data) as TData
+        }
 
         const currentData = getMergedData()
 

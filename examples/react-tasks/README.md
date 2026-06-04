@@ -101,9 +101,8 @@ const tasksCollection = defineCollection<Task>({
 })
 ```
 
-Any validator that implements the [Standard Schema](https://standardschema.dev)
-interface can be passed via the `schema` field if you want to validate at
-your own boundaries.
+A Zod schema can be passed via the `schema` field. Firestate runs it on
+`set` and `add` writes so bad data throws at the call site.
 
 ### Using in Components
 
@@ -134,4 +133,4 @@ useUndoKeyboardShortcuts()
 
 - [Firestate Documentation](../../README.md)
 - [Firebase Documentation](https://firebase.google.com/docs)
-- [Standard Schema](https://standardschema.dev/) (optional validator interop)
+- [Zod](https://zod.dev/) (schema and runtime validation)

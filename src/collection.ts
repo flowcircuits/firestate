@@ -112,6 +112,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         queryConstraints: definitionConstraints,
         retryOnError = false,
         retryInterval = 5000,
+        schema,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -272,9 +273,21 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // write — otherwise the caller might persist an id that was dropped.
         const id = hasExplicitId ? (idOrData as string) : doc(collectionRef).id
 
+        // Validate the full payload at the call site so bad data throws
+        // synchronously instead of failing after a Firestore round trip.
+        // Partial update() diffs are intentionally NOT validated — diffs
+        // commonly carry Firestore sentinels (serverTimestamp, arrayUnion,
+        // deleteField) that aren't representable in a strict schema.
+        //
+        // We re-attach `id` after parsing so callers don't have to include
+        // it in their schema, and so a schema that strips unknown keys
+        // doesn't accidentally drop it.
+        const validated = schema ? schema.parse(data) : data
+        const newDoc = { ...(validated as object), id } as unknown as TData
+
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
-        newLocalState[id] = { ...data, id } as unknown as TData
+        newLocalState[id] = newDoc
 
         // Push undo eagerly. Inverse diff deletes the just-added doc.
         if (undoOptions?.undoable !== false && onPushUndo) {

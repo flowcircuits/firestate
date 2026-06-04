@@ -1,7 +1,7 @@
 {
     "name": "@hvakr/firestate",
     "version": "0.1.0",
-    "description": "Firestore state management for React with real-time sync, undo/redo, optimistic updates, and optional Standard Schema validation",
+    "description": "Firestore state management for React with real-time sync, undo/redo, optimistic updates, and Zod schema validation",
     "author": "HVAKR",
     "license": "MIT",
     "type": "module",
@@ -32,7 +32,8 @@
     },
     "peerDependencies": {
         "firebase": "^10.0.0 || ^11.0.0",
-        "react": "^18.0.0 || ^19.0.0"
+        "react": "^18.0.0 || ^19.0.0",
+        "zod": "^4.0.0"
     },
     "devDependencies": {
         "@types/react": "^18.3.12",
@@ -41,14 +42,15 @@
         "react": "^18.3.1",
         "tsdown": "^0.20.0-beta.3",
         "typescript": "^5.7.2",
-        "vitest": "^2.1.8"
+        "vitest": "^2.1.8",
+        "zod": "^4.0.0"
     },
     "keywords": [
         "firestore",
         "firebase",
         "react",
         "state-management",
-        "standard-schema",
+        "zod",
         "real-time",
         "sync",
         "undo-redo",
@@ -61,8 +63,5 @@
     "homepage": "https://github.com/hvakr/firestate#readme",
     "bugs": {
         "url": "https://github.com/hvakr/firestate/issues"
-    },
-    "dependencies": {
-        "@standard-schema/spec": "^1.1.0"
     }
 }
