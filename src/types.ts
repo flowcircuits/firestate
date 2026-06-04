@@ -191,11 +191,14 @@ export interface UndoManager extends UndoManagerState {
 export interface DocumentDefinition<TData extends FirestoreObject> {
   /**
    * Optional Zod schema. When provided, firestate runs `schema.parse(...)`
-   * on full-payload writes (`set`, `add`) before persisting — so bad data
-   * throws at the call site, not after a Firestore round trip. Partial
-   * `update(diff)` calls are NOT validated because diffs commonly contain
-   * Firestore sentinels (`serverTimestamp()`, `arrayUnion`, etc.) that don't
-   * satisfy a strict schema.
+   * on full-payload writes (`set`, `add`) as a **validation guard** — bad
+   * data throws at the call site, not after a Firestore round trip. The
+   * parsed result is discarded; firestate stores the caller's original
+   * object verbatim. That means schema transforms (`.transform`, `.coerce`,
+   * default values) are NOT applied to stored data — do transforms before
+   * calling `set`/`add`. Partial `update(diff)` calls are NOT validated
+   * because diffs commonly contain Firestore sentinels (`serverTimestamp()`,
+   * `arrayUnion`, etc.) that don't satisfy a strict schema.
    */
   schema?: ZodType<TData>;
   /**
@@ -227,9 +230,10 @@ export interface DocumentDefinition<TData extends FirestoreObject> {
 export interface CollectionDefinition<TData extends FirestoreObject> {
   /**
    * Optional Zod schema for documents in the collection. When provided,
-   * firestate runs `schema.parse(...)` on full-payload writes (`add`) before
-   * persisting. Partial `update(diff)` calls are NOT validated — see
-   * {@link DocumentDefinition.schema}.
+   * firestate runs `schema.parse(...)` on full-payload writes (`add`) as
+   * a validation guard and stores the caller's original object verbatim.
+   * Schema transforms are not applied to stored data — see
+   * {@link DocumentDefinition.schema} for the full contract.
    */
   schema?: ZodType<TData>;
   /** Collection path (can include path segments) */

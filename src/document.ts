@@ -247,14 +247,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const setData = (data: TData, undoOptions: UpdateOptions = {}) => {
         if (isReadOnly) return
 
-        // Validate the full payload at the call site so bad data throws
-        // synchronously instead of failing after a Firestore round trip.
-        // Partial update() diffs are intentionally NOT validated — diffs
-        // commonly carry Firestore sentinels (serverTimestamp, arrayUnion,
-        // deleteField) that aren't representable in a strict schema.
-        if (schema) {
-            data = schema.parse(data) as TData
-        }
+        // Use schema.parse as a validation guard — throw on bad input — but
+        // discard the parsed result and store the caller's original object.
+        // Storing parsed output would (a) silently drop unknown keys via
+        // Zod's default `.strip()` behavior, and (b) cause undo/redo replay
+        // through this same path to re-apply any schema transforms a second
+        // time. Partial update() diffs are intentionally NOT validated:
+        // diffs commonly carry Firestore sentinels (serverTimestamp,
+        // arrayUnion, deleteField) that aren't representable in a strict
+        // schema.
+        if (schema) schema.parse(data)
 
         const currentData = getMergedData()
 

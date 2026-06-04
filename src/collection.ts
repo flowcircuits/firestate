@@ -273,17 +273,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // write — otherwise the caller might persist an id that was dropped.
         const id = hasExplicitId ? (idOrData as string) : doc(collectionRef).id
 
-        // Validate the full payload at the call site so bad data throws
-        // synchronously instead of failing after a Firestore round trip.
-        // Partial update() diffs are intentionally NOT validated — diffs
-        // commonly carry Firestore sentinels (serverTimestamp, arrayUnion,
-        // deleteField) that aren't representable in a strict schema.
-        //
-        // We re-attach `id` after parsing so callers don't have to include
-        // it in their schema, and so a schema that strips unknown keys
-        // doesn't accidentally drop it.
-        const validated = schema ? schema.parse(data) : data
-        const newDoc = { ...(validated as object), id } as unknown as TData
+        // Use schema.parse as a validation guard — throw on bad input — but
+        // discard the parsed result and store the caller's original object
+        // with id attached. Storing parsed output would silently drop
+        // unknown keys via Zod's default `.strip()` and re-transform on
+        // undo/redo replay. We feed `{ ...data, id }` to parse so the same
+        // validation works whether the user's schema declares `id` or not.
+        const newDoc = { ...data, id } as unknown as TData
+        if (schema) schema.parse(newDoc)
 
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
