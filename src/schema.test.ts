@@ -1,18 +1,15 @@
 import { describe, it, expect } from 'vitest'
+import { z } from 'zod'
 import { defineDocument, defineCollection } from './schema'
-import type { StandardSchemaV1 } from './types'
 
-/**
- * Build a minimal Standard Schema validator without depending on a library.
- * Sufficient for verifying that the generic inference path works.
- */
-const standardSchema = <T>(vendor: string): StandardSchemaV1<unknown, T> => ({
-    '~standard': {
-        version: 1,
-        vendor,
-        validate: (value) => ({ value: value as T }),
-        types: undefined,
-    },
+const ProjectSchema = z.object({
+    name: z.string(),
+    createdAt: z.number(),
+})
+
+const TaskSchema = z.object({
+    title: z.string(),
+    completed: z.boolean(),
 })
 
 interface Project {
@@ -49,16 +46,14 @@ describe('defineDocument', () => {
         }
     })
 
-    it('accepts an optional Standard Schema validator', () => {
-        const schema = standardSchema<Project>('test')
-
+    it('accepts an optional Zod schema', () => {
         const projectDoc = defineDocument({
-            schema,
+            schema: ProjectSchema,
             collection: 'projects',
             id: 'project-123',
         })
 
-        expect(projectDoc.schema).toBe(schema)
+        expect(projectDoc.schema).toBe(ProjectSchema)
         expect(projectDoc.collection).toBe('projects')
     })
 
@@ -102,15 +97,13 @@ describe('defineCollection', () => {
         }
     })
 
-    it('accepts an optional Standard Schema validator', () => {
-        const schema = standardSchema<Task>('test')
-
+    it('accepts an optional Zod schema', () => {
         const tasks = defineCollection({
-            schema,
+            schema: TaskSchema,
             path: 'tasks',
         })
 
-        expect(tasks.schema).toBe(schema)
+        expect(tasks.schema).toBe(TaskSchema)
     })
 
     it('supports lazy and queryConstraints options', () => {

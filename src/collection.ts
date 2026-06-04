@@ -112,6 +112,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         queryConstraints: definitionConstraints,
         retryOnError = false,
         retryInterval = 5000,
+        schema,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -272,9 +273,18 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // write — otherwise the caller might persist an id that was dropped.
         const id = hasExplicitId ? (idOrData as string) : doc(collectionRef).id
 
+        // Use schema.parse as a validation guard — throw on bad input — but
+        // discard the parsed result and store the caller's original object
+        // with id attached. Storing parsed output would silently drop
+        // unknown keys via Zod's default `.strip()` and re-transform on
+        // undo/redo replay. We feed `{ ...data, id }` to parse so the same
+        // validation works whether the user's schema declares `id` or not.
+        const newDoc = { ...data, id } as unknown as TData
+        if (schema) schema.parse(newDoc)
+
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
-        newLocalState[id] = { ...data, id } as unknown as TData
+        newLocalState[id] = newDoc
 
         // Push undo eagerly. Inverse diff deletes the just-added doc.
         if (undoOptions?.undoable !== false && onPushUndo) {

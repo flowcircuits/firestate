@@ -32,9 +32,9 @@ import type {
   DocumentDefinition,
   DocumentHandle,
   FirestoreObject,
-  StandardSchemaV1,
 } from "./types";
 import type { QueryConstraint } from "firebase/firestore";
+import type { ZodType, z } from "zod";
 
 /**
  * Knobs forwarded from a generated document hook to {@link useDocument}.
@@ -88,19 +88,18 @@ export interface DocEntry<
   /** Path template, e.g. `'taskLists/{listId}'`. */
   path: P;
   /**
-   * Standard Schema validator. **Required** — firestate's registry API
-   * is opinionated about this. The schema is the source of `T` for the
-   * generated hooks and gives you a runtime artifact to call at your own
-   * boundaries (form submit, server route, test).
+   * Zod schema. **Required** — firestate's registry API is opinionated
+   * about Zod. The schema is the source of `T` for the generated hooks
+   * via `z.infer`, and firestate runs `schema.parse(...)` on full-payload
+   * writes (`set`/`add`) so bad data throws at the call site rather than
+   * after a Firestore round trip. Partial `update(diff)` is NOT validated
+   * (diffs frequently contain Firestore sentinels like `serverTimestamp()`).
    *
-   * **Firestate does not run this validator itself.** Any source that
-   * satisfies the Standard Schema interface works: a validator library
-   * (zod, valibot, arktype, effect, etc.) or a hand-rolled no-op
-   * schema that only carries `T`. If you don't want a schema at all,
-   * use {@link defineDocument} directly — it's the escape hatch that
-   * keeps the plain-TypeScript form at the cost of looser param typing.
+   * If you don't want a schema at all, use {@link defineDocument} directly —
+   * the escape hatch keeps the plain-TypeScript form at the cost of looser
+   * param typing and no runtime validation.
    */
-  schema: StandardSchemaV1<unknown, T>;
+  schema: ZodType<T>;
 }
 
 /** Collection entry in a Firestate registry. Produced by {@link col}. */
@@ -112,8 +111,8 @@ export interface ColEntry<
   readonly __type?: T;
   /** Path template, e.g. `'taskLists/{listId}/tasks'`. */
   path: P;
-  /** Standard Schema validator. Required. See {@link DocEntry.schema}. */
-  schema: StandardSchemaV1<unknown, T>;
+  /** Zod schema. Required. See {@link DocEntry.schema}. */
+  schema: ZodType<T>;
   /** Only subscribe when `load()` is called. */
   lazy?: boolean;
   /** Additional Firestore query constraints. */
@@ -164,40 +163,40 @@ type ColOpts<T extends FirestoreObject> = Omit<ColEntry<T>, "__kind" | "__type" 
 /**
  * Declare a single-document entry for a Firestate registry.
  *
- * **A `schema` field is required.** It must satisfy the Standard Schema
- * interface (https://standardschema.dev) — Firestate doesn't invoke it,
- * so any source works: a Standard-Schema-compatible validator library,
- * or a hand-rolled no-op schema that only carries `T` for inference.
- *
- * Both the data type (`T`) and the path's literal type (`P`) are inferred
- * from the call — `T` from `schema`, `P` from `path` — so the generated
- * hook can statically type-check the params object the caller passes.
+ * **A Zod `schema` field is required.** Both the data type (`T`) and the
+ * path's literal type (`P`) are inferred from the call — `T` via
+ * `z.infer<S>`, `P` from `path` — so the generated hook can statically
+ * type-check the params object the caller passes. The schema also runs
+ * at runtime on full-payload writes (`set`/`add`).
  *
  * If you'd rather not provide a schema at all, use {@link defineDocument}
  * directly — that escape hatch keeps the plain-TypeScript form, at the
- * cost of looser param typing on the hook.
+ * cost of looser param typing on the hook and no runtime validation.
  *
  * ```ts
+ * import { z } from 'zod'
+ *
+ * const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
  * doc({ path: 'taskLists/{listId}', schema: TaskListSchema })
- * // → DocEntry<TaskList, 'taskLists/{listId}'>
+ * // → DocEntry<{ name: string; createdAt: number }, 'taskLists/{listId}'>
  * ```
  */
 export function doc<
-  S extends StandardSchemaV1<unknown, FirestoreObject>,
+  S extends ZodType<FirestoreObject>,
   const P extends string = string
 >(
-  opts: Omit<DocOpts<StandardSchemaV1.InferOutput<S>>, "schema"> & {
+  opts: Omit<DocOpts<z.infer<S>>, "schema"> & {
     schema: S;
     path: P;
   }
-): DocEntry<StandardSchemaV1.InferOutput<S>, P> {
+): DocEntry<z.infer<S>, P> {
   const { path, ...rest } = opts;
   validateTemplate(path);
   // Bail at registration time if the path can't be split into a non-empty
   // collection + id — same loud-at-the-boundary spirit as interpolate.
   splitDocPath(path);
-  return { __kind: "document", path, ...rest } as DocEntry<
-    StandardSchemaV1.InferOutput<S>,
+  return { __kind: "document", path, ...rest } as unknown as DocEntry<
+    z.infer<S>,
     P
   >;
 }
@@ -207,18 +206,18 @@ export function doc<
  * for the schema/typing contract.
  */
 export function col<
-  S extends StandardSchemaV1<unknown, FirestoreObject>,
+  S extends ZodType<FirestoreObject>,
   const P extends string = string
 >(
-  opts: Omit<ColOpts<StandardSchemaV1.InferOutput<S>>, "schema"> & {
+  opts: Omit<ColOpts<z.infer<S>>, "schema"> & {
     schema: S;
     path: P;
   }
-): ColEntry<StandardSchemaV1.InferOutput<S>, P> {
+): ColEntry<z.infer<S>, P> {
   const { path, ...rest } = opts;
   validateTemplate(path);
-  return { __kind: "collection", path, ...rest } as ColEntry<
-    StandardSchemaV1.InferOutput<S>,
+  return { __kind: "collection", path, ...rest } as unknown as ColEntry<
+    z.infer<S>,
     P
   >;
 }

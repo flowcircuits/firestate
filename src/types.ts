@@ -5,16 +5,7 @@ import type {
   QueryConstraint,
   WithFieldValue,
 } from "firebase/firestore";
-import type { StandardSchemaV1 } from "@standard-schema/spec";
-
-/**
- * Re-exported {@link https://standardschema.dev | Standard Schema v1} type.
- * Any validator implementing the spec (zod 3.24+/4, valibot, arktype, effect
- * schema, etc.) can be passed via the optional `schema` field on a
- * definition. Firestate never invokes `validate` itself — schemas are an
- * opt-in escape hatch for consumers to use at their own boundaries.
- */
-export type { StandardSchemaV1 };
+import type { ZodType } from "zod";
 
 /**
  * Deep partial type that works with Records and nested objects
@@ -199,11 +190,17 @@ export interface UndoManager extends UndoManagerState {
  */
 export interface DocumentDefinition<TData extends FirestoreObject> {
   /**
-   * Optional Standard Schema validator (zod 3.24+, zod 4, valibot, arktype,
-   * effect, etc.). Firestate does not invoke validation itself — this is
-   * stored on the definition for consumers to use at their own boundaries.
+   * Optional Zod schema. When provided, firestate runs `schema.parse(...)`
+   * on full-payload writes (`set`, `add`) as a **validation guard** — bad
+   * data throws at the call site, not after a Firestore round trip. The
+   * parsed result is discarded; firestate stores the caller's original
+   * object verbatim. That means schema transforms (`.transform`, `.coerce`,
+   * default values) are NOT applied to stored data — do transforms before
+   * calling `set`/`add`. Partial `update(diff)` calls are NOT validated
+   * because diffs commonly contain Firestore sentinels (`serverTimestamp()`,
+   * `arrayUnion`, etc.) that don't satisfy a strict schema.
    */
-  schema?: StandardSchemaV1<unknown, TData>;
+  schema?: ZodType<TData>;
   /**
    * Collection path. Either a static string (may include multiple `/`-
    * separated segments) or a function that derives the path from route/
@@ -232,10 +229,13 @@ export interface DocumentDefinition<TData extends FirestoreObject> {
  */
 export interface CollectionDefinition<TData extends FirestoreObject> {
   /**
-   * Optional Standard Schema validator for documents in the collection.
-   * Firestate does not invoke validation itself.
+   * Optional Zod schema for documents in the collection. When provided,
+   * firestate runs `schema.parse(...)` on full-payload writes (`add`) as
+   * a validation guard and stores the caller's original object verbatim.
+   * Schema transforms are not applied to stored data — see
+   * {@link DocumentDefinition.schema} for the full contract.
    */
-  schema?: StandardSchemaV1<unknown, TData>;
+  schema?: ZodType<TData>;
   /** Collection path (can include path segments) */
   path: string | ((params: Record<string, string>) => string);
   /** Debounce interval for autosave (ms), default 1000 */

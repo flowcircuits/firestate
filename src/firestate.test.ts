@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { z } from 'zod'
 import {
     defineFirestate,
     doc,
@@ -8,31 +9,18 @@ import {
     buildDocumentDefinition,
     buildCollectionDefinition,
 } from './firestate'
-import type { StandardSchemaV1 } from './types'
 
-interface TaskList {
-    name: string
-    createdAt: number
-}
-
-interface Task {
-    title: string
-    completed: boolean
-}
-
-// Minimal Standard Schema validator. Sufficient to drive type inference
-// without pulling in a real validator dependency for the unit tests.
-const standardSchema = <T>(vendor = 'test'): StandardSchemaV1<unknown, T> => ({
-    '~standard': {
-        version: 1,
-        vendor,
-        validate: (value) => ({ value: value as T }),
-        types: undefined,
-    },
+const tlSchema = z.object({
+    name: z.string(),
+    createdAt: z.number(),
+})
+const taskSchema = z.object({
+    title: z.string(),
+    completed: z.boolean(),
 })
 
-const tlSchema = standardSchema<TaskList>()
-const taskSchema = standardSchema<Task>()
+type TaskList = z.infer<typeof tlSchema>
+type Task = z.infer<typeof taskSchema>
 
 describe('doc', () => {
     it('builds a document entry from a schema-form call', () => {
@@ -268,19 +256,9 @@ describe('type-level params extraction', () => {
 })
 
 describe('buildDocumentDefinition', () => {
-    interface Project {
-        name: string
-    }
-    interface Revision {
-        title: string
-    }
-    interface Space {
-        label: string
-    }
-
-    const projectSchema = standardSchema<Project>()
-    const revisionSchema = standardSchema<Revision>()
-    const spaceSchema = standardSchema<Space>()
+    const projectSchema = z.object({ name: z.string() })
+    const revisionSchema = z.object({ title: z.string() })
+    const spaceSchema = z.object({ label: z.string() })
 
     it('resolves a flat doc path', () => {
         const def = buildDocumentDefinition(
@@ -360,11 +338,7 @@ describe('buildDocumentDefinition', () => {
 })
 
 describe('buildCollectionDefinition', () => {
-    interface Space {
-        label: string
-    }
-
-    const spaceSchema = standardSchema<Space>()
+    const spaceSchema = z.object({ label: z.string() })
 
     it('resolves a collection nested under a dynamic parent', () => {
         const def = buildCollectionDefinition(

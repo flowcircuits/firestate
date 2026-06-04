@@ -30,6 +30,7 @@ vi.mock('firebase/firestore', async () => {
 })
 
 import * as firestore from 'firebase/firestore'
+import { z } from 'zod'
 import {
     doc,
     col,
@@ -38,27 +39,9 @@ import {
 } from './firestate'
 import { createDocumentSubscription } from './document'
 import { createStore, type FirestateStore } from './store'
-import type { StandardSchemaV1 } from './types'
 
-interface Revision {
-    title: string
-}
-interface Space {
-    label: string
-}
-
-// Minimal Standard Schema validator — schema-only API requires one per entry.
-const standardSchema = <T>(): StandardSchemaV1<unknown, T> => ({
-    '~standard': {
-        version: 1,
-        vendor: 'test',
-        validate: (value) => ({ value: value as T }),
-        types: undefined,
-    },
-})
-
-const revisionSchema = standardSchema<Revision>()
-const spaceSchema = standardSchema<Space>()
+const revisionSchema = z.object({ title: z.string() })
+const spaceSchema = z.object({ label: z.string() })
 
 describe('Firestate registry → Firestore path', () => {
     let store: FirestateStore

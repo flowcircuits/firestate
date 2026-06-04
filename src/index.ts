@@ -15,8 +15,6 @@ export type {
     // Definition types
     DocumentDefinition,
     CollectionDefinition,
-    // Standard Schema interop
-    StandardSchemaV1,
     // Undo types
     UndoAction,
     UndoManager,
