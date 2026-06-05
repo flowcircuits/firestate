@@ -69,6 +69,7 @@ Both layers share the same store, undo manager, and sync semantics — the regis
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Examples](#examples)
+- [Documentation](#documentation)
 - [Core Concepts](#core-concepts)
 - [API Reference](#api-reference)
 - [Diff Utilities](#diff-utilities)
@@ -245,6 +246,14 @@ Check out the [examples](./examples) directory for complete, runnable examples:
 
 - **[React Tasks](./examples/react-tasks)** - A simple task manager demonstrating documents, collections, undo/redo, sync indicators, and real-time updates.
 
+## Documentation
+
+- [Architecture](./docs/architecture.md) - how the registry API, hooks, store, subscriptions, diffing, sync, and undo layers fit together.
+- [API Recipes](./docs/api-recipes.md) - focused examples for common usage patterns and edge cases.
+- [Contributing](./CONTRIBUTING.md) - local setup, commands, tests, and release notes.
+- [Agent Guide](./AGENTS.md) - repo map and behavioral contracts for AI coding agents.
+- [Claude Instructions](./CLAUDE.md) - short pointer for Claude Code.
+
 ## Core Concepts
 
 ### Documents vs Collections
@@ -359,6 +368,86 @@ awaiting writes is not feasible.
 
 ## API Reference
 
+### Registry API
+
+#### `defineFirestate(registry)`
+
+Creates typed React hooks from a registry object. Each key becomes a hook named
+`use{CapitalizedKey}`.
+
+```typescript
+import { z } from 'zod'
+import { defineFirestate, doc, col } from '@hvakr/firestate'
+
+const ProjectSchema = z.object({
+    name: z.string(),
+    createdAt: z.number(),
+})
+
+const SpaceSchema = z.object({
+    name: z.string(),
+    area: z.number(),
+    floor: z.number(),
+})
+
+export const { useProject, useSpaces } = defineFirestate({
+    project: doc({
+        path: 'projects/{projectId}',
+        schema: ProjectSchema,
+    }),
+    spaces: col({
+        path: 'projects/{projectId}/spaces',
+        schema: SpaceSchema,
+        lazy: true,
+    }),
+})
+```
+
+Generated hooks require the params implied by the path template:
+
+```tsx
+const project = useProject({ projectId })
+const spaces = useSpaces({ projectId })
+```
+
+Use the second argument for hook options such as `enabled`, `readOnly`,
+`undoable`, or collection `queryConstraints`:
+
+```tsx
+const spaces = useSpaces(
+    { projectId },
+    {
+        enabled: Boolean(projectId),
+        queryConstraints,
+    }
+)
+```
+
+#### `doc(options)` and `col(options)`
+
+Declare registry entries. A Zod `schema` is required and drives both the
+generated TypeScript data type and runtime validation for full writes.
+
+```typescript
+doc({
+    path: 'projects/{projectId}',
+    schema: ProjectSchema,
+    autosave: 1000,
+    readOnly: false,
+    retryOnError: false,
+})
+
+col({
+    path: 'projects/{projectId}/spaces',
+    schema: SpaceSchema,
+    lazy: true,
+    queryConstraints: [],
+})
+```
+
+Path placeholders must look like `{name}`. Empty param values throw at runtime
+when a path is resolved.
+
 ### Definition Helpers
 
 #### `defineDocument(definition)`
@@ -417,6 +506,7 @@ const {
     params: { projectId: '123' },
     readOnly: false,     // Optional: override read-only
     undoable: true,      // Optional: enable undo (default: true)
+    enabled: true,       // Optional: set false until required params exist
 })
 ```
 
@@ -442,6 +532,7 @@ const {
     params: { projectId: '123' },
     queryConstraints: [where('floor', '==', 1)],
     undoable: true,
+    enabled: true,       // Optional: set false until required params exist
 })
 
 // Update existing documents
@@ -606,7 +697,7 @@ const combined = mergeDiffs(diff1, diff2)
 
 ## Notes
 
-- **`enabled` flag** — pass `enabled: false` to `useDocument`/`useCollection` to skip the subscription when params aren't ready (e.g., during a route transition).
+- **`enabled` flag** — pass `enabled: false` to generated hooks or to `useDocument`/`useCollection` when route params or auth-derived ids are not ready yet. Disabled hooks do not resolve paths or attach listeners, which avoids building invalid Firestore paths like `projects//spaces`.
 - **Navigation flicker** — changing `params` rebuilds the listener and briefly shows `isLoading: true`. To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
 - **No cross-doc transactions** — writes are atomic per document and per collection (via `writeBatch`), but not across them. For now, use Firestore's `runTransaction` directly via `handle.ref`.
 - **Per-client undo** — `useUndoManager` is local; one user's undo doesn't propagate to others.
@@ -852,6 +943,9 @@ function ProjectEditor({ projectId }) {
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, workflow, and testing
+guidelines.
 
 ### Development
 
