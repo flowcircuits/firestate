@@ -58,10 +58,10 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/hvakr/firestate.git"
+        "url": "git+https://github.com/flowcircuits/firestate.git"
     },
-    "homepage": "https://github.com/hvakr/firestate#readme",
+    "homepage": "https://github.com/flowcircuits/firestate#readme",
     "bugs": {
-        "url": "https://github.com/hvakr/firestate/issues"
+        "url": "https://github.com/flowcircuits/firestate/issues"
     }
 }
