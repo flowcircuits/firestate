@@ -36,7 +36,7 @@ pnpm test:coverage
 
 ## Change Guidelines
 
-- Prefer the registry API (`defineFirestate`, `doc`, `col`) for examples and
+- Prefer the registry API (`createFirestate`, `doc`, `col`) for examples and
   app-facing docs.
 - Keep the lower-level API (`defineDocument`, `defineCollection`,
   `useDocument`, `useCollection`) working as an escape hatch.

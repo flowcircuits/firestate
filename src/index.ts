@@ -38,7 +38,7 @@ export type {
 } from './schema'
 
 // Registry-driven API
-export { defineFirestate, doc, col } from './firestate'
+export { createFirestate, doc, col } from './firestate'
 
 export type {
     DocEntry,

@@ -5,11 +5,11 @@ modifying Firestate.
 
 ## Recommended Registry API
 
-Use `defineFirestate`, `doc`, and `col` for normal app code.
+Use `createFirestate`, `doc`, and `col` for normal app code.
 
 ```ts
 import { z } from 'zod'
-import { defineFirestate, doc, col } from '@hvakr/firestate'
+import { createFirestate, doc, col } from '@hvakr/firestate'
 
 const ProjectSchema = z.object({
     name: z.string(),
@@ -22,7 +22,7 @@ const SpaceSchema = z.object({
     floor: z.number(),
 })
 
-export const { useProject, useSpaces } = defineFirestate({
+export const { useProject, useSpaces } = createFirestate({
     project: doc({
         path: 'projects/{projectId}',
         schema: ProjectSchema,

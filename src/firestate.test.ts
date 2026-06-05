@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import {
-    defineFirestate,
+    createFirestate,
     doc,
     col,
     interpolatePath,
@@ -138,9 +138,9 @@ describe('splitDocPath', () => {
     })
 })
 
-describe('defineFirestate', () => {
+describe('createFirestate', () => {
     it('produces a hook per registry key', () => {
-        const api = defineFirestate({
+        const api = createFirestate({
             taskList: doc({ path: 'taskLists/{listId}', schema: tlSchema }),
             tasks: col({
                 path: 'taskLists/{listId}/tasks',
@@ -153,7 +153,7 @@ describe('defineFirestate', () => {
     })
 
     it('capitalizes the first character of each key', () => {
-        const api = defineFirestate({
+        const api = createFirestate({
             a: doc({ path: 'a/{id}', schema: tlSchema }),
             longerName: col({ path: 'a/{id}/sub', schema: taskSchema }),
         })
@@ -164,13 +164,13 @@ describe('defineFirestate', () => {
 
     it('rejects invalid keys', () => {
         expect(() =>
-            defineFirestate({
+            createFirestate({
                 '1bad': doc({ path: 'a/{id}', schema: tlSchema }),
             } as any)
         ).toThrow(/must start with a letter/)
 
         expect(() =>
-            defineFirestate({
+            createFirestate({
                 'bad-key': doc({ path: 'a/{id}', schema: tlSchema }),
             } as any)
         ).toThrow(/must start with a letter/)
@@ -215,7 +215,7 @@ describe('type-level params extraction', () => {
     // "is this call signature actually enforced?".
     it('requires the right param keys at call sites', () => {
         function _typeTest() {
-            const api = defineFirestate({
+            const api = createFirestate({
                 taskList: doc({
                     path: 'taskLists/{listId}',
                     schema: tlSchema,

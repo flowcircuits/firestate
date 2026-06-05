@@ -9,7 +9,7 @@
  * interface TaskList { name: string; createdAt: number }
  * interface Task { title: string; completed: boolean }
  *
- * export const { useTaskList, useTasks } = defineFirestate({
+ * export const { useTaskList, useTasks } = createFirestate({
  *   taskList: doc<TaskList>('taskLists/{listId}'),
  *   tasks:    col<Task>('taskLists/{listId}/tasks'),
  * })
@@ -223,7 +223,7 @@ export function col<
 }
 
 // ---------------------------------------------------------------------------
-// defineFirestate
+// createFirestate
 // ---------------------------------------------------------------------------
 
 type HookName<K extends string> = `use${Capitalize<K>}`;
@@ -262,13 +262,13 @@ export type FirestateApi<R extends FirestateRegistry> = {
  * `K` produces a hook named `use{Capitalize<K>}`.
  *
  * ```ts
- * export const { useTaskList, useTasks } = defineFirestate({
+ * export const { useTaskList, useTasks } = createFirestate({
  *   taskList: doc<TaskList>('taskLists/{listId}'),
  *   tasks:    col<Task>('taskLists/{listId}/tasks'),
  * })
  * ```
  */
-export function defineFirestate<R extends FirestateRegistry>(
+export function createFirestate<R extends FirestateRegistry>(
   registry: R
 ): FirestateApi<R> {
   const api: Record<string, unknown> = {};
@@ -303,7 +303,7 @@ export function defineFirestate<R extends FirestateRegistry>(
 /**
  * Build the underlying {@link DocumentDefinition} for a registry doc entry.
  * Exported for unit testing — registry consumers should call
- * {@link defineFirestate} instead.
+ * {@link createFirestate} instead.
  *
  * @internal
  */
