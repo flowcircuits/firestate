@@ -1,7 +1,7 @@
-import { defineFirestate, doc, col } from '@hvakr/firestate'
+import { createFirestate, doc, col } from '@hvakr/firestate'
 import { TaskListSchema, TaskSchema } from './types'
 
-export const { useTaskList, useTasks } = defineFirestate({
+export const { useTaskList, useTasks } = createFirestate({
     taskList: doc({
         path: 'taskLists/{listId}',
         schema: TaskListSchema,

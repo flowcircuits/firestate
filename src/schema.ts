@@ -8,7 +8,7 @@ import type {
 /**
  * Define a typed document. `TData` is the document's TypeScript shape.
  *
- * **Most apps should reach for {@link defineFirestate} + {@link doc} instead**
+ * **Most apps should reach for {@link createFirestate} + {@link doc} instead**
  * — that builds a registry of every Firestore thing in one object and
  * generates typed hooks for you. `defineDocument` is the lower-level
  * escape hatch: use it when you need fully custom `collection` / `id`
@@ -61,7 +61,7 @@ export function defineDocument(
  * Define a typed collection. `TData` is the shape of each document in the
  * collection. See {@link defineDocument} for the schema/plain-type tradeoff.
  *
- * **Most apps should reach for {@link defineFirestate} + {@link col} instead.**
+ * **Most apps should reach for {@link createFirestate} + {@link col} instead.**
  * `defineCollection` is the escape hatch for fully custom path derivation
  * or non-React usage.
  *

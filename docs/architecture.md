@@ -4,7 +4,7 @@ Firestate has two public API layers over the same core subscription system.
 
 The recommended layer is the registry API:
 
-- `defineFirestate(registry)` creates named React hooks.
+- `createFirestate(registry)` creates named React hooks.
 - `doc({ path, schema })` declares one document entry.
 - `col({ path, schema })` declares one collection entry.
 
@@ -24,7 +24,7 @@ At runtime, a typical React app follows this flow:
 
 1. The app renders `FirestateProvider` with a Firestore instance.
 2. `FirestateProvider` creates a `FirestateStore`.
-3. A generated hook from `defineFirestate`, or a direct call to `useDocument`
+3. A generated hook from `createFirestate`, or a direct call to `useDocument`
    / `useCollection`, resolves the Firestore path from params.
 4. The hook creates a document or collection subscription.
 5. The subscription attaches an `onSnapshot` listener when loaded.

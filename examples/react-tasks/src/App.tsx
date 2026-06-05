@@ -15,7 +15,7 @@ const LIST_ID = 'demo-list'
 function TaskListEditor() {
     const params = { listId: LIST_ID }
 
-    // The two hooks below come straight from `defineFirestate(...)` in
+    // The two hooks below come straight from `createFirestate(...)` in
     // schemas.ts — one registry, generated `useTaskList` / `useTasks`.
     const taskList = useTaskList(params)
     const tasks = useTasks(params)

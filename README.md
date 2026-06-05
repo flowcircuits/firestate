@@ -31,7 +31,7 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 
 Firestate exposes two layers. Pick one based on what you're building:
 
-- **`defineFirestate` + `doc` / `col`** (recommended for app code) — declare every Firestore thing in a single registry object; the library generates one typed React hook per entry. Each entry takes a `path` template and a Zod `schema`. In return you get:
+- **`createFirestate` + `doc` / `col`** (recommended for app code) — declare every Firestore thing in a single registry object; the library generates one typed React hook per entry. Each entry takes a `path` template and a Zod `schema`. In return you get:
   - the data type (`TaskList`) inferred from the schema via `z.infer`
   - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
   - runtime validation on `set` / `add` writes — bad data throws at the call site instead of after a Firestore round trip
@@ -40,12 +40,12 @@ Firestate exposes two layers. Pick one based on what you're building:
 
   ```ts
   import { z } from 'zod'
-  import { defineFirestate, doc, col } from '@hvakr/firestate'
+  import { createFirestate, doc, col } from '@hvakr/firestate'
 
   const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
   const TaskSchema     = z.object({ title: z.string(), completed: z.boolean() })
 
-  export const { useTaskList, useTasks } = defineFirestate({
+  export const { useTaskList, useTasks } = createFirestate({
     taskList: doc({ path: 'taskLists/{listId}',       schema: TaskListSchema }),
     tasks:    col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema }),
   })
@@ -370,14 +370,14 @@ awaiting writes is not feasible.
 
 ### Registry API
 
-#### `defineFirestate(registry)`
+#### `createFirestate(registry)`
 
 Creates typed React hooks from a registry object. Each key becomes a hook named
 `use{CapitalizedKey}`.
 
 ```typescript
 import { z } from 'zod'
-import { defineFirestate, doc, col } from '@hvakr/firestate'
+import { createFirestate, doc, col } from '@hvakr/firestate'
 
 const ProjectSchema = z.object({
     name: z.string(),
@@ -390,7 +390,7 @@ const SpaceSchema = z.object({
     floor: z.number(),
 })
 
-export const { useProject, useSpaces } = defineFirestate({
+export const { useProject, useSpaces } = createFirestate({
     project: doc({
         path: 'projects/{projectId}',
         schema: ProjectSchema,

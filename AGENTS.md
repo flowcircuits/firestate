@@ -13,7 +13,7 @@ The recommended application API is registry-based:
 
 ```ts
 import { z } from 'zod'
-import { defineFirestate, doc, col } from '@hvakr/firestate'
+import { createFirestate, doc, col } from '@hvakr/firestate'
 
 const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
 const TaskSchema = z.object({
@@ -21,7 +21,7 @@ const TaskSchema = z.object({
     completed: z.boolean(),
 })
 
-export const { useTaskList, useTasks } = defineFirestate({
+export const { useTaskList, useTasks } = createFirestate({
     taskList: doc({ path: 'taskLists/{listId}', schema: TaskListSchema }),
     tasks: col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema }),
 })
@@ -47,7 +47,7 @@ CI runs `pnpm typecheck`, `pnpm build`, and `pnpm test` on Node 22.
 ## Source Map
 
 - `src/index.ts` - public exports. Update this when adding public API.
-- `src/firestate.ts` - registry API: `defineFirestate`, `doc`, `col`, path
+- `src/firestate.ts` - registry API: `createFirestate`, `doc`, `col`, path
   template validation, generated hook typing.
 - `src/schema.ts` - lower-level definition helpers.
 - `src/types.ts` - public state, handle, definition, undo, and config types.
