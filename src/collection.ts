@@ -20,7 +20,15 @@ import type {
     UpdateOptions,
 } from './types'
 import type { FirestateStore } from './store'
-import { applyDiffMutable, computeDiff, deepClone, flattenDiff, isDeepEqual } from './diff'
+import {
+    applyDiffMutable,
+    applyOverridesAtPaths,
+    computeDiff,
+    deepClone,
+    flattenDiff,
+    isDeepEqual,
+    reconcileDisplayOverrides,
+} from './diff'
 
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same collection path.
@@ -63,6 +71,12 @@ interface CollectionInternalState<T extends FirestoreObject> {
     error: Error | undefined
     waitingForUpdate: boolean
     inflightLocalState: Record<string, T> | undefined
+    /**
+     * Frozen display values for `serverTimestamp()` sentinels currently
+     * sitting in `localState`. Keyed by dotted path (e.g.
+     * `"<docId>.updatedAt"`). See document.ts for the full contract.
+     */
+    displayOverrides: Map<string, unknown>
 }
 
 /**
@@ -139,6 +153,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         error: undefined,
         waitingForUpdate: false,
         inflightLocalState: undefined,
+        displayOverrides: new Map(),
     }
 
     const subscribers = new Set<Subscriber<CollectionState<TData>>>()
@@ -156,8 +171,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     // subscriptions to the same path don't share (or clobber) one entry.
     const syncKey = `col:${collectionPath}#${++syncKeyCounter}`
 
-    const getMergedData = (): Record<string, TData> =>
-        state.localState ?? state.syncState ?? {}
+    const getMergedData = (): Record<string, TData> => {
+        const base = state.localState ?? state.syncState ?? {}
+        return applyOverridesAtPaths(base, state.displayOverrides)
+    }
 
     const getPublicState = (): CollectionState<TData> => ({
         data: getMergedData(),
@@ -168,6 +185,12 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     })
 
     const notify = () => {
+        // Reconcile display overrides against the current localState
+        // before publishing — see document.ts for the full contract.
+        reconcileDisplayOverrides(
+            state.localState as Record<string, unknown> | undefined,
+            state.displayOverrides
+        )
         cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
