@@ -220,8 +220,12 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             return
         }
 
-        const currentData = getMergedData()
-        const newLocalState = deepClone(currentData)
+        // Use raw localState as the mutation base so serverTimestamp() sentinels
+        // in localState survive into newLocalState. getMergedData() substitutes
+        // display-override Timestamps at sentinel paths, which would erase the
+        // sentinel from state.localState on the next update() call.
+        const rawBase = state.localState ?? state.syncState ?? {}
+        const newLocalState = deepClone(rawBase)
         applyDiffMutable(newLocalState, diff as Record<string, unknown>)
 
         // Ensure each document has its id
@@ -238,10 +242,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         if (undoOptions?.undoable !== false && onPushUndo) {
             const undoDiff = computeDiff(
                 newLocalState as FirestoreObject,
-                currentData as FirestoreObject
+                rawBase as FirestoreObject
             )
             const redoDiff = computeDiff(
-                currentData as FirestoreObject,
+                rawBase as FirestoreObject,
                 newLocalState as FirestoreObject
             )
             onPushUndo(

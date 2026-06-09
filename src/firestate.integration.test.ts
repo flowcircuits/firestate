@@ -254,4 +254,75 @@ describe('Document subscription: serverTimestamp display overrides', () => {
         // And the displayed value is NOT the sentinel that will ship.
         expect(displayed).not.toBe(sentinel)
     })
+
+    it('a chained update() after a serverTimestamp update keeps the sentinel in localState', () => {
+        // Regression: updateState used getMergedData() as the mutation base.
+        // getMergedData() substitutes the display-override Timestamp at the
+        // sentinel path; a second update() would clone that Timestamp into
+        // newLocalState, silently erasing the sentinel. If the sentinel is
+        // erased, reconcileDisplayOverrides drops the override and
+        // getMergedData() falls back to the syncState Timestamp(1000).
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema })
+        )
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+        })
+        sub.load()
+        fireSnapshot({ title: 'first', updatedAt: Timestamp.fromMillis(1000) })
+
+        sub.getHandle().update({ updatedAt: serverTimestamp() })
+        // Chain a second update that doesn't touch updatedAt.
+        sub.getHandle().update({ title: 'second' })
+
+        // Sentinel must still be in localState. Proxy: the display override is
+        // still active, so updatedAt is NOT the syncState Timestamp(1000). If the
+        // sentinel had been erased, the override would drop and Timestamp(1000) would show.
+        const displayed = sub.getState().data!.updatedAt
+        expect(displayed).toBeInstanceOf(Timestamp)
+        expect(displayed).not.toEqual(Timestamp.fromMillis(1000))
+        expect(sub.getState().data!.title).toBe('second')
+    })
+
+    it('setData undo restore payload contains the sentinel, not a frozen client Timestamp', async () => {
+        // Regression: setData snapshotted deepClone(getMergedData()) for the
+        // undo restore payload. getMergedData() substitutes frozen Timestamps
+        // for sentinels; undo would then call setData() with a client Timestamp,
+        // re-introducing the C1 regression through the undo path.
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema })
+        )
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+            onPushUndo: (undoFn, redoFn, opts) =>
+                store.undoManager.push({ undo: undoFn, redo: redoFn, groupId: opts?.undoGroupId }),
+        })
+        sub.load()
+        fireSnapshot({ title: 'first', updatedAt: Timestamp.fromMillis(1000) })
+
+        sub.getHandle().update({ updatedAt: serverTimestamp() })
+        // Display override active — shows a Timestamp that is not the syncState value.
+        expect(sub.getState().data!.updatedAt).not.toEqual(Timestamp.fromMillis(1000))
+
+        // set() captures the undo restore snapshot of the pre-set state (with sentinel).
+        sub.getHandle().set({ title: 'replaced', updatedAt: Timestamp.fromMillis(9999) })
+        expect(sub.getState().data!.title).toBe('replaced')
+
+        // Undo restores the pre-set state. Sentinel is restored into localState,
+        // triggering a fresh display-override capture.
+        await store.undoManager.undo()
+
+        expect(sub.getState().data!.title).toBe('first')
+        // updatedAt must NOT be Timestamp(9999) — that would mean the undo payload
+        // held the display-override Timestamp rather than the sentinel.
+        expect(sub.getState().data!.updatedAt).not.toEqual(Timestamp.fromMillis(9999))
+        // It IS a Timestamp (display override fired for the restored sentinel).
+        expect(sub.getState().data!.updatedAt).toBeInstanceOf(Timestamp)
+    })
 })

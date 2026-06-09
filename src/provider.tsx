@@ -21,6 +21,26 @@ export interface FirestateProviderProps {
   minLoadTime?: number;
   /** Maximum undo stack length, default 20 */
   maxUndoLength?: number;
+  /**
+   * Called before undo/redo when the action carries a `path`. Wire your
+   * router's `navigate` here to return users to where a change occurred
+   * before reverting it.
+   *
+   * @example
+   * ```tsx
+   * import { useNavigate } from 'react-router-dom'
+   *
+   * function App() {
+   *   const navigate = useNavigate()
+   *   return (
+   *     <FirestateProvider onNavigate={(path) => navigate(path)}>
+   *       {children}
+   *     </FirestateProvider>
+   *   )
+   * }
+   * ```
+   */
+  onNavigate?: (path: string) => void;
   /** Custom error handler */
   onError?: (error: Error, context: ErrorContext) => void;
   /** React children */
@@ -55,12 +75,14 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
   minLoadTime = 0,
   maxUndoLength = 20,
   onError,
+  onNavigate,
   children,
 }) => {
-  // onError is intentionally excluded from the deps so that an inline
-  // callback (new reference per render) does not re-create the store and
-  // drop every existing subscription. The store exposes setOnError so the
-  // latest handler can be applied without store re-creation.
+  // onError and onNavigate are intentionally excluded from the deps so that
+  // inline callbacks (new reference per render) do not re-create the store and
+  // drop every existing subscription. The store exposes setOnError /
+  // setOnNavigate so the latest handlers can be applied without store
+  // re-creation.
   const store = useMemo(
     () =>
       createStore({
@@ -69,6 +91,7 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
         minLoadTime,
         maxUndoLength,
         onError,
+        onNavigate,
       }),
     [firestore, autosave, minLoadTime, maxUndoLength]
   );
@@ -76,6 +99,10 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
   useEffect(() => {
     store.setOnError(onError);
   }, [store, onError]);
+
+  useEffect(() => {
+    store.setOnNavigate(onNavigate);
+  }, [store, onNavigate]);
 
   return (
     <FirestateContext.Provider value={store}>
