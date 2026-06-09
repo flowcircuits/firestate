@@ -210,6 +210,66 @@ describe('createStore', () => {
         })
     })
 
+    describe('onNavigate integration', () => {
+        it('calls onNavigate before undo when action has a path', async () => {
+            const onNavigate = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onNavigate })
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/123' })
+            await store.undoManager.undo()
+
+            expect(onNavigate).toHaveBeenCalledWith('/route/123')
+        })
+
+        it('calls onNavigate before redo when action has a path', async () => {
+            const onNavigate = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onNavigate })
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/123' })
+            await store.undoManager.undo()
+            await store.undoManager.redo()
+
+            expect(onNavigate).toHaveBeenCalledTimes(2)
+            expect(onNavigate).toHaveBeenLastCalledWith('/route/123')
+        })
+
+        it('does not call onNavigate when action has no path', async () => {
+            const onNavigate = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onNavigate })
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn() })
+            await store.undoManager.undo()
+
+            expect(onNavigate).not.toHaveBeenCalled()
+        })
+
+        it('setOnNavigate replaces the handler without recreating the store', async () => {
+            const first = vi.fn()
+            const second = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onNavigate: first })
+
+            store.setOnNavigate(second)
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/456' })
+            await store.undoManager.undo()
+
+            expect(first).not.toHaveBeenCalled()
+            expect(second).toHaveBeenCalledWith('/route/456')
+        })
+
+        it('setOnNavigate with undefined disables navigation', async () => {
+            const onNavigate = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onNavigate })
+
+            store.setOnNavigate(undefined)
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/789' })
+            await store.undoManager.undo()
+
+            expect(onNavigate).not.toHaveBeenCalled()
+        })
+    })
+
     describe('undo manager integration', () => {
         it('provides access to undo manager', () => {
             const store = createStore({

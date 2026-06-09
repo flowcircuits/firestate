@@ -268,6 +268,14 @@ export interface FirestateConfig {
   maxUndoLength?: number;
   /** Enable navigation-aware undo/redo */
   enableNavigation?: boolean;
+  /**
+   * Callback invoked before undo/redo when the action carries a `path`.
+   * Wire your router's `navigate` here so undo/redo returns the user to
+   * where a change occurred before reverting it.
+   *
+   * When provided, this supersedes `enableNavigation`.
+   */
+  onNavigate?: (path: string) => void;
   /** Custom error handler */
   onError?: (error: Error, context: ErrorContext) => void;
 }

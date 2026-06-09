@@ -22,6 +22,12 @@ export interface FirestateStore {
      * callback that changes reference on every render.
      */
     setOnError: (handler?: (error: Error, context: ErrorContext) => void) => void
+    /**
+     * Replace the navigation handler at runtime. Used by FirestateProvider to
+     * keep the store identity stable when consumers pass an inline `onNavigate`
+     * callback that changes reference on every render.
+     */
+    setOnNavigate: (handler?: (path: string) => void) => void
     /** Subscribe to sync state changes */
     subscribeToSyncState: (fn: Subscriber<boolean>) => Unsubscribe
     /** Report a document/collection sync state change */
@@ -62,11 +68,15 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
         maxUndoLength = 20,
     } = config
 
-    // Mutable so the provider can update it without re-creating the store.
+    // Mutable so the provider can update them without re-creating the store.
     let onError = config.onError
+    let onNavigate = config.onNavigate
 
     const undoManager = createUndoManager({
         maxLength: maxUndoLength,
+        // Stable wrapper — delegates to the mutable onNavigate ref so the
+        // undo manager doesn't need to be recreated when the callback changes.
+        onNavigate: (path) => onNavigate?.(path),
     })
 
     // Track sync state of all documents/collections
@@ -104,6 +114,10 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
 
         setOnError: (handler) => {
             onError = handler
+        },
+
+        setOnNavigate: (handler) => {
+            onNavigate = handler
         },
 
         subscribeToSyncState: (fn) => {

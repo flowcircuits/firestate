@@ -306,6 +306,48 @@ To skip undo tracking:
 project.update({ lastViewed: Date.now() }, { undoable: false })
 ```
 
+#### Navigation-aware undo/redo
+
+When an undo action is tagged with a `path`, undo/redo can return the user to
+the route where the change occurred before reverting it. Wire your router's
+`navigate` via `onNavigate` on `FirestateProvider`:
+
+```tsx
+import { useNavigate } from 'react-router-dom'
+
+function App() {
+    const navigate = useNavigate()
+
+    return (
+        <FirestateProvider
+            firestore={db}
+            onNavigate={(path) => navigate(path)}
+        >
+            {children}
+        </FirestateProvider>
+    )
+}
+```
+
+When creating the store manually, pass `onNavigate` to `createStore`:
+
+```ts
+const store = createStore({
+    firestore: db,
+    onNavigate: (path) => router.push(path),
+})
+```
+
+Actions record a path via the `path` field on `UndoAction`:
+
+```tsx
+undoManager.push({
+    undo: () => restoreValue(),
+    redo: () => applyValue(),
+    path: '/projects/123',  // navigate here on undo/redo
+})
+```
+
 ### Lazy Collections
 
 For large applications, you may not want to subscribe to every collection immediately:
@@ -592,6 +634,7 @@ Main provider component.
     autosave={1000}             // Optional: default debounce (ms)
     minLoadTime={0}             // Optional: minimum loading time (ms)
     maxUndoLength={20}          // Optional: max undo stack size
+    onNavigate={(path) => navigate(path)}  // Optional: router navigate for path-aware undo/redo
     onError={(error, context) => {
         // Optional: custom error handler
         console.error(context.path, error)
