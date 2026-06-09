@@ -19,7 +19,15 @@ import type {
     UpdateOptions,
 } from './types'
 import type { FirestateStore } from './store'
-import { applyDiffMutable, computeDiff, deepClone, flattenDiff, isDeepEqual } from './diff'
+import {
+    applyDiffMutable,
+    applyOverridesAtPaths,
+    computeDiff,
+    deepClone,
+    flattenDiff,
+    isDeepEqual,
+    reconcileDisplayOverrides,
+} from './diff'
 
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same document path.
@@ -73,6 +81,15 @@ interface DocumentInternalState<T extends FirestoreObject> {
     inflightLocalState: T | null | undefined
     /** Whether the pending operation is a full set (create/replace) vs a partial update */
     isSetOperation: boolean
+    /**
+     * Frozen display values for `serverTimestamp()` sentinels currently
+     * sitting in `localState`. Keyed by dotted path. Captured at the
+     * moment a sentinel first appears, dropped when the sentinel leaves
+     * `localState` (sync ack or overwrite). Substituted into the merged
+     * view by `getMergedData` so consumers always see a renderable
+     * `Timestamp`, never a raw FieldValue, while the write is in flight.
+     */
+    displayOverrides: Map<string, unknown>
 }
 
 /**
@@ -159,6 +176,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         waitingForUpdate: false,
         inflightLocalState: undefined,
         isSetOperation: false,
+        displayOverrides: new Map(),
     }
 
     const subscribers = new Set<Subscriber<DocumentState<TData>>>()
@@ -179,7 +197,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const getMergedData = (): TData | undefined => {
         // null localState marks a pending delete — surface as no data.
         if (state.localState === null) return undefined
-        return state.localState ?? state.syncState
+        const base = state.localState ?? state.syncState
+        if (base === undefined) return undefined
+        return applyOverridesAtPaths(base, state.displayOverrides)
     }
 
     const getPublicState = (): DocumentState<TData> => ({
@@ -190,6 +210,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     })
 
     const notify = () => {
+        // Reconcile display overrides against the current localState
+        // before publishing — captures Timestamp.now() for any newly
+        // arrived serverTimestamp() sentinel and drops entries whose
+        // sentinels have been overwritten or acked away.
+        reconcileDisplayOverrides(
+            state.localState && typeof state.localState === 'object'
+                ? (state.localState as Record<string, unknown>)
+                : undefined,
+            state.displayOverrides
+        )
         cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
