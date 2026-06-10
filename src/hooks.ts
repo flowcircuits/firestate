@@ -7,11 +7,10 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import { collection, query, queryEqual } from "firebase/firestore";
+import { collection, queryEqual } from "firebase/firestore";
 import type {
   CollectionReference,
   Firestore,
-  Query,
   QueryConstraint,
 } from "firebase/firestore";
 import type {
@@ -26,34 +25,18 @@ import type {
 } from "./types";
 import type { FirestateStore } from "./store";
 import { createDocumentSubscription } from "./document";
-import { createCollectionSubscription } from "./collection";
-
-/**
- * Build the Firestore query a collection subscription would run, mirroring
- * the merge order in collection.ts (`definitionConstraints` then hook-level
- * `extraConstraints`). With no constraints the bare collection reference is
- * itself a valid `Query` for comparison purposes.
- */
-const buildCollectionQuery = (
-  ref: CollectionReference,
-  definitionConstraints: QueryConstraint[] | undefined,
-  extraConstraints: QueryConstraint[] | undefined
-): Query => {
-  const all = [
-    ...(definitionConstraints ?? []),
-    ...(extraConstraints ?? []),
-  ];
-  return all.length > 0 ? query(ref, ...all) : ref;
-};
+import { buildCollectionQuery, createCollectionSubscription } from "./collection";
 
 /**
  * Whether two hook-level `queryConstraints` arrays produce the same Firestore
  * query for a collection. `QueryConstraint` objects are opaque, so instead of
- * hand-rolling a deep compare we build both queries and defer to Firestore's
- * own `queryEqual`, which structurally compares filters, ordering, limits,
- * and cursors. This is what lets the subscription survive reference churn
- * (e.g. constraint inputs read from a deep-cloned document) while still
- * rebuilding when the query genuinely changes — no caller-supplied key.
+ * hand-rolling a deep compare we build both queries — with the same
+ * `buildCollectionQuery` the subscription itself uses, so this check can never
+ * drift from the query that actually runs — and defer to Firestore's own
+ * `queryEqual`, which structurally compares filters, ordering, limits, and
+ * cursors. This is what lets the subscription survive reference churn (e.g.
+ * constraint inputs read from a deep-cloned document) while still rebuilding
+ * when the query genuinely changes — no caller-supplied key.
  */
 const queryConstraintsEqual = (
   firestore: Firestore,

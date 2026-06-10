@@ -8,6 +8,7 @@ import {
     WithFieldValue,
     QueryConstraint,
     type CollectionReference,
+    type Query,
 } from 'firebase/firestore'
 import type {
     CollectionDefinition,
@@ -33,6 +34,28 @@ import {
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same collection path.
 let syncKeyCounter = 0
+
+/**
+ * Build the Firestore query a collection subscription runs: `definition`-level
+ * constraints first, then hook-level `extraConstraints`. With no constraints at
+ * all the bare collection reference is itself a valid `Query`.
+ *
+ * Single source of truth for query assembly. `useCollection` decides whether a
+ * fresh `queryConstraints` array is semantically the same query — and so
+ * whether to keep the existing listener instead of tearing it down — by
+ * building the prospective query with this exact function and comparing via
+ * Firestore's `queryEqual` (see hooks.ts). That comparison is only correct if
+ * it assembles the query the same way the subscription does, so both paths MUST
+ * go through here. Don't re-inline the merge order at either call site.
+ */
+export const buildCollectionQuery = <TData>(
+    ref: CollectionReference<TData>,
+    definitionConstraints: QueryConstraint[] | undefined,
+    extraConstraints: QueryConstraint[] | undefined
+): Query<TData> => {
+    const all = [...(definitionConstraints ?? []), ...(extraConstraints ?? [])]
+    return all.length > 0 ? query(ref, ...all) : ref
+}
 
 /**
  * Options for creating a collection subscription
@@ -139,8 +162,6 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             `createCollectionSubscription: definition.path is a function; pass a resolved collectionPath in options.`
         )
     }
-    const allConstraints = [...(definitionConstraints ?? []), ...(extraConstraints ?? [])]
-
     // Create collection reference
     const collectionRef = collection(firestore, collectionPath) as CollectionReference<TData>
 
@@ -538,9 +559,11 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         loaded = false
         minLoadTimeElapsed = false
 
-        const q = allConstraints.length > 0
-            ? query(collectionRef, ...allConstraints)
-            : collectionRef
+        const q = buildCollectionQuery(
+            collectionRef,
+            definitionConstraints,
+            extraConstraints
+        )
 
         unsubscribeListener = onSnapshot(
             q,
