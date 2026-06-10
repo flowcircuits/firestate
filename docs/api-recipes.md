@@ -214,6 +214,43 @@ const queryConstraints = useMemo(
 const spaces = useSpaces({ projectId }, { queryConstraints })
 ```
 
+### Dynamic queries built from document data: use `queryKey`
+
+`useMemo` keys on its dependencies *by reference*. If a dependency is an array
+or object read out of another Firestate document, its reference changes on
+every optimistic update to that document — Firestate deep-clones local state on
+edit — even when the contents are identical. The memo then produces a new
+constraints array, the listener is torn down and re-attached, `isLoading`
+flips back to `true`, and any loading gate above the hook flashes.
+
+Pass `queryKey` to key the subscription on the underlying values instead. The
+listener then rebuilds only when the key changes:
+
+```tsx
+import { documentId, where } from 'firebase/firestore'
+import { useMemo } from 'react'
+
+// stationIds comes from another document and may change reference on
+// every edit to that document, even when its contents are unchanged.
+const stationIds = project.data?.weatherSpec.nearestWeatherStationIds ?? []
+
+const queryConstraints = useMemo(
+    () => [where(documentId(), 'in', stationIds)],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stationIds.join('\n')]
+)
+
+const stations = useWeatherStations(
+    {},
+    { queryConstraints, queryKey: stationIds.join('\n') }
+)
+```
+
+With `queryKey` set, the `queryConstraints` reference no longer matters — you
+can even pass an inline array. Keep the key derived from the same values the
+constraints are built from; if the key understates the query (e.g. omits a
+filter value), the listener will not rebuild when that value changes.
+
 ## Undo and Redo
 
 Undo is enabled by default.

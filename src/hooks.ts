@@ -290,6 +290,15 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
   readOnly?: boolean;
   /** Additional query constraints */
   queryConstraints?: QueryConstraint[];
+  /**
+   * Stable identity key for `queryConstraints`. When provided, the
+   * subscription is keyed on this string instead of the `queryConstraints`
+   * array reference, so upstream state that recreates the array (e.g. a
+   * deep-cloned parent object) does not tear down and reload the listener
+   * as long as the key is unchanged. Derive it from the same values the
+   * constraints are built from, e.g. `queryKey: ids.join('\n')`.
+   */
+  queryKey?: string;
   /** Enable undo/redo for this collection (default: true) */
   undoable?: boolean;
   /**
@@ -304,13 +313,27 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * Hook to subscribe to a Firestore collection with real-time updates.
  *
  * The subscription is keyed on the resolved collection path, `readOnly`, and
- * the `queryConstraints` reference. When any of these change, the listener
- * is torn down and re-attached with the new query. Toggling `undoable` does
- * not rebuild the subscription.
+ * the `queryConstraints` reference (or `queryKey` when provided). When any of
+ * these change, the listener is torn down and re-attached with the new query.
+ * Toggling `undoable` does not rebuild the subscription.
  *
  * **Memoize `queryConstraints`.** An inline array (`queryConstraints={[where(...)]}`)
  * creates a new reference every render, which will thrash the listener.
  * Wrap in `useMemo` with the underlying filter values as deps.
+ *
+ * **Or pass `queryKey`.** `QueryConstraint` objects are opaque, so Firestate
+ * cannot deep-compare them. If the values feeding your constraints can change
+ * reference without changing meaning (e.g. arrays inside optimistically
+ * deep-cloned documents), provide a value-derived `queryKey` — the listener
+ * then survives reference churn and only rebuilds when the key changes:
+ *
+ * ```tsx
+ * const stations = useCollection({
+ *   definition: weatherStations,
+ *   queryConstraints: [where(documentId(), 'in', stationIds)],
+ *   queryKey: stationIds.join('\n'),
+ * })
+ * ```
  *
  * Use `enabled: false` to suppress the subscription entirely (e.g., when
  * route params aren't ready yet).
@@ -356,6 +379,7 @@ export const useCollection = <TData extends FirestoreObject>(
     params = {},
     readOnly,
     queryConstraints,
+    queryKey,
     undoable = true,
     enabled = true,
   } = options;
@@ -386,6 +410,18 @@ export const useCollection = <TData extends FirestoreObject>(
       : definition.path
     : undefined;
 
+  // QueryConstraint objects are opaque, so they can't be deep-compared. By
+  // default the subscription is keyed on the array reference; an explicit
+  // `queryKey` opts into value-based keying so reference churn (e.g. arrays
+  // inside deep-cloned app state) doesn't tear down the listener. The latest
+  // constraints live in a ref so the memo can read them without depending on
+  // their identity — when the key is stable they are semantically equal by
+  // the caller's contract.
+  const queryConstraintsRef = useRef(queryConstraints);
+  queryConstraintsRef.current = queryConstraints;
+  const constraintsKey: string | QueryConstraint[] | undefined =
+    queryKey ?? queryConstraints;
+
   const subscription = useMemo(
     () =>
       enabled && collectionPath !== undefined
@@ -394,7 +430,7 @@ export const useCollection = <TData extends FirestoreObject>(
             definition,
             collectionPath,
             readOnly,
-            queryConstraints,
+            queryConstraints: queryConstraintsRef.current,
             onPushUndo,
           })
         : null,
@@ -404,7 +440,7 @@ export const useCollection = <TData extends FirestoreObject>(
       definition,
       collectionPath,
       readOnly,
-      queryConstraints,
+      constraintsKey,
       onPushUndo,
     ]
   );

@@ -114,6 +114,11 @@ Important details:
 - Disabled hooks do not resolve params or create subscriptions.
 - Toggling `undoable` should not rebuild Firestore listeners.
 - `queryConstraints` are compared by reference; callers should memoize arrays.
+  `QueryConstraint` objects are opaque, so Firestate never deep-compares them.
+  When upstream state churns array references without changing the semantic
+  query (e.g. ids read from a deep-cloned document), callers pass a
+  value-derived `queryKey` string and the subscription is keyed on that
+  instead.
 - Subscription handles are cached until state changes, so React sees stable
   snapshots between commits.
 

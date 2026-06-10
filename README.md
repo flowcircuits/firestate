@@ -453,7 +453,7 @@ const spaces = useSpaces({ projectId })
 ```
 
 Use the second argument for hook options such as `enabled`, `readOnly`,
-`undoable`, or collection `queryConstraints`:
+`undoable`, or collection `queryConstraints` / `queryKey`:
 
 ```tsx
 const spaces = useSpaces(
@@ -575,6 +575,18 @@ const {
     queryConstraints: [where('floor', '==', 1)],
     undoable: true,
     enabled: true,       // Optional: set false until required params exist
+})
+
+// Memoize queryConstraints — the subscription is keyed on the array
+// reference, and a new reference rebuilds the Firestore listener. If the
+// values feeding the constraints can change reference without changing
+// meaning (e.g. arrays inside another document that Firestate deep-clones
+// on optimistic updates), pass a value-derived queryKey instead; the
+// listener then rebuilds only when the key changes:
+const stations = useCollection({
+    definition: weatherStations,
+    queryConstraints: [where(documentId(), 'in', stationIds)],
+    queryKey: stationIds.join('\n'),
 })
 
 // Update existing documents

@@ -85,7 +85,10 @@ Preserve these unless the task explicitly changes them.
 - `enabled: false` on hooks must not resolve paths or create subscriptions. It
   returns stable no-op handles.
 - `queryConstraints` should be treated by reference. Callers are expected to
-  memoize inline arrays.
+  memoize inline arrays. Never deep-compare `QueryConstraint` objects — they
+  are opaque. `queryKey` is the explicit opt-in for value-based subscription
+  keying: when provided, the listener survives constraint-array reference
+  churn and rebuilds only when the key (or path/`readOnly`) changes.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
 - Unmounting a subscription clears its autosave timer and unregisters its sync
