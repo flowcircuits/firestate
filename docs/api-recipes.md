@@ -214,42 +214,38 @@ const queryConstraints = useMemo(
 const spaces = useSpaces({ projectId }, { queryConstraints })
 ```
 
-### Dynamic queries built from document data: use `queryKey`
+### Dynamic queries built from document data
 
-`useMemo` keys on its dependencies *by reference*. If a dependency is an array
-or object read out of another Firestate document, its reference changes on
-every optimistic update to that document — Firestate deep-clones local state on
-edit — even when the contents are identical. The memo then produces a new
-constraints array, the listener is torn down and re-attached, `isLoading`
-flips back to `true`, and any loading gate above the hook flashes.
+A subtlety with the `useMemo` recipe above: `useMemo` keys on its dependencies
+*by reference*. If a dependency is an array or object read out of another
+Firestate document, its reference changes on every optimistic update to that
+document — Firestate deep-clones local state on edit — even when the contents
+are identical. The memo then produces a new constraints array on each edit.
 
-Pass `queryKey` to key the subscription on the underlying values instead. The
-listener then rebuilds only when the key changes:
+`useCollection` handles this for you. It keys the subscription on the
+*semantic identity* of the query, not the array reference: it builds the query
+and compares it with Firestore's own `queryEqual`. A fresh array that produces
+the same query is ignored, so the listener is not torn down, `isLoading` does
+not flip back to `true`, and a loading gate above the hook does not flash. You
+can pass constraints derived from churning document data directly:
 
 ```tsx
 import { documentId, where } from 'firebase/firestore'
-import { useMemo } from 'react'
 
-// stationIds comes from another document and may change reference on
-// every edit to that document, even when its contents are unchanged.
+// stationIds comes from another document and may change reference on every
+// edit to that document, even when its contents are unchanged. The listener
+// survives that churn — it only rebuilds when the query actually changes.
 const stationIds = project.data?.weatherSpec.nearestWeatherStationIds ?? []
-
-const queryConstraints = useMemo(
-    () => [where(documentId(), 'in', stationIds)],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [stationIds.join('\n')]
-)
 
 const stations = useWeatherStations(
     {},
-    { queryConstraints, queryKey: stationIds.join('\n') }
+    { queryConstraints: [where(documentId(), 'in', stationIds)] }
 )
 ```
 
-With `queryKey` set, the `queryConstraints` reference no longer matters — you
-can even pass an inline array. Keep the key derived from the same values the
-constraints are built from; if the key understates the query (e.g. omits a
-filter value), the listener will not rebuild when that value changes.
+Memoizing `queryConstraints` is still a fine micro-optimization — a stable
+reference takes a fast path and skips the per-render query build + compare —
+but it is no longer required to keep the listener stable.
 
 ## Undo and Redo
 

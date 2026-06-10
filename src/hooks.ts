@@ -7,7 +7,13 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import type { QueryConstraint } from "firebase/firestore";
+import { collection, query, queryEqual } from "firebase/firestore";
+import type {
+  CollectionReference,
+  Firestore,
+  Query,
+  QueryConstraint,
+} from "firebase/firestore";
 import type {
   CollectionDefinition,
   CollectionHandle,
@@ -21,6 +27,48 @@ import type {
 import type { FirestateStore } from "./store";
 import { createDocumentSubscription } from "./document";
 import { createCollectionSubscription } from "./collection";
+
+/**
+ * Build the Firestore query a collection subscription would run, mirroring
+ * the merge order in collection.ts (`definitionConstraints` then hook-level
+ * `extraConstraints`). With no constraints the bare collection reference is
+ * itself a valid `Query` for comparison purposes.
+ */
+const buildCollectionQuery = (
+  ref: CollectionReference,
+  definitionConstraints: QueryConstraint[] | undefined,
+  extraConstraints: QueryConstraint[] | undefined
+): Query => {
+  const all = [
+    ...(definitionConstraints ?? []),
+    ...(extraConstraints ?? []),
+  ];
+  return all.length > 0 ? query(ref, ...all) : ref;
+};
+
+/**
+ * Whether two hook-level `queryConstraints` arrays produce the same Firestore
+ * query for a collection. `QueryConstraint` objects are opaque, so instead of
+ * hand-rolling a deep compare we build both queries and defer to Firestore's
+ * own `queryEqual`, which structurally compares filters, ordering, limits,
+ * and cursors. This is what lets the subscription survive reference churn
+ * (e.g. constraint inputs read from a deep-cloned document) while still
+ * rebuilding when the query genuinely changes — no caller-supplied key.
+ */
+const queryConstraintsEqual = (
+  firestore: Firestore,
+  collectionPath: string,
+  definitionConstraints: QueryConstraint[] | undefined,
+  a: QueryConstraint[] | undefined,
+  b: QueryConstraint[] | undefined
+): boolean => {
+  if (a === b) return true;
+  const ref = collection(firestore, collectionPath) as CollectionReference;
+  return queryEqual(
+    buildCollectionQuery(ref, definitionConstraints, a),
+    buildCollectionQuery(ref, definitionConstraints, b)
+  );
+};
 
 /**
  * Returned when a hook is called with `enabled: false`. Module-level constants
@@ -290,15 +338,6 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
   readOnly?: boolean;
   /** Additional query constraints */
   queryConstraints?: QueryConstraint[];
-  /**
-   * Stable identity key for `queryConstraints`. When provided, the
-   * subscription is keyed on this string instead of the `queryConstraints`
-   * array reference, so upstream state that recreates the array (e.g. a
-   * deep-cloned parent object) does not tear down and reload the listener
-   * as long as the key is unchanged. Derive it from the same values the
-   * constraints are built from, e.g. `queryKey: ids.join('\n')`.
-   */
-  queryKey?: string;
   /** Enable undo/redo for this collection (default: true) */
   undoable?: boolean;
   /**
@@ -313,27 +352,29 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * Hook to subscribe to a Firestore collection with real-time updates.
  *
  * The subscription is keyed on the resolved collection path, `readOnly`, and
- * the `queryConstraints` reference (or `queryKey` when provided). When any of
- * these change, the listener is torn down and re-attached with the new query.
- * Toggling `undoable` does not rebuild the subscription.
+ * the *semantic identity* of `queryConstraints`. When any of these change, the
+ * listener is torn down and re-attached with the new query. Toggling
+ * `undoable` does not rebuild the subscription.
  *
- * **Memoize `queryConstraints`.** An inline array (`queryConstraints={[where(...)]}`)
- * creates a new reference every render, which will thrash the listener.
- * Wrap in `useMemo` with the underlying filter values as deps.
- *
- * **Or pass `queryKey`.** `QueryConstraint` objects are opaque, so Firestate
- * cannot deep-compare them. If the values feeding your constraints can change
- * reference without changing meaning (e.g. arrays inside optimistically
- * deep-cloned documents), provide a value-derived `queryKey` — the listener
- * then survives reference churn and only rebuilds when the key changes:
+ * **You do not need to memoize `queryConstraints`.** `QueryConstraint` objects
+ * are opaque, so Firestate compares the *built query* with Firestore's own
+ * `queryEqual` instead of comparing array references. A fresh array that
+ * produces the same query (e.g. constraint inputs read from a document that
+ * Firestate deep-clones on optimistic updates) does not rebuild the listener;
+ * only a genuine change to the query does:
  *
  * ```tsx
+ * // stationIds may change reference on every edit to its parent document,
+ * // even when its contents are unchanged — the listener survives anyway.
  * const stations = useCollection({
  *   definition: weatherStations,
  *   queryConstraints: [where(documentId(), 'in', stationIds)],
- *   queryKey: stationIds.join('\n'),
  * })
  * ```
+ *
+ * Memoizing is still a fine micro-optimization (it skips the per-render query
+ * build + compare via the reference fast-path), but it is no longer required
+ * for listener stability.
  *
  * Use `enabled: false` to suppress the subscription entirely (e.g., when
  * route params aren't ready yet).
@@ -379,7 +420,6 @@ export const useCollection = <TData extends FirestoreObject>(
     params = {},
     readOnly,
     queryConstraints,
-    queryKey,
     undoable = true,
     enabled = true,
   } = options;
@@ -410,17 +450,29 @@ export const useCollection = <TData extends FirestoreObject>(
       : definition.path
     : undefined;
 
-  // QueryConstraint objects are opaque, so they can't be deep-compared. By
-  // default the subscription is keyed on the array reference; an explicit
-  // `queryKey` opts into value-based keying so reference churn (e.g. arrays
-  // inside deep-cloned app state) doesn't tear down the listener. The latest
-  // constraints live in a ref so the memo can read them without depending on
-  // their identity — when the key is stable they are semantically equal by
-  // the caller's contract.
-  const queryConstraintsRef = useRef(queryConstraints);
-  queryConstraintsRef.current = queryConstraints;
-  const constraintsKey: string | QueryConstraint[] | undefined =
-    queryKey ?? queryConstraints;
+  // Stabilize `queryConstraints` by *query identity*. QueryConstraint objects
+  // are opaque and can't be deep-compared directly, but the built query can —
+  // see queryConstraintsEqual(). When the incoming array produces the same
+  // query as the one we're already subscribed with (e.g. constraint inputs
+  // read from a deep-cloned document churned the array reference without
+  // changing the query), we keep the previous array reference so the memo
+  // below does not rebuild. A genuine change adopts the new reference and
+  // re-attaches the listener. When the path is unresolved we can't build a
+  // query, so we just pass the constraints through (the memo returns null).
+  const stableConstraintsRef = useRef(queryConstraints);
+  if (
+    collectionPath === undefined ||
+    !queryConstraintsEqual(
+      store.firestore,
+      collectionPath,
+      definition.queryConstraints,
+      stableConstraintsRef.current,
+      queryConstraints
+    )
+  ) {
+    stableConstraintsRef.current = queryConstraints;
+  }
+  const stableConstraints = stableConstraintsRef.current;
 
   const subscription = useMemo(
     () =>
@@ -430,7 +482,7 @@ export const useCollection = <TData extends FirestoreObject>(
             definition,
             collectionPath,
             readOnly,
-            queryConstraints: queryConstraintsRef.current,
+            queryConstraints: stableConstraints,
             onPushUndo,
           })
         : null,
@@ -440,7 +492,7 @@ export const useCollection = <TData extends FirestoreObject>(
       definition,
       collectionPath,
       readOnly,
-      constraintsKey,
+      stableConstraints,
       onPushUndo,
     ]
   );
