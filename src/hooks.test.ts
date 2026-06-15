@@ -112,18 +112,22 @@ describe('useCollection queryConstraints identity', () => {
 
     const Probe = ({
         queryConstraints,
+        enabled,
     }: {
         queryConstraints: QueryConstraint[]
+        enabled?: boolean
     }) => {
         latestHandle = useCollection({
             definition: stationsCollection,
             queryConstraints,
+            enabled,
         })
         return null
     }
 
     const element = (props: {
         queryConstraints: QueryConstraint[]
+        enabled?: boolean
     }): ReactElement =>
         createElement(
             FirestateContext.Provider,
@@ -207,6 +211,50 @@ describe('useCollection queryConstraints identity', () => {
         const ref = collection(firestore, 'weatherStations')
         expect(
             queryEqual(queryArg, query(ref, ...constraintsFor(newIds)))
+        ).toBe(true)
+    })
+
+    // Regression: the documented `enabled: ids.length > 0` recipe for gating an
+    // `in` query. While disabled the constraints array holds an empty-array
+    // `in` filter — a query Firestore refuses to build. The hook must not
+    // compare against those constraints captured while disabled when it later
+    // enables, or it throws "A non-empty array is required for 'in' filters"
+    // during render.
+    it('enables an in-query gated with enabled:false on empty ids without throwing', () => {
+        // Disabled first render: empty `in` filter, no subscription built.
+        act(() => {
+            renderer = create(
+                element({
+                    queryConstraints: constraintsFor([]),
+                    enabled: false,
+                })
+            )
+        })
+        expect(latestHandle.isActive).toBe(false)
+        expect(onSnapshotMock).not.toHaveBeenCalled()
+
+        // IDs arrive: enable with a valid, non-empty `in` filter. This render
+        // is where the stale empty-array constraints would be built for the
+        // identity compare and throw.
+        const ids = ['ws1', 'ws2']
+        act(() => {
+            renderer!.update(
+                element({ queryConstraints: constraintsFor(ids), enabled: true })
+            )
+        })
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+
+        expect(onSnapshotMock).toHaveBeenCalledTimes(1)
+        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.data.ws1?.name).toBe('Station 1')
+
+        const queryArg = onSnapshotMock.mock.calls[0]![0]
+        const ref = collection(firestore, 'weatherStations')
+        expect(
+            queryEqual(queryArg, query(ref, ...constraintsFor(ids)))
         ).toBe(true)
     })
 })

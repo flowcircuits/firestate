@@ -239,7 +239,13 @@ const stationIds = project.data?.weatherSpec.nearestWeatherStationIds ?? []
 
 const stations = useWeatherStations(
     {},
-    { queryConstraints: [where(documentId(), 'in', stationIds)] }
+    {
+        // Firestore rejects an `in` filter with an empty array, which is what
+        // you get before `project.data` loads or when the source list is empty.
+        // Gate the subscription so the query is only built once IDs exist.
+        enabled: stationIds.length > 0,
+        queryConstraints: [where(documentId(), 'in', stationIds)],
+    }
 )
 ```
 

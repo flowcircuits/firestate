@@ -585,6 +585,7 @@ const {
 // memoize for correctness:
 const stations = useCollection({
     definition: weatherStations,
+    enabled: stationIds.length > 0,
     queryConstraints: [where(documentId(), 'in', stationIds)],
 })
 

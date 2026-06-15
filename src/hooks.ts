@@ -442,9 +442,21 @@ export const useCollection = <TData extends FirestoreObject>(
   // below does not rebuild. A genuine change adopts the new reference and
   // re-attaches the listener. When the path is unresolved we can't build a
   // query, so we just pass the constraints through (the memo returns null).
+  //
+  // The comparison may only run against constraints captured during an *active*
+  // render (enabled with a resolved path). Constraints captured while disabled
+  // or unresolved can be ones the caller is gating precisely because they don't
+  // form a valid query yet — e.g. `where(documentId(), 'in', [])`, which
+  // Firestore refuses to build. Building such a stale snapshot just to compare
+  // would throw, so when the prior snapshot wasn't active we adopt the current
+  // constraints outright. There is no live listener to preserve in that case
+  // (the subscription was null), so adopting a fresh reference costs nothing.
   const stableConstraintsRef = useRef(queryConstraints);
+  const stableActiveRef = useRef(false);
+  const active = enabled && collectionPath !== undefined;
   if (
     collectionPath === undefined ||
+    !stableActiveRef.current ||
     !queryConstraintsEqual(
       store.firestore,
       collectionPath,
@@ -455,6 +467,7 @@ export const useCollection = <TData extends FirestoreObject>(
   ) {
     stableConstraintsRef.current = queryConstraints;
   }
+  stableActiveRef.current = active;
   const stableConstraints = stableConstraintsRef.current;
 
   const subscription = useMemo(
