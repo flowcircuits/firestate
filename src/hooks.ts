@@ -37,6 +37,14 @@ import { buildCollectionQuery, createCollectionSubscription } from "./collection
  * cursors. This is what lets the subscription survive reference churn (e.g.
  * constraint inputs read from a deep-cloned document) while still rebuilding
  * when the query genuinely changes — no caller-supplied key.
+ *
+ * Building a query can throw: callers commonly gate with a deliberately invalid
+ * placeholder like `where(documentId(), 'in', [])` while real IDs are pending,
+ * and Firestore refuses to construct that. If building the prior snapshot
+ * throws, no live listener could ever have run it, so there is nothing to
+ * preserve — we treat the snapshots as unequal and let the caller adopt the
+ * new constraints. This matters most for lazy collections, where a render can
+ * carry such a placeholder before `load()` attaches any listener.
  */
 const queryConstraintsEqual = (
   firestore: Firestore,
@@ -47,10 +55,14 @@ const queryConstraintsEqual = (
 ): boolean => {
   if (a === b) return true;
   const ref = collection(firestore, collectionPath) as CollectionReference;
-  return queryEqual(
-    buildCollectionQuery(ref, definitionConstraints, a),
-    buildCollectionQuery(ref, definitionConstraints, b)
-  );
+  try {
+    return queryEqual(
+      buildCollectionQuery(ref, definitionConstraints, a),
+      buildCollectionQuery(ref, definitionConstraints, b)
+    );
+  } catch {
+    return false;
+  }
 };
 
 /**

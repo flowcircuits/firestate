@@ -60,6 +60,11 @@ const stationsCollection = defineCollection<Station>({
     path: 'weatherStations',
 })
 
+const lazyStationsCollection = defineCollection<Station>({
+    path: 'weatherStations',
+    lazy: true,
+})
+
 // A real (offline) Firestore — building queries and refs is purely
 // client-side; onSnapshot is mocked so nothing hits the network.
 let app: FirebaseApp
@@ -113,12 +118,14 @@ describe('useCollection queryConstraints identity', () => {
     const Probe = ({
         queryConstraints,
         enabled,
+        definition = stationsCollection,
     }: {
         queryConstraints: QueryConstraint[]
         enabled?: boolean
+        definition?: typeof stationsCollection
     }) => {
         latestHandle = useCollection({
-            definition: stationsCollection,
+            definition,
             queryConstraints,
             enabled,
         })
@@ -128,6 +135,7 @@ describe('useCollection queryConstraints identity', () => {
     const element = (props: {
         queryConstraints: QueryConstraint[]
         enabled?: boolean
+        definition?: typeof stationsCollection
     }): ReactElement =>
         createElement(
             FirestateContext.Provider,
@@ -241,6 +249,64 @@ describe('useCollection queryConstraints identity', () => {
             renderer!.update(
                 element({ queryConstraints: constraintsFor(ids), enabled: true })
             )
+        })
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+
+        expect(onSnapshotMock).toHaveBeenCalledTimes(1)
+        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.data.ws1?.name).toBe('Station 1')
+
+        const queryArg = onSnapshotMock.mock.calls[0]![0]
+        const ref = collection(firestore, 'weatherStations')
+        expect(
+            queryEqual(queryArg, query(ref, ...constraintsFor(ids)))
+        ).toBe(true)
+    })
+
+    // Regression: a lazy collection becomes "active" (enabled + resolved path)
+    // as soon as it mounts, before load() attaches any listener. If the first
+    // render carries a gated empty-array `in` filter and real IDs arrive on a
+    // later render — still before load() — the identity compare would build the
+    // stale empty-array query and throw "A non-empty array is required for 'in'
+    // filters" during render. No listener exists pre-load, so there is nothing
+    // to preserve and the compare must not throw.
+    it('does not throw when lazy constraints go from empty to valid before load()', () => {
+        // First render: lazy + enabled with an empty `in` filter. Lazy means no
+        // listener is attached yet (load() not called).
+        act(() => {
+            renderer = create(
+                element({
+                    definition: lazyStationsCollection,
+                    queryConstraints: constraintsFor([]),
+                    enabled: true,
+                })
+            )
+        })
+        expect(latestHandle.isActive).toBe(false)
+        expect(onSnapshotMock).not.toHaveBeenCalled()
+
+        // IDs arrive before load(). This render is where the stale empty-array
+        // constraints would be built for the identity compare and throw.
+        const ids = ['ws1', 'ws2']
+        act(() => {
+            renderer!.update(
+                element({
+                    definition: lazyStationsCollection,
+                    queryConstraints: constraintsFor(ids),
+                    enabled: true,
+                })
+            )
+        })
+
+        // Still no listener — lazy defers until load() is called explicitly.
+        expect(onSnapshotMock).not.toHaveBeenCalled()
+
+        // load() now attaches a listener with the valid, non-empty constraints.
+        act(() => {
+            latestHandle.load()
         })
         act(() => {
             listeners[0]!.deliver(snapshot)
