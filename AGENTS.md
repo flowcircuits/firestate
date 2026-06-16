@@ -84,8 +84,12 @@ Preserve these unless the task explicitly changes them.
   bail before the initial snapshot to avoid clobbering unknown server fields.
 - `enabled: false` on hooks must not resolve paths or create subscriptions. It
   returns stable no-op handles.
-- `queryConstraints` should be treated by reference. Callers are expected to
-  memoize inline arrays.
+- `queryConstraints` are keyed by *semantic query identity*, not by array
+  reference. Never hand-roll a deep compare of `QueryConstraint` objects — they
+  are opaque. `useCollection` builds the query and compares it with Firestore's
+  `queryEqual`, so a fresh array producing the same query does not rebuild the
+  listener; only a real change to the query (or `path`/`readOnly`) does.
+  Callers therefore do not need to memoize `queryConstraints` for correctness.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
 - Unmounting a subscription clears its autosave timer and unregisters its sync

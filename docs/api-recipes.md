@@ -214,6 +214,45 @@ const queryConstraints = useMemo(
 const spaces = useSpaces({ projectId }, { queryConstraints })
 ```
 
+### Dynamic queries built from document data
+
+A subtlety with the `useMemo` recipe above: `useMemo` keys on its dependencies
+*by reference*. If a dependency is an array or object read out of another
+Firestate document, its reference changes on every optimistic update to that
+document — Firestate deep-clones local state on edit — even when the contents
+are identical. The memo then produces a new constraints array on each edit.
+
+`useCollection` handles this for you. It keys the subscription on the
+*semantic identity* of the query, not the array reference: it builds the query
+and compares it with Firestore's own `queryEqual`. A fresh array that produces
+the same query is ignored, so the listener is not torn down, `isLoading` does
+not flip back to `true`, and a loading gate above the hook does not flash. You
+can pass constraints derived from churning document data directly:
+
+```tsx
+import { documentId, where } from 'firebase/firestore'
+
+// stationIds comes from another document and may change reference on every
+// edit to that document, even when its contents are unchanged. The listener
+// survives that churn — it only rebuilds when the query actually changes.
+const stationIds = project.data?.weatherSpec.nearestWeatherStationIds ?? []
+
+const stations = useWeatherStations(
+    {},
+    {
+        // Firestore rejects an `in` filter with an empty array, which is what
+        // you get before `project.data` loads or when the source list is empty.
+        // Gate the subscription so the query is only built once IDs exist.
+        enabled: stationIds.length > 0,
+        queryConstraints: [where(documentId(), 'in', stationIds)],
+    }
+)
+```
+
+Memoizing `queryConstraints` is still a fine micro-optimization — a stable
+reference takes a fast path and skips the per-render query build + compare —
+but it is no longer required to keep the listener stable.
+
 ## Undo and Redo
 
 Undo is enabled by default.

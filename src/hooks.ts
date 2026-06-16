@@ -7,7 +7,12 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import type { QueryConstraint } from "firebase/firestore";
+import { collection, queryEqual } from "firebase/firestore";
+import type {
+  CollectionReference,
+  Firestore,
+  QueryConstraint,
+} from "firebase/firestore";
 import type {
   CollectionDefinition,
   CollectionHandle,
@@ -20,7 +25,45 @@ import type {
 } from "./types";
 import type { FirestateStore } from "./store";
 import { createDocumentSubscription } from "./document";
-import { createCollectionSubscription } from "./collection";
+import { buildCollectionQuery, createCollectionSubscription } from "./collection";
+
+/**
+ * Whether two hook-level `queryConstraints` arrays produce the same Firestore
+ * query for a collection. `QueryConstraint` objects are opaque, so instead of
+ * hand-rolling a deep compare we build both queries — with the same
+ * `buildCollectionQuery` the subscription itself uses, so this check can never
+ * drift from the query that actually runs — and defer to Firestore's own
+ * `queryEqual`, which structurally compares filters, ordering, limits, and
+ * cursors. This is what lets the subscription survive reference churn (e.g.
+ * constraint inputs read from a deep-cloned document) while still rebuilding
+ * when the query genuinely changes — no caller-supplied key.
+ *
+ * Building a query can throw: callers commonly gate with a deliberately invalid
+ * placeholder like `where(documentId(), 'in', [])` while real IDs are pending,
+ * and Firestore refuses to construct that. If building the prior snapshot
+ * throws, no live listener could ever have run it, so there is nothing to
+ * preserve — we treat the snapshots as unequal and let the caller adopt the
+ * new constraints. This matters most for lazy collections, where a render can
+ * carry such a placeholder before `load()` attaches any listener.
+ */
+const queryConstraintsEqual = (
+  firestore: Firestore,
+  collectionPath: string,
+  definitionConstraints: QueryConstraint[] | undefined,
+  a: QueryConstraint[] | undefined,
+  b: QueryConstraint[] | undefined
+): boolean => {
+  if (a === b) return true;
+  const ref = collection(firestore, collectionPath) as CollectionReference;
+  try {
+    return queryEqual(
+      buildCollectionQuery(ref, definitionConstraints, a),
+      buildCollectionQuery(ref, definitionConstraints, b)
+    );
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Returned when a hook is called with `enabled: false`. Module-level constants
@@ -304,13 +347,29 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * Hook to subscribe to a Firestore collection with real-time updates.
  *
  * The subscription is keyed on the resolved collection path, `readOnly`, and
- * the `queryConstraints` reference. When any of these change, the listener
- * is torn down and re-attached with the new query. Toggling `undoable` does
- * not rebuild the subscription.
+ * the *semantic identity* of `queryConstraints`. When any of these change, the
+ * listener is torn down and re-attached with the new query. Toggling
+ * `undoable` does not rebuild the subscription.
  *
- * **Memoize `queryConstraints`.** An inline array (`queryConstraints={[where(...)]}`)
- * creates a new reference every render, which will thrash the listener.
- * Wrap in `useMemo` with the underlying filter values as deps.
+ * **You do not need to memoize `queryConstraints`.** `QueryConstraint` objects
+ * are opaque, so Firestate compares the *built query* with Firestore's own
+ * `queryEqual` instead of comparing array references. A fresh array that
+ * produces the same query (e.g. constraint inputs read from a document that
+ * Firestate deep-clones on optimistic updates) does not rebuild the listener;
+ * only a genuine change to the query does:
+ *
+ * ```tsx
+ * // stationIds may change reference on every edit to its parent document,
+ * // even when its contents are unchanged — the listener survives anyway.
+ * const stations = useCollection({
+ *   definition: weatherStations,
+ *   queryConstraints: [where(documentId(), 'in', stationIds)],
+ * })
+ * ```
+ *
+ * Memoizing is still a fine micro-optimization (it skips the per-render query
+ * build + compare via the reference fast-path), but it is no longer required
+ * for listener stability.
  *
  * Use `enabled: false` to suppress the subscription entirely (e.g., when
  * route params aren't ready yet).
@@ -386,6 +445,43 @@ export const useCollection = <TData extends FirestoreObject>(
       : definition.path
     : undefined;
 
+  // Stabilize `queryConstraints` by *query identity*. QueryConstraint objects
+  // are opaque and can't be deep-compared directly, but the built query can —
+  // see queryConstraintsEqual(). When the incoming array produces the same
+  // query as the one we're already subscribed with (e.g. constraint inputs
+  // read from a deep-cloned document churned the array reference without
+  // changing the query), we keep the previous array reference so the memo
+  // below does not rebuild. A genuine change adopts the new reference and
+  // re-attaches the listener. When the path is unresolved we can't build a
+  // query, so we just pass the constraints through (the memo returns null).
+  //
+  // The comparison may only run against constraints captured during an *active*
+  // render (enabled with a resolved path). Constraints captured while disabled
+  // or unresolved can be ones the caller is gating precisely because they don't
+  // form a valid query yet — e.g. `where(documentId(), 'in', [])`, which
+  // Firestore refuses to build. Building such a stale snapshot just to compare
+  // would throw, so when the prior snapshot wasn't active we adopt the current
+  // constraints outright. There is no live listener to preserve in that case
+  // (the subscription was null), so adopting a fresh reference costs nothing.
+  const stableConstraintsRef = useRef(queryConstraints);
+  const stableActiveRef = useRef(false);
+  const active = enabled && collectionPath !== undefined;
+  if (
+    collectionPath === undefined ||
+    !stableActiveRef.current ||
+    !queryConstraintsEqual(
+      store.firestore,
+      collectionPath,
+      definition.queryConstraints,
+      stableConstraintsRef.current,
+      queryConstraints
+    )
+  ) {
+    stableConstraintsRef.current = queryConstraints;
+  }
+  stableActiveRef.current = active;
+  const stableConstraints = stableConstraintsRef.current;
+
   const subscription = useMemo(
     () =>
       enabled && collectionPath !== undefined
@@ -394,7 +490,7 @@ export const useCollection = <TData extends FirestoreObject>(
             definition,
             collectionPath,
             readOnly,
-            queryConstraints,
+            queryConstraints: stableConstraints,
             onPushUndo,
           })
         : null,
@@ -404,7 +500,7 @@ export const useCollection = <TData extends FirestoreObject>(
       definition,
       collectionPath,
       readOnly,
-      queryConstraints,
+      stableConstraints,
       onPushUndo,
     ]
   );

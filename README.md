@@ -577,6 +577,18 @@ const {
     enabled: true,       // Optional: set false until required params exist
 })
 
+// queryConstraints are keyed by query identity, not array reference: the
+// subscription rebuilds only when the query actually changes (compared via
+// Firestore's queryEqual). So a new array that produces the same query —
+// e.g. stationIds read from a document Firestate deep-clones on every
+// optimistic update — does NOT tear down the listener. You don't need to
+// memoize for correctness:
+const stations = useCollection({
+    definition: weatherStations,
+    enabled: stationIds.length > 0,
+    queryConstraints: [where(documentId(), 'in', stationIds)],
+})
+
 // Update existing documents
 update({ space1: { name: 'Updated Name' } })
 
