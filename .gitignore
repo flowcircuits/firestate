@@ -1,12 +1,16 @@
 # Dependencies
 node_modules/
+.pnpm-store
 
 # Build output
 dist/
+tsconfig.tsbuildinfo
 
 # IDE
 .idea/
 .vscode/
+.nova
+.vs*
 *.swp
 *.swo
 *~
@@ -17,20 +21,53 @@ Thumbs.db
 
 # Test coverage
 coverage/
+test-results
 
 # Logs
-*.log
+*.log*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Cache
+.cache/
+.eslintcache
+.firebase
 
 # Environment
 .env
 .env.local
 .env.*.local
 
+# Data
+*.db
+
+# Secrets
+*.local
+serviceAccountKey.json
+secrets.zip
+.cert
+
 # Temporary files
 *.tmp
 *.temp
-.cache/
+
+# Worktree ports
+PORTS
+
+# Claude
+.claude/worktrees
+.claude/launch.json
+.claude/settings.local.json
+
+# Cursor
+.cursorignore
+.cursor/mcp.json
+
+# Aider
+.aider*
+
+# Python
+__pycache__
+*/venv

@@ -1,0 +1,11 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+file_include_globs = "examples/react-tasks/.env\n"
+
+[scripts]
+setup = "pnpm install && pnpm --dir examples/react-tasks install"
+run = "pnpm --dir examples/react-tasks dev --host 0.0.0.0 --port ${CONDUCTOR_PORT:-5173}"
+run_mode = "concurrent"
+
+[prompts]
+general = "Use pnpm. Preserve Firestate's documented behavioral contracts, keep changes focused, and run the narrowest relevant tests before finishing."
+code_review = "Focus on correctness, behavioral regressions, missing tests, and public API or documentation drift."
