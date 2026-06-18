@@ -26,6 +26,15 @@ vi.mock('firebase/firestore', async () => {
         onSnapshot: vi.fn(() => () => {
             /* noop unsubscribe */
         }),
+        setDoc: vi.fn(() => Promise.resolve()),
+        updateDoc: vi.fn(() => Promise.resolve()),
+        deleteDoc: vi.fn(() => Promise.resolve()),
+        writeBatch: vi.fn(() => ({
+            set: vi.fn(),
+            update: vi.fn(),
+            delete: vi.fn(),
+            commit: vi.fn(() => Promise.resolve()),
+        })),
     }
 })
 
@@ -39,6 +48,7 @@ import {
     buildCollectionDefinition,
 } from './firestate'
 import { createDocumentSubscription } from './document'
+import { createCollectionSubscription } from './collection'
 import { createStore, type FirestateStore } from './store'
 
 const revisionSchema = z.object({ title: z.string() })
@@ -324,5 +334,199 @@ describe('Document subscription: serverTimestamp display overrides', () => {
         expect(sub.getState().data!.updatedAt).not.toEqual(Timestamp.fromMillis(9999))
         // It IS a Timestamp (display override fired for the restored sentinel).
         expect(sub.getState().data!.updatedAt).toBeInstanceOf(Timestamp)
+    })
+})
+
+// Pins the fix for issue #26: subscription rebuild on readOnly/query change
+// must not silently discard pending un-synced localState.
+describe('Issue #26: readOnly as live ref / flush on teardown', () => {
+    let store: FirestateStore
+    let snapshotCallback: ((snap: unknown) => void) | undefined
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        // Use a large autosave so the debounce timer never fires during tests —
+        // we control sync() calls explicitly.
+        store = createStore({ firestore: {} as any, autosave: 999999 })
+
+        snapshotCallback = undefined
+        vi.mocked(firestore.onSnapshot).mockImplementation(
+            ((_ref: unknown, onNext: (snap: unknown) => void) => {
+                snapshotCallback = onNext
+                return () => {
+                    snapshotCallback = undefined
+                }
+            }) as never
+        )
+    })
+
+    const fireDocSnapshot = (data: Record<string, unknown> | null) => {
+        snapshotCallback!({
+            exists: () => data !== null,
+            data: () => data,
+            metadata: { fromCache: false, hasPendingWrites: false },
+        })
+    }
+
+    const fireColSnapshot = (docs: Array<{ id: string; data: Record<string, unknown> }>) => {
+        snapshotCallback!({
+            docs: docs.map((d) => ({ id: d.id, data: () => d.data })),
+        })
+    }
+
+    const taskSchema = z.object({ title: z.string() })
+
+    // Part 1: readOnly toggle must not discard pending localState
+
+    it('toggling getReadOnly on a document subscription does not discard pending localState', () => {
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema: taskSchema })
+        )
+
+        let readOnly = false
+        const getReadOnly = () => readOnly
+
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+            getReadOnly,
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        sub.getHandle().update({ title: 'edited' })
+        expect(sub.getState().isSynced).toBe(false)
+        expect(sub.getState().data?.title).toBe('edited')
+
+        // Toggle readOnly — must not rebuild the subscription or clear localState
+        readOnly = true
+
+        expect(sub.getState().isSynced).toBe(false)
+        expect(sub.getState().data?.title).toBe('edited')
+
+        // Write guard is now active — further mutations must be blocked
+        sub.getHandle().update({ title: 'blocked' })
+        expect(sub.getState().data?.title).toBe('edited')
+
+        // Re-enabling writes must work on the same subscription
+        readOnly = false
+        sub.getHandle().update({ title: 'continued' })
+        expect(sub.getState().data?.title).toBe('continued')
+        expect(sub.getState().isSynced).toBe(false)
+    })
+
+    it('toggling getReadOnly on a collection subscription does not discard pending localState', () => {
+        const definition = buildCollectionDefinition(
+            col({ path: 'tasks', schema: taskSchema })
+        )
+
+        let readOnly = false
+        const getReadOnly = () => readOnly
+
+        const sub = createCollectionSubscription({
+            store,
+            definition,
+            collectionPath: 'tasks',
+            getReadOnly,
+        })
+        sub.load()
+        fireColSnapshot([{ id: 't1', data: { title: 'original', id: 't1' } }])
+
+        sub.getHandle().update({ t1: { title: 'edited' } })
+        expect(sub.getState().isSynced).toBe(false)
+        expect(sub.getState().data['t1']?.title).toBe('edited')
+
+        // Toggle readOnly — must not discard the pending edit
+        readOnly = true
+
+        expect(sub.getState().isSynced).toBe(false)
+        expect(sub.getState().data['t1']?.title).toBe('edited')
+
+        // Re-enable and verify further edits work
+        readOnly = false
+        sub.getHandle().update({ t1: { title: 'continued' } })
+        expect(sub.getState().data['t1']?.title).toBe('continued')
+        expect(sub.getState().isSynced).toBe(false)
+    })
+
+    // Part 2: fire-and-forget sync on teardown must attempt the Firestore write
+
+    it('sync() before stop() on a document subscription flushes pending localState', async () => {
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema: taskSchema })
+        )
+
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        sub.getHandle().update({ title: 'edited' })
+        expect(sub.getState().isSynced).toBe(false)
+
+        // Simulate the hook cleanup: fire-and-forget sync then stop
+        const syncPromise = sub.sync()
+        sub.stop()
+        await syncPromise
+
+        // updateDoc must have been called for the partial update
+        expect(vi.mocked(firestore.updateDoc)).toHaveBeenCalled()
+    })
+
+    it('sync() before stop() on a collection subscription flushes pending localState', async () => {
+        const definition = buildCollectionDefinition(
+            col({ path: 'tasks', schema: taskSchema })
+        )
+
+        const sub = createCollectionSubscription({
+            store,
+            definition,
+            collectionPath: 'tasks',
+        })
+        sub.load()
+        fireColSnapshot([{ id: 't1', data: { title: 'original', id: 't1' } }])
+
+        sub.getHandle().update({ t1: { title: 'edited' } })
+        expect(sub.getState().isSynced).toBe(false)
+
+        const syncPromise = sub.sync()
+        sub.stop()
+        await syncPromise
+
+        expect(vi.mocked(firestore.writeBatch)).toHaveBeenCalled()
+    })
+
+    it('stop() after sync() does not leave a stale sync key in the global store', async () => {
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema: taskSchema })
+        )
+
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        sub.getHandle().update({ title: 'edited' })
+        // Global store sees this subscription as unsynced
+        expect(store.isSynced).toBe(false)
+
+        const syncPromise = sub.sync()
+        sub.stop()
+        // stop() must immediately unregister the key so isSynced can flip back
+        expect(store.isSynced).toBe(true)
+
+        // Completing the async sync must not re-add the stale key
+        await syncPromise
+        expect(store.isSynced).toBe(true)
     })
 })

@@ -73,6 +73,13 @@ export interface CollectionOptions<TData extends FirestoreObject> {
     collectionPath?: string
     /** Override read-only setting */
     readOnly?: boolean
+    /**
+     * Dynamic read-only getter. When provided, evaluated on each mutation
+     * call instead of the static `readOnly` option. The hook layer uses this
+     * so that toggling `readOnly` at runtime does not tear down the
+     * subscription or discard pending local state.
+     */
+    getReadOnly?: () => boolean | undefined
     /** Additional query constraints */
     queryConstraints?: QueryConstraint[]
     /** Callback for pushing undo actions */
@@ -137,7 +144,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, collectionPath: resolvedPath, readOnly, queryConstraints: extraConstraints, onPushUndo } = options
+    const { store, definition, collectionPath: resolvedPath, readOnly, getReadOnly, queryConstraints: extraConstraints, onPushUndo } = options
     const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
 
     const {
@@ -152,7 +159,12 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         schema,
     } = definition
 
-    const isReadOnly = readOnly ?? definitionReadOnly ?? false
+    // When the hook layer supplies getReadOnly, evaluate it on each mutation
+    // call so that toggling readOnly at runtime takes effect without rebuilding
+    // the subscription. Direct API callers that pass the static `readOnly`
+    // option work as before.
+    const resolveReadOnly = () =>
+        (getReadOnly ? getReadOnly() : readOnly) ?? definitionReadOnly ?? false
     // Prefer the caller-resolved path. Fall back to a string `definition.path`
     // for ergonomic direct use; if both are missing, the caller forgot to
     // resolve a function path.
@@ -184,6 +196,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     let retryTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
+    // Set to true by stop() so that an in-flight fire-and-forget sync()
+    // completing after teardown doesn't re-register a stale sync key.
+    let stopped = false
     // Cached handle — returns the same reference until notify() invalidates
     // it. Lets useSyncExternalStore consumers rely on handle identity.
     let cachedHandle: CollectionHandle<TData> | null = null
@@ -215,7 +230,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
-        store.reportSyncState(syncKey, publicState.isSynced)
+        if (!stopped) {
+            store.reportSyncState(syncKey, publicState.isSynced)
+        }
     }
 
     // Pre-snapshot mutations are unsafe because computing a partial-update
@@ -235,7 +252,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         diff: WithFieldValue<DeepPartial<Record<string, TData>>>,
         undoOptions: UpdateOptions = {}
     ) => {
-        if (isReadOnly) return
+        if (resolveReadOnly()) return
         if (state.syncState === undefined) {
             warnNoSnapshot('update')
             return
@@ -307,7 +324,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             ? maybeUndoOptions
             : (dataOrOptions as UpdateOptions | undefined)) ?? {}
 
-        if (isReadOnly) return undefined
+        if (resolveReadOnly()) return undefined
         if (state.syncState === undefined) {
             // Bail rather than queueing: an explicit id that happens to exist
             // on the server would round-trip through computeDiff and clobber
@@ -360,7 +377,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const removeDocument = (id: string, undoOptions: UpdateOptions = {}) => {
-        if (isReadOnly) return
+        if (resolveReadOnly()) return
         if (state.syncState === undefined) {
             warnNoSnapshot('remove')
             return
@@ -601,6 +618,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const stop = () => {
+        // Prevent any in-flight fire-and-forget sync() from re-registering
+        // a stale sync key after teardown.
+        stopped = true
         if (retryTimeout) {
             clearTimeout(retryTimeout)
             retryTimeout = null

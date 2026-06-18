@@ -54,6 +54,13 @@ export interface DocumentOptions<TData extends FirestoreObject> {
     collectionPath?: string
     /** Override read-only setting */
     readOnly?: boolean
+    /**
+     * Dynamic read-only getter. When provided, evaluated on each mutation
+     * call instead of the static `readOnly` option. The hook layer uses this
+     * so that toggling `readOnly` at runtime does not tear down the
+     * subscription or discard pending local state.
+     */
+    getReadOnly?: () => boolean | undefined
     /** Callback for pushing undo actions */
     onPushUndo?: (
         undoAction: () => void,
@@ -127,7 +134,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, docId, collectionPath: resolvedCollectionPath, readOnly, onPushUndo } = options
+    const { store, definition, docId, collectionPath: resolvedCollectionPath, readOnly, getReadOnly, onPushUndo } = options
     const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
 
     const {
@@ -141,7 +148,12 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         schema,
     } = definition
 
-    const isReadOnly = readOnly ?? definitionReadOnly ?? false
+    // When the hook layer supplies getReadOnly, evaluate it on each mutation
+    // call so that toggling readOnly at runtime takes effect without rebuilding
+    // the subscription. Direct API callers that pass the static `readOnly`
+    // option work as before.
+    const resolveReadOnly = () =>
+        (getReadOnly ? getReadOnly() : readOnly) ?? definitionReadOnly ?? false
     // Prefer the caller-resolved docId. Fall back to a string `definition.id`
     // for ergonomic direct use; if both are missing, the caller forgot to
     // resolve a function id and we surface that immediately.
@@ -186,6 +198,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
+    // Set to true by stop() so that an in-flight fire-and-forget sync()
+    // completing after teardown doesn't re-register a stale sync key.
+    let stopped = false
     // Cached handle — returns the same reference until notify() invalidates
     // it. Lets useSyncExternalStore consumers rely on handle identity.
     let cachedHandle: DocumentHandle<TData> | null = null
@@ -223,14 +238,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         cachedHandle = null
         const publicState = getPublicState()
         subscribers.forEach((fn) => fn(publicState))
-        store.reportSyncState(syncKey, publicState.isSynced)
+        if (!stopped) {
+            store.reportSyncState(syncKey, publicState.isSynced)
+        }
     }
 
     const updateState = (
         diff: WithFieldValue<DeepPartial<TData>>,
         undoOptions: UpdateOptions = {}
     ) => {
-        if (isReadOnly) return
+        if (resolveReadOnly()) return
 
         const currentData = getMergedData()
         if (!currentData) {
@@ -280,7 +297,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const setData = (data: TData, undoOptions: UpdateOptions = {}) => {
-        if (isReadOnly) return
+        if (resolveReadOnly()) return
 
         // Use schema.parse as a validation guard — throw on bad input — but
         // discard the parsed result and store the caller's original object.
@@ -328,7 +345,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const deleteDocument = (undoOptions: UpdateOptions = {}) => {
-        if (isReadOnly) return
+        if (resolveReadOnly()) return
 
         const currentData = getMergedData()
         // Nothing to delete — bail rather than queueing a no-op deleteDoc.
@@ -586,6 +603,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const stop = () => {
+        // Prevent any in-flight fire-and-forget sync() from re-registering
+        // a stale sync key after teardown.
+        stopped = true
         if (unsubscribeListener) {
             unsubscribeListener()
             unsubscribeListener = null

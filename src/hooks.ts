@@ -199,10 +199,10 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
  * Hook to subscribe to a Firestore document with real-time updates.
  *
  * The subscription is keyed on the resolved document path (`definition` +
- * computed id) and `readOnly`. When that key changes — typically because
- * `params` produces a different id — the hook tears down the old Firestore
- * listener and attaches a new one. Toggling `undoable` does not rebuild the
- * subscription.
+ * computed id). When that changes — typically because `params` produces a
+ * different id — the hook tears down the old Firestore listener and attaches a
+ * new one. Toggling `readOnly` or `undoable` does not rebuild the subscription;
+ * `readOnly` is applied at mutation time via a live ref.
  *
  * Use `enabled: false` to suppress the subscription entirely (e.g., when
  * route params aren't ready yet).
@@ -255,6 +255,14 @@ export const useDocument = <TData extends FirestoreObject>(
   const undoableRef = useRef(undoable);
   undoableRef.current = undoable;
 
+  // Hold readOnly in a ref for the same reason: toggling readOnly should
+  // change the write guard without rebuilding the subscription or discarding
+  // any pending local state. getReadOnly is stable (no deps) and the
+  // subscription calls it at mutation time.
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const getReadOnly = useCallback(() => readOnlyRef.current, []);
+
   const onPushUndo = useCallback(
     (undoAction: () => void, redoAction: () => void, opts?: UpdateOptions) => {
       if (!undoableRef.current) return;
@@ -290,11 +298,15 @@ export const useDocument = <TData extends FirestoreObject>(
             definition,
             docId,
             collectionPath,
-            readOnly,
+            getReadOnly,
             onPushUndo,
           })
         : null,
-    [enabled, store, definition, docId, collectionPath, readOnly, onPushUndo]
+    // readOnly is intentionally excluded: it is applied at mutation time via
+    // getReadOnly (a stable ref-backed getter) so that toggling it does not
+    // rebuild the subscription or discard pending local state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabled, store, definition, docId, collectionPath, onPushUndo]
   );
 
   const subscribe = useCallback(
@@ -304,6 +316,12 @@ export const useDocument = <TData extends FirestoreObject>(
       subscription.load();
       return () => {
         unsub();
+        // Fire-and-forget flush: if there are pending local edits and the
+        // subscription is being torn down due to a path change, attempt a
+        // final sync so the edits reach Firestore. The subscription's
+        // `stopped` flag prevents the async completion from re-registering
+        // a stale sync key after stop().
+        void subscription.sync();
         subscription.stop();
       };
     },
@@ -346,10 +364,11 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
 /**
  * Hook to subscribe to a Firestore collection with real-time updates.
  *
- * The subscription is keyed on the resolved collection path, `readOnly`, and
- * the *semantic identity* of `queryConstraints`. When any of these change, the
- * listener is torn down and re-attached with the new query. Toggling
- * `undoable` does not rebuild the subscription.
+ * The subscription is keyed on the resolved collection path and the *semantic
+ * identity* of `queryConstraints`. When either changes, the listener is torn
+ * down and re-attached with the new query. Toggling `readOnly` or `undoable`
+ * does not rebuild the subscription; `readOnly` is applied at mutation time
+ * via a live ref.
  *
  * **You do not need to memoize `queryConstraints`.** `QueryConstraint` objects
  * are opaque, so Firestate compares the *built query* with Firestore's own
@@ -424,6 +443,12 @@ export const useCollection = <TData extends FirestoreObject>(
   const undoableRef = useRef(undoable);
   undoableRef.current = undoable;
 
+  // Hold readOnly in a ref for the same reason as in useDocument: toggling it
+  // should not rebuild the subscription or discard pending local state.
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const getReadOnly = useCallback(() => readOnlyRef.current, []);
+
   const onPushUndo = useCallback(
     (undoAction: () => void, redoAction: () => void, opts?: UpdateOptions) => {
       if (!undoableRef.current) return;
@@ -489,20 +514,16 @@ export const useCollection = <TData extends FirestoreObject>(
             store,
             definition,
             collectionPath,
-            readOnly,
+            getReadOnly,
             queryConstraints: stableConstraints,
             onPushUndo,
           })
         : null,
-    [
-      enabled,
-      store,
-      definition,
-      collectionPath,
-      readOnly,
-      stableConstraints,
-      onPushUndo,
-    ]
+    // readOnly is intentionally excluded: it is applied at mutation time via
+    // getReadOnly (a stable ref-backed getter) so that toggling it does not
+    // rebuild the subscription or discard pending local state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabled, store, definition, collectionPath, stableConstraints, onPushUndo]
   );
 
   const isLazy = definition.lazy ?? false;
@@ -516,6 +537,10 @@ export const useCollection = <TData extends FirestoreObject>(
       }
       return () => {
         unsub();
+        // Fire-and-forget flush: if there are pending local edits and the
+        // subscription is being torn down due to a path/query change, attempt
+        // a final sync so the edits reach Firestore.
+        void subscription.sync();
         subscription.stop();
       };
     },
