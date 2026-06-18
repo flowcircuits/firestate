@@ -279,7 +279,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         state.isSetOperation = false
 
         notify()
-        scheduleAutosave()
+        scheduleAutosave(true)
     }
 
     const setData = (data: TData, undoOptions: UpdateOptions = {}) => {
@@ -327,7 +327,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         state.isSetOperation = true
 
         notify()
-        scheduleAutosave()
+        scheduleAutosave(true)
     }
 
     const deleteDocument = (undoOptions: UpdateOptions = {}) => {
@@ -355,21 +355,26 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         state.isSetOperation = false
 
         notify()
-        scheduleAutosave()
+        scheduleAutosave(true)
     }
 
-    const scheduleAutosave = () => {
+    // `fromMutation` is true when called from a user edit (updateState,
+    // setData, deleteDocument). Only in that case do we cancel the pending
+    // write-retry timer and reset the counter — a new user edit supersedes
+    // the previous attempt and starts with a fresh retry budget.
+    // Snapshot-driven calls (handleSnapshot) must NOT reset the budget so a
+    // stray read from the listener doesn't silently swallow a retry.
+    const scheduleAutosave = (fromMutation = false) => {
         if (autosaveTimeout) {
             clearTimeout(autosaveTimeout)
         }
-        // A new user edit supersedes any pending write retry — cancel the
-        // timer and reset the counter so the fresh autosave starts with a
-        // full retry budget.
-        if (writeRetryTimeout) {
-            clearTimeout(writeRetryTimeout)
-            writeRetryTimeout = null
+        if (fromMutation) {
+            if (writeRetryTimeout) {
+                clearTimeout(writeRetryTimeout)
+                writeRetryTimeout = null
+            }
+            writeRetryCount = 0
         }
-        writeRetryCount = 0
         if (autosave > 0) {
             autosaveTimeout = setTimeout(() => {
                 sync()

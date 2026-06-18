@@ -501,4 +501,42 @@ describe('Write retry on transient failures', () => {
         expect(sub.getState().error).toBeInstanceOf(Error)
         expect(onError).toHaveBeenCalledOnce()
     })
+
+    it('an intervening snapshot does not cancel the write-retry timer (autosave: 0 regression)', async () => {
+        // Regression for the bug reported in the Codex review: handleSnapshot()
+        // calls scheduleAutosave() when localState is pending, which previously
+        // cleared writeRetryTimeout and reset writeRetryCount. With autosave: 0
+        // no replacement timer was scheduled, leaving the edit stuck indefinitely.
+        vi.mocked(firestore.updateDoc).mockRejectedValue(new Error('transient'))
+        const onError = vi.fn()
+        store = createStore({ firestore: {} as any, autosave: 0, onError })
+
+        const sub = createDocumentSubscription({
+            store,
+            definition: buildDocumentDefinition(
+                doc({ path: 'items/{id}', schema, maxWriteRetries: 1, retryInterval: 100 })
+            ),
+            docId: 'i1',
+            collectionPath: 'items',
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        sub.getHandle().update({ title: 'v1' })
+        await sub.sync()
+
+        // Retry is scheduled (1 of 1 retry budget used)
+        expect(sub.getState().error).toBeUndefined()
+        expect(onError).not.toHaveBeenCalled()
+
+        // An unrelated snapshot arrives before the retry fires — must NOT
+        // cancel the retry timer or reset the budget.
+        fireDocSnapshot({ title: 'original' })
+
+        // Retry still fires on schedule
+        await vi.advanceTimersByTimeAsync(101)
+        // Budget exhausted — error surfaced
+        expect(sub.getState().error).toBeInstanceOf(Error)
+        expect(onError).toHaveBeenCalledOnce()
+    })
 })
