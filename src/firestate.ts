@@ -69,6 +69,8 @@ interface CommonEntryOptions {
   retryOnError?: boolean;
   /** Retry interval (ms). */
   retryInterval?: number;
+  /** Maximum automatic retries on transient write failures (default 3). */
+  maxWriteRetries?: number;
 }
 
 /**
@@ -323,6 +325,7 @@ export function buildDocumentDefinition<T extends FirestoreObject>(
     readOnly: entry.readOnly,
     retryOnError: entry.retryOnError,
     retryInterval: entry.retryInterval,
+    maxWriteRetries: entry.maxWriteRetries,
   } as DocumentDefinition<T>);
 }
 
@@ -344,6 +347,7 @@ export function buildCollectionDefinition<T extends FirestoreObject>(
     queryConstraints: entry.queryConstraints,
     retryOnError: entry.retryOnError,
     retryInterval: entry.retryInterval,
+    maxWriteRetries: entry.maxWriteRetries,
   } as CollectionDefinition<T>);
 }
 

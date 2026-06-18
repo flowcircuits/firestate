@@ -8,7 +8,7 @@
  * is that those strings reach Firestore in `collection(firestore, path)`.
  * This file pins that contract directly.
  */
-import { vi, describe, it, expect, beforeEach } from 'vitest'
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 vi.mock('firebase/firestore', async () => {
     const actual =
@@ -26,6 +26,15 @@ vi.mock('firebase/firestore', async () => {
         onSnapshot: vi.fn(() => () => {
             /* noop unsubscribe */
         }),
+        setDoc: vi.fn(),
+        updateDoc: vi.fn(),
+        deleteDoc: vi.fn(),
+        writeBatch: vi.fn(() => ({
+            set: vi.fn(),
+            update: vi.fn(),
+            delete: vi.fn(),
+            commit: vi.fn(),
+        })),
     }
 })
 
@@ -39,6 +48,7 @@ import {
     buildCollectionDefinition,
 } from './firestate'
 import { createDocumentSubscription } from './document'
+import { createCollectionSubscription } from './collection'
 import { createStore, type FirestateStore } from './store'
 
 const revisionSchema = z.object({ title: z.string() })
@@ -324,5 +334,171 @@ describe('Document subscription: serverTimestamp display overrides', () => {
         expect(sub.getState().data!.updatedAt).not.toEqual(Timestamp.fromMillis(9999))
         // It IS a Timestamp (display override fired for the restored sentinel).
         expect(sub.getState().data!.updatedAt).toBeInstanceOf(Timestamp)
+    })
+})
+
+// Pins the fix for issue #25: write failures should be retried up to
+// `maxWriteRetries` times before the error is surfaced to React.
+describe('Write retry on transient failures', () => {
+    let store: FirestateStore
+    let snapshotCallback: ((snap: unknown) => void) | undefined
+    const schema = z.object({ title: z.string() })
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        store = createStore({ firestore: {} as any, autosave: 0 })
+
+        snapshotCallback = undefined
+        vi.mocked(firestore.onSnapshot).mockImplementation(
+            ((_ref: unknown, onNext: (snap: unknown) => void) => {
+                snapshotCallback = onNext
+                return () => {
+                    snapshotCallback = undefined
+                }
+            }) as never
+        )
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    const fireDocSnapshot = (data: Record<string, unknown> | null) => {
+        snapshotCallback!({
+            exists: () => data !== null,
+            data: () => data,
+            metadata: { fromCache: false, hasPendingWrites: false },
+        })
+    }
+
+    it('does not surface an error until all retries are exhausted (document set)', async () => {
+        vi.mocked(firestore.setDoc).mockRejectedValue(new Error('transient'))
+        const onError = vi.fn()
+        store = createStore({ firestore: {} as any, autosave: 0, onError })
+
+        const sub = createDocumentSubscription({
+            store,
+            definition: buildDocumentDefinition(
+                doc({ path: 'items/{id}', schema, maxWriteRetries: 2, retryInterval: 100 })
+            ),
+            docId: 'i1',
+            collectionPath: 'items',
+        })
+        sub.load()
+
+        sub.getHandle().set({ title: 'new' })
+        await sub.sync()
+
+        // Attempt 1 failed — 2 retries remaining, no error yet
+        expect(sub.getState().error).toBeUndefined()
+        expect(onError).not.toHaveBeenCalled()
+        expect(sub.getState().isSynced).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(101)
+        // Attempt 2 (retry 1) failed — 1 retry remaining
+        expect(sub.getState().error).toBeUndefined()
+        expect(onError).not.toHaveBeenCalled()
+
+        await vi.advanceTimersByTimeAsync(101)
+        // Attempt 3 (retry 2) failed — retries exhausted, error surfaced
+        expect(sub.getState().error).toBeInstanceOf(Error)
+        expect(onError).toHaveBeenCalledOnce()
+        // localState preserved so the pending change is still visible
+        expect(sub.getState().isSynced).toBe(false)
+    })
+
+    it('maxWriteRetries: 0 surfaces error immediately on the first failure', async () => {
+        vi.mocked(firestore.setDoc).mockRejectedValue(new Error('perm denied'))
+        const onError = vi.fn()
+        store = createStore({ firestore: {} as any, autosave: 0, onError })
+
+        const sub = createDocumentSubscription({
+            store,
+            definition: buildDocumentDefinition(
+                doc({ path: 'items/{id}', schema, maxWriteRetries: 0 })
+            ),
+            docId: 'i1',
+            collectionPath: 'items',
+        })
+        sub.load()
+
+        sub.getHandle().set({ title: 'new' })
+        await sub.sync()
+
+        expect(sub.getState().error).toBeInstanceOf(Error)
+        expect(onError).toHaveBeenCalledOnce()
+    })
+
+    it('a new user edit resets the retry budget', async () => {
+        vi.mocked(firestore.updateDoc).mockRejectedValue(new Error('fail'))
+        const onError = vi.fn()
+        store = createStore({ firestore: {} as any, autosave: 0, onError })
+
+        const sub = createDocumentSubscription({
+            store,
+            definition: buildDocumentDefinition(
+                doc({ path: 'items/{id}', schema, maxWriteRetries: 1, retryInterval: 100 })
+            ),
+            docId: 'i1',
+            collectionPath: 'items',
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        // First edit: consumes 1 of 1 retry slot
+        sub.getHandle().update({ title: 'v1' })
+        await sub.sync()
+        expect(onError).not.toHaveBeenCalled()
+
+        // New edit before the retry fires — cancels the old timer and resets the budget
+        sub.getHandle().update({ title: 'v2' })
+        await sub.sync()
+        // Budget was reset to 0, so this counts as attempt 1 of a fresh budget
+        expect(sub.getState().error).toBeUndefined()
+        expect(onError).not.toHaveBeenCalled()
+
+        // One retry of the fresh budget exhausted — error surfaces
+        await vi.advanceTimersByTimeAsync(101)
+        expect(sub.getState().error).toBeInstanceOf(Error)
+        expect(onError).toHaveBeenCalledOnce()
+    })
+
+    it('collection batch commit is also retried before surfacing the error', async () => {
+        const mockBatch = {
+            set: vi.fn(),
+            update: vi.fn(),
+            delete: vi.fn(),
+            commit: vi.fn().mockRejectedValue(new Error('batch fail')),
+        }
+        vi.mocked(firestore.writeBatch).mockReturnValue(mockBatch as any)
+
+        const onError = vi.fn()
+        store = createStore({ firestore: {} as any, autosave: 0, onError })
+        const spaceSchema = z.object({ label: z.string() })
+
+        const sub = createCollectionSubscription({
+            store,
+            collectionPath: 'spaces',
+            definition: buildCollectionDefinition(
+                col({ path: 'spaces', schema: spaceSchema, maxWriteRetries: 1, retryInterval: 100 })
+            ),
+        })
+        sub.load()
+        // Fire an empty snapshot so syncState is defined and add() is allowed
+        snapshotCallback!({ docs: [] })
+
+        sub.getHandle().add({ label: 'room' })
+        await sub.sync()
+
+        // Attempt 1 failed — no error yet, 1 retry scheduled
+        expect(sub.getState().error).toBeUndefined()
+        expect(onError).not.toHaveBeenCalled()
+
+        await vi.advanceTimersByTimeAsync(101)
+
+        // Retry 1 failed — retries exhausted, error surfaced
+        expect(sub.getState().error).toBeInstanceOf(Error)
+        expect(onError).toHaveBeenCalledOnce()
     })
 })

@@ -138,6 +138,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         readOnly: definitionReadOnly,
         retryOnError = false,
         retryInterval = 5000,
+        maxWriteRetries = 3,
         schema,
     } = definition
 
@@ -184,6 +185,8 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     let autosaveTimeout: ReturnType<typeof setTimeout> | null = null
     let retryTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
+    let writeRetryCount = 0
+    let writeRetryTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
     // Cached handle — returns the same reference until notify() invalidates
@@ -359,6 +362,14 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         if (autosaveTimeout) {
             clearTimeout(autosaveTimeout)
         }
+        // A new user edit supersedes any pending write retry — cancel the
+        // timer and reset the counter so the fresh autosave starts with a
+        // full retry budget.
+        if (writeRetryTimeout) {
+            clearTimeout(writeRetryTimeout)
+            writeRetryTimeout = null
+        }
+        writeRetryCount = 0
         if (autosave > 0) {
             autosaveTimeout = setTimeout(() => {
                 sync()
@@ -378,9 +389,19 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             try {
                 await deleteDoc(docRef)
             } catch (error) {
-                console.error('Sync failed:', error)
                 state.waitingForUpdate = false
                 state.inflightLocalState = undefined
+                if (writeRetryCount < maxWriteRetries) {
+                    writeRetryCount++
+                    console.warn(`[firestate] Write failed (attempt ${writeRetryCount}/${maxWriteRetries}), retrying in ${retryInterval}ms:`, error)
+                    writeRetryTimeout = setTimeout(() => {
+                        writeRetryTimeout = null
+                        sync()
+                    }, retryInterval)
+                    return
+                }
+                writeRetryCount = 0
+                console.error('Sync failed:', error)
                 state.error = error as Error
                 store.reportError(error as Error, {
                     type: 'document',
@@ -433,14 +454,22 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 await updateDoc(docRef, flatDiff)
             }
         } catch (error) {
-            console.error('Sync failed:', error)
             state.waitingForUpdate = false
             state.inflightLocalState = undefined
-            // Surface to React: handle.error reflects the failure and the
-            // listener will keep state.localState so consumers can retry by
-            // calling sync() or by issuing another update. Autosave is not
-            // automatically rescheduled to avoid retry loops on permission
-            // errors — that policy is left to the consumer.
+            if (writeRetryCount < maxWriteRetries) {
+                writeRetryCount++
+                console.warn(`[firestate] Write failed (attempt ${writeRetryCount}/${maxWriteRetries}), retrying in ${retryInterval}ms:`, error)
+                writeRetryTimeout = setTimeout(() => {
+                    writeRetryTimeout = null
+                    sync()
+                }, retryInterval)
+                return
+            }
+            // All retries exhausted — surface the error to React and the
+            // onError handler. localState is preserved so the caller can
+            // inspect the pending change or call sync() to retry manually.
+            writeRetryCount = 0
+            console.error('Sync failed:', error)
             state.error = error as Error
             store.reportError(error as Error, {
                 type: 'document',
@@ -458,6 +487,11 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
         if (state.waitingForUpdate) {
             state.waitingForUpdate = false
+            writeRetryCount = 0
+            if (writeRetryTimeout) {
+                clearTimeout(writeRetryTimeout)
+                writeRetryTimeout = null
+            }
             const inflightState = state.inflightLocalState
             state.inflightLocalState = undefined
             const currentLocal = state.localState
@@ -526,6 +560,11 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         if (state.waitingForUpdate) {
             state.waitingForUpdate = false
             state.inflightLocalState = undefined
+            writeRetryCount = 0
+            if (writeRetryTimeout) {
+                clearTimeout(writeRetryTimeout)
+                writeRetryTimeout = null
+            }
         }
         if (minLoadTimeElapsed) {
             state.isLoading = false
@@ -597,6 +636,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         if (retryTimeout) {
             clearTimeout(retryTimeout)
             retryTimeout = null
+        }
+        if (writeRetryTimeout) {
+            clearTimeout(writeRetryTimeout)
+            writeRetryTimeout = null
         }
         if (minLoadTimeout) {
             clearTimeout(minLoadTimeout)

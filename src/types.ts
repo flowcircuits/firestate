@@ -220,6 +220,13 @@ export interface DocumentDefinition<TData extends FirestoreObject> {
   retryOnError?: boolean;
   /** Retry interval (ms), default 5000 */
   retryInterval?: number;
+  /**
+   * Maximum number of automatic retries on transient write failures before
+   * surfacing the error. On each failure firestate reschedules the write after
+   * `retryInterval` ms. Set to `0` to disable automatic write retries.
+   * Default: 3.
+   */
+  maxWriteRetries?: number;
 }
 
 /**
@@ -252,6 +259,13 @@ export interface CollectionDefinition<TData extends FirestoreObject> {
   retryOnError?: boolean;
   /** Retry interval (ms), default 5000 */
   retryInterval?: number;
+  /**
+   * Maximum number of automatic retries on transient write failures before
+   * surfacing the error. On each failure firestate reschedules the write after
+   * `retryInterval` ms. Set to `0` to disable automatic write retries.
+   * Default: 3.
+   */
+  maxWriteRetries?: number;
 }
 
 /**

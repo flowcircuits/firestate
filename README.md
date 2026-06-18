@@ -477,6 +477,7 @@ doc({
     autosave: 1000,
     readOnly: false,
     retryOnError: false,
+    maxWriteRetries: 3,
 })
 
 col({
@@ -506,6 +507,7 @@ const projectDoc = defineDocument<Project>({
     readOnly: false,            // Optional: prevent updates
     retryOnError: false,        // Optional: retry on listener errors
     retryInterval: 5000,        // Optional: retry interval (ms)
+    maxWriteRetries: 3,         // Optional: max retries on transient write failures
     schema: ProjectSchema,      // Optional: Zod schema (validates set/add)
 })
 ```
