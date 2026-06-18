@@ -573,6 +573,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     const startListener = () => {
         if (unsubscribeListener) return
 
+        // Clear the stopped flag so notify() resumes reporting sync state.
+        // Needed for the retryOnError path: stop() sets stopped=true, then
+        // startListener() re-activates the subscription.
+        stopped = false
         loaded = false
         minLoadTimeElapsed = false
 

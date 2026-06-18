@@ -529,4 +529,36 @@ describe('Issue #26: readOnly as live ref / flush on teardown', () => {
         await syncPromise
         expect(store.isSynced).toBe(true)
     })
+
+    // Part 3: stopped flag must be reset on retry so isSynced tracking resumes
+
+    it('load() after stop() resets stopped so reportSyncState is called again', () => {
+        // Regression for the retryOnError path: stop() sets stopped=true,
+        // then load() re-activates. Without the reset, notify() would skip
+        // reportSyncState forever, leaving useIsSynced stuck after a retry.
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema: taskSchema })
+        )
+
+        const sub = createDocumentSubscription({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+        })
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        // Simulate retryOnError teardown + reload
+        sub.stop()
+        expect(store.isSynced).toBe(true)
+
+        sub.load()
+        fireDocSnapshot({ title: 'original' })
+
+        // After reload an edit must flip isSynced back to false
+        sub.getHandle().update({ title: 'after-retry' })
+        expect(store.isSynced).toBe(false)
+        expect(sub.getState().isSynced).toBe(false)
+    })
 })

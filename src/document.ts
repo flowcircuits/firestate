@@ -576,6 +576,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const load = () => {
         if (unsubscribeListener) return
 
+        // Clear the stopped flag so notify() resumes reporting sync state.
+        // Needed for the retryOnError path: stop() sets stopped=true, then
+        // load() re-activates the subscription.
+        stopped = false
         loaded = false
         minLoadTimeElapsed = false
 
