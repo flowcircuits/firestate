@@ -602,6 +602,60 @@ const id = add({ name: 'New Space', area: 500, floor: 1 })
 remove('oldSpaceId')
 ```
 
+#### Selecting a slice (`selector` + `isEqual`)
+
+By default a component re-renders whenever *any* field of the subscribed
+document or collection changes. Pass a `selector` to narrow `data` to the slice
+the component actually reads — it then re-renders only when that slice changes.
+The hook still returns a **full handle**: `update`/`set`/`delete`/`add`/`remove`,
+`ref`, and the status flags are unchanged and still typed against the full
+document. A selector changes what you *read*, never what you *write*.
+
+```typescript
+// Re-renders only when the title changes — not on any other field.
+const { data: title, update } = useDocument({
+    definition: projectDoc,
+    params: { projectId },
+    selector: (project) => project?.title,
+})
+update({ description: 'edited' }) // still a full-document update
+
+// On a collection, sub-select a single document or a derived value.
+const { data: space } = useCollection({
+    definition: spacesCollection,
+    params: { projectId },
+    selector: (spaces) => spaces[spaceId],
+})
+```
+
+`data` is `undefined` while a document is loading (and the collection record is
+`{}`), so selectors should handle the empty case.
+
+When writing from a narrowed handle, use `update` — it takes a *partial* and
+merges, so a selected field is just `update({ field: next })`. `set` still
+**replaces the entire document**, not the slice: never pass the selected value
+to `set` (e.g. `set(title)`) or you will overwrite every other field. Reach for
+`set` only when you hold the full document.
+
+By default the slice is compared with a deep value comparison, so a selector
+that returns a fresh object/array of the same shape does **not** over-render.
+Pass `isEqual` to tune it — `shallow` (exported) is a one-level compare for flat
+projections:
+
+```typescript
+import { shallow } from '@hvakr/firestate'
+
+const { data: ids } = useCollection({
+    definition: spacesCollection,
+    params: { projectId },
+    selector: (spaces) => Object.keys(spaces),
+    isEqual: shallow,
+})
+```
+
+Selectors do not need to be memoized; an inline selector is recomputed each
+render but only triggers a re-render when its result changes per `isEqual`.
+
 #### `useUndoManager()`
 
 Access the undo manager.

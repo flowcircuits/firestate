@@ -25,6 +25,8 @@ import {
   useCollection,
   type UseDocumentOptions,
   type UseCollectionOptions,
+  type DocumentSelectorOptions,
+  type CollectionSelectorOptions,
 } from "../react/hooks";
 import type {
   CollectionDefinition,
@@ -32,6 +34,8 @@ import type {
   DocumentDefinition,
   DocumentHandle,
   FirestoreObject,
+  SelectedCollectionHandle,
+  SelectedDocumentHandle,
 } from "../types";
 import type { QueryConstraint } from "firebase/firestore";
 import type { ZodType, z } from "zod";
@@ -264,29 +268,74 @@ export function col<
 
 type HookName<K extends string> = `use${Capitalize<K>}`;
 
+// Excludes selector options from the non-selector overload, so passing a real
+// `selector` falls through to the selector overload (which infers `TSelected`)
+// instead of resolving to the full-data return.
+type NoSelector = { selector?: undefined; isEqual?: undefined };
+
+// Each generated hook is overloaded: call it without a `selector` to get the
+// full handle, or with one to get a handle whose `data` is the selected slice.
+// The two `*OptionalParams` / `*RequiredParams` shapes capture whether the path
+// template has placeholders (optional vs. required `params`). In the selector
+// overload `options` is required (it must carry `selector`), so `params` cannot
+// be optional before it — the no-placeholder selector form therefore takes
+// `params` as `Record<string, string> | undefined` (pass `{}` or `undefined`).
+
+interface DocHookOptionalParams<T extends FirestoreObject> {
+  (
+    params?: Record<string, string>,
+    options?: DocHookOptions<T> & NoSelector
+  ): DocumentHandle<T>;
+  <TSelected>(
+    params: Record<string, string> | undefined,
+    options: DocHookOptions<T> & DocumentSelectorOptions<T, TSelected>
+  ): SelectedDocumentHandle<T, TSelected>;
+}
+
+interface DocHookRequiredParams<T extends FirestoreObject, P extends string> {
+  (
+    params: ParamsOf<P>,
+    options?: DocHookOptions<T> & NoSelector
+  ): DocumentHandle<T>;
+  <TSelected>(
+    params: ParamsOf<P>,
+    options: DocHookOptions<T> & DocumentSelectorOptions<T, TSelected>
+  ): SelectedDocumentHandle<T, TSelected>;
+}
+
+interface ColHookOptionalParams<T extends FirestoreObject> {
+  (
+    params?: Record<string, string>,
+    options?: ColHookOptions<T> & NoSelector
+  ): CollectionHandle<T>;
+  <TSelected>(
+    params: Record<string, string> | undefined,
+    options: ColHookOptions<T> & CollectionSelectorOptions<T, TSelected>
+  ): SelectedCollectionHandle<T, TSelected>;
+}
+
+interface ColHookRequiredParams<T extends FirestoreObject, P extends string> {
+  (
+    params: ParamsOf<P>,
+    options?: ColHookOptions<T> & NoSelector
+  ): CollectionHandle<T>;
+  <TSelected>(
+    params: ParamsOf<P>,
+    options: ColHookOptions<T> & CollectionSelectorOptions<T, TSelected>
+  ): SelectedCollectionHandle<T, TSelected>;
+}
+
 // If the path template has no placeholders, `params` is optional (any
 // caller-supplied object is fine). When the template has placeholders,
 // the caller must pass an object with exactly the extracted keys.
 type HookFor<E> = E extends DocEntry<infer T, infer P>
   ? keyof ParamsOf<P> extends never
-    ? (
-        params?: Record<string, string>,
-        options?: DocHookOptions<T>
-      ) => DocumentHandle<T>
-    : (
-        params: ParamsOf<P>,
-        options?: DocHookOptions<T>
-      ) => DocumentHandle<T>
+    ? DocHookOptionalParams<T>
+    : DocHookRequiredParams<T, P>
   : E extends ColEntry<infer T, infer P>
   ? keyof ParamsOf<P> extends never
-    ? (
-        params?: Record<string, string>,
-        options?: ColHookOptions<T>
-      ) => CollectionHandle<T>
-    : (
-        params: ParamsOf<P>,
-        options?: ColHookOptions<T>
-      ) => CollectionHandle<T>
+    ? ColHookOptionalParams<T>
+    : ColHookRequiredParams<T, P>
   : never;
 
 export type FirestateApi<R extends FirestateRegistry> = {

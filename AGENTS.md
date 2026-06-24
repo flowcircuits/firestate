@@ -100,6 +100,15 @@ Preserve these unless the task explicitly changes them.
   Callers therefore do not need to memoize `queryConstraints` for correctness.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
+- A hook `selector` only narrows what the handle's `data` field holds and what
+  drives re-renders. It must never change the writer surface
+  (`update`/`set`/`delete`/`add`/`remove`) or `ref`, which stay typed against
+  the full document. The default slice comparison is value-based
+  (`valuesEqualForNoOp`), so an identity selector reproduces the pre-selector
+  re-render behavior and a selector returning a fresh object does not
+  over-render. Methods/`ref` are read live from the subscription, not from the
+  memoized selection, so a rebuilt subscription always surfaces its own methods
+  even when the selected slice is value-equal.
 - Unmounting a subscription clears its autosave timer and unregisters its sync
   state. Pending debounced edits are not automatically flushed on `stop()`.
 - Undo actions are client-local. Grouped undo actions undo newest to oldest and
