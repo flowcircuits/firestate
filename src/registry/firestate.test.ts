@@ -249,6 +249,22 @@ describe('type-level params extraction', () => {
 
             // Options arg passes through
             api.useTaskList({ listId: 'a' }, { enabled: false })
+
+            // Function paths can't infer keys from a template, so params fall
+            // back to Record<string, string> — the hook still type-checks and
+            // branches on whichever params it gets.
+            const fnApi = createFirestate({
+                spaces: col({
+                    path: (p) => `projects/${p.projectId}/spaces`,
+                    schema: taskSchema,
+                }),
+                space: doc({
+                    path: (p) => `projects/${p.projectId}/spaces/${p.spaceId}`,
+                    schema: taskSchema,
+                }),
+            })
+            fnApi.useSpaces({ projectId: 'p1' })
+            fnApi.useSpace({ projectId: 'p1', spaceId: 's1' })
         }
         void _typeTest
         expect(true).toBe(true)
@@ -350,6 +366,123 @@ describe('buildCollectionDefinition', () => {
 
         expect(typeof def.path).toBe('function')
         const path = def.path as (p: Record<string, string>) => string
+        expect(path({ projectId: 'p1', revisionId: 'r1' })).toBe(
+            'projects/p1/revisions/r1/spaces'
+        )
+    })
+})
+
+describe('doc — function path', () => {
+    const projectSchema = z.object({ name: z.string() })
+    const spaceSchema = z.object({ label: z.string() })
+
+    it('does not validate the path at registration time', () => {
+        // A function can't be template-checked up front; registration is a
+        // no-op on validation and must not throw.
+        expect(() =>
+            doc({ path: (p) => `projects/${p.projectId}`, schema: projectSchema })
+        ).not.toThrow()
+    })
+
+    it('stores the function as the entry path', () => {
+        const pathFn = (p: Record<string, string>) => `projects/${p.projectId}`
+        const entry = doc({ path: pathFn, schema: projectSchema })
+        expect(entry.__kind).toBe('document')
+        expect(entry.path).toBe(pathFn)
+    })
+
+    it('splits the resolved full path into collection + id per-call', () => {
+        const def = buildDocumentDefinition(
+            doc({
+                path: (p) => `projects/${p.projectId}`,
+                schema: projectSchema,
+            })
+        )
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        const id = def.id as (p: Record<string, string>) => string
+
+        expect(collection({ projectId: 'p1' })).toBe('projects')
+        expect(id({ projectId: 'p1' })).toBe('p1')
+    })
+
+    it('branches the path on a runtime param (live vs. revision)', () => {
+        // Mirrors HVAKR's ProjectProvider: the revision segment only appears
+        // when a revisionId is present.
+        const def = buildDocumentDefinition(
+            doc({
+                path: (p) =>
+                    p.revisionId
+                        ? `projects/${p.projectId}/revisions/${p.revisionId}/spaces/${p.spaceId}`
+                        : `projects/${p.projectId}/spaces/${p.spaceId}`,
+                schema: spaceSchema,
+            })
+        )
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        const id = def.id as (p: Record<string, string>) => string
+
+        // live branch
+        expect(collection({ projectId: 'p1', spaceId: 's1' })).toBe(
+            'projects/p1/spaces'
+        )
+        expect(id({ projectId: 'p1', spaceId: 's1' })).toBe('s1')
+
+        // revision branch
+        expect(
+            collection({ projectId: 'p1', revisionId: 'r1', spaceId: 's1' })
+        ).toBe('projects/p1/revisions/r1/spaces')
+        expect(
+            id({ projectId: 'p1', revisionId: 'r1', spaceId: 's1' })
+        ).toBe('s1')
+    })
+
+    it('still fails loud when the resolved path has no slash', () => {
+        const def = buildDocumentDefinition(
+            doc({ path: () => 'projects', schema: projectSchema })
+        )
+        const collection = def.collection as (
+            p: Record<string, string>
+        ) => string
+        expect(() => collection({})).toThrow(/must contain at least one '\/'/)
+    })
+})
+
+describe('col — function path', () => {
+    const spaceSchema = z.object({ label: z.string() })
+
+    it('does not validate the path at registration time', () => {
+        expect(() =>
+            col({ path: (p) => `projects/${p.projectId}/spaces`, schema: spaceSchema })
+        ).not.toThrow()
+    })
+
+    it('stores the function as the entry path', () => {
+        const pathFn = (p: Record<string, string>) =>
+            `projects/${p.projectId}/spaces`
+        const entry = col({ path: pathFn, schema: spaceSchema })
+        expect(entry.__kind).toBe('collection')
+        expect(entry.path).toBe(pathFn)
+    })
+
+    it('branches the collection path on a runtime param (live vs. revision)', () => {
+        const def = buildCollectionDefinition(
+            col({
+                path: (p) =>
+                    p.revisionId
+                        ? `projects/${p.projectId}/revisions/${p.revisionId}/spaces`
+                        : `projects/${p.projectId}/spaces`,
+                schema: spaceSchema,
+            })
+        )
+        expect(typeof def.path).toBe('function')
+        const path = def.path as (p: Record<string, string>) => string
+
+        // live branch
+        expect(path({ projectId: 'p1' })).toBe('projects/p1/spaces')
+        // revision branch
         expect(path({ projectId: 'p1', revisionId: 'r1' })).toBe(
             'projects/p1/revisions/r1/spaces'
         )

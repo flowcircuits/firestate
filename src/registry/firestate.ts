@@ -85,8 +85,13 @@ export interface DocEntry<
 > extends CommonEntryOptions {
   readonly __kind: "document";
   readonly __type?: T;
-  /** Path template, e.g. `'taskLists/{listId}'`. */
-  path: P;
+  /**
+   * Path template, e.g. `'taskLists/{listId}'`, or a function returning the
+   * **full document path** at runtime (the collection/id split happens
+   * per-call via {@link splitDocPath}). Use the function form for paths that
+   * branch on a param. See {@link PathArg}.
+   */
+  path: PathArg<P>;
   /**
    * Zod schema. **Required** — firestate's registry API is opinionated
    * about Zod. The schema is the source of `T` for the generated hooks
@@ -109,8 +114,12 @@ export interface ColEntry<
 > extends CommonEntryOptions {
   readonly __kind: "collection";
   readonly __type?: T;
-  /** Path template, e.g. `'taskLists/{listId}/tasks'`. */
-  path: P;
+  /**
+   * Path template, e.g. `'taskLists/{listId}/tasks'`, or a function returning
+   * the **collection path** at runtime. Use the function form for paths that
+   * branch on a param. See {@link PathArg}.
+   */
+  path: PathArg<P>;
   /** Zod schema. Required. See {@link DocEntry.schema}. */
   schema: ZodType<T>;
   /** Only subscribe when `load()` is called. */
@@ -153,6 +162,21 @@ type RawParamsOf<P extends string> =
 // `{ projectId: string; revisionId: string }` instead of an intersection.
 type Prettify<T> = { [K in keyof T]: T[K] } & {};
 
+/**
+ * The `path` accepted by {@link doc} / {@link col}. Either a static template
+ * (whose `{param}` placeholders are interpolated and whose param keys are
+ * inferred via {@link ParamsOf}), or a function that returns the path at
+ * runtime — for paths that branch on a param, e.g. live
+ * `projects/{projectId}/spaces` vs. revision
+ * `projects/{projectId}/revisions/{revisionId}/spaces`.
+ *
+ * With the function form, params can't be inferred from a template, so the
+ * generated hook's params fall back to `Record<string, string>`.
+ */
+export type PathArg<P extends string> =
+  | P
+  | ((params: Record<string, string>) => string);
+
 // ---------------------------------------------------------------------------
 // Entry factories
 // ---------------------------------------------------------------------------
@@ -173,6 +197,10 @@ type ColOpts<T extends FirestoreObject> = Omit<ColEntry<T>, "__kind" | "__type" 
  * directly — that escape hatch keeps the plain-TypeScript form, at the
  * cost of looser param typing on the hook and no runtime validation.
  *
+ * `path` may also be a function returning the full document path at runtime —
+ * for paths that branch on a param. Param keys can't be inferred from a
+ * function, so they fall back to `Record<string, string>`. See {@link PathArg}.
+ *
  * ```ts
  * import { z } from 'zod'
  *
@@ -187,14 +215,18 @@ export function doc<
 >(
   opts: Omit<DocOpts<z.infer<S>>, "schema"> & {
     schema: S;
-    path: P;
+    path: PathArg<P>;
   }
 ): DocEntry<z.infer<S>, P> {
   const { path, ...rest } = opts;
-  validateTemplate(path);
-  // Bail at registration time if the path can't be split into a non-empty
-  // collection + id — same loud-at-the-boundary spirit as interpolate.
-  splitDocPath(path);
+  // Static templates fail loud at registration: a malformed placeholder or a
+  // path that can't be split into a non-empty collection + id throws here.
+  // Function paths are checked per-call in buildDocumentDefinition, once they
+  // resolve to a concrete string.
+  if (typeof path === "string") {
+    validateTemplate(path);
+    splitDocPath(path);
+  }
   return { __kind: "document", path, ...rest } as unknown as DocEntry<
     z.infer<S>,
     P
@@ -203,7 +235,8 @@ export function doc<
 
 /**
  * Declare a collection entry for a Firestate registry. See {@link doc}
- * for the schema/typing contract.
+ * for the schema/typing contract. `path` may also be a function returning
+ * the collection path at runtime — see {@link PathArg}.
  */
 export function col<
   S extends ZodType<FirestoreObject>,
@@ -211,11 +244,14 @@ export function col<
 >(
   opts: Omit<ColOpts<z.infer<S>>, "schema"> & {
     schema: S;
-    path: P;
+    path: PathArg<P>;
   }
 ): ColEntry<z.infer<S>, P> {
   const { path, ...rest } = opts;
-  validateTemplate(path);
+  // Static templates fail loud at registration; function paths resolve later.
+  if (typeof path === "string") {
+    validateTemplate(path);
+  }
   return { __kind: "collection", path, ...rest } as unknown as ColEntry<
     z.infer<S>,
     P
@@ -310,19 +346,36 @@ export function createFirestate<R extends FirestateRegistry>(
 export function buildDocumentDefinition<T extends FirestoreObject>(
   entry: DocEntry<T>
 ): DocumentDefinition<T> {
-  const { collectionPath, idTemplate } = splitDocPath(entry.path);
-  // Both halves are functions so any `{param}` placeholder in the
-  // collection portion (e.g. `projects/{projectId}/revisions`) is
-  // resolved per-call against the params passed to the hook.
-  return defineDocument<T>({
+  const { path } = entry;
+  const common = {
     schema: entry.schema,
-    collection: (params) => interpolate(collectionPath, params),
-    id: (params) => interpolate(idTemplate, params),
     autosave: entry.autosave,
     minLoadTime: entry.minLoadTime,
     readOnly: entry.readOnly,
     retryOnError: entry.retryOnError,
     retryInterval: entry.retryInterval,
+  };
+
+  if (typeof path === "function") {
+    // The function returns the FULL document path; split it per-call. It has
+    // no `{param}` placeholders left to interpolate, but splitDocPath still
+    // throws loud on a missing '/' or an empty collection/id segment — the
+    // boundary check, just deferred to resolution time.
+    return defineDocument<T>({
+      ...common,
+      collection: (params) => splitDocPath(path(params)).collectionPath,
+      id: (params) => splitDocPath(path(params)).idTemplate,
+    } as DocumentDefinition<T>);
+  }
+
+  // Static template. Both halves are functions so any `{param}` placeholder in
+  // the collection portion (e.g. `projects/{projectId}/revisions`) is resolved
+  // per-call against the params passed to the hook.
+  const { collectionPath, idTemplate } = splitDocPath(path);
+  return defineDocument<T>({
+    ...common,
+    collection: (params) => interpolate(collectionPath, params),
+    id: (params) => interpolate(idTemplate, params),
   } as DocumentDefinition<T>);
 }
 
@@ -334,9 +387,15 @@ export function buildDocumentDefinition<T extends FirestoreObject>(
 export function buildCollectionDefinition<T extends FirestoreObject>(
   entry: ColEntry<T>
 ): CollectionDefinition<T> {
+  const { path } = entry;
   return defineCollection<T>({
     schema: entry.schema,
-    path: (params) => interpolate(entry.path, params),
+    // Function paths pass straight through to defineCollection; static
+    // templates are interpolated per-call.
+    path:
+      typeof path === "function"
+        ? path
+        : (params) => interpolate(path, params),
     autosave: entry.autosave,
     minLoadTime: entry.minLoadTime,
     readOnly: entry.readOnly,
