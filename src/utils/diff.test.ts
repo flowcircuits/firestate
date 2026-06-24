@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { GeoPoint, serverTimestamp, Timestamp } from 'firebase/firestore'
+import {
+    deleteField,
+    GeoPoint,
+    serverTimestamp,
+    Timestamp,
+} from 'firebase/firestore'
 import {
     computeDiff,
     applyDiff,
@@ -11,6 +16,7 @@ import {
     isDiffEmpty,
     mergeDiffs,
     flattenDiff,
+    flattenDiffToFieldPaths,
     reconcileDisplayOverrides,
     unflattenDiff,
     diffContainsPath,
@@ -160,6 +166,156 @@ describe('diff utilities', () => {
         })
     })
 
+    describe('flattenDiffToFieldPaths', () => {
+        // Faithful simulation of how Firestore applies a variadic
+        // `updateDoc(ref, fieldPath, value, …)` write: each segment is a
+        // LITERAL key (no dot-splitting), missing parents are created, and a
+        // deleteField() sentinel removes the leaf key. Applying the flattened
+        // entries this way is exactly what a variadic FieldPath write does on
+        // the server.
+        const applyEntries = (
+            base: Record<string, unknown>,
+            entries: Array<{ segments: string[]; value: unknown }>
+        ): Record<string, unknown> => {
+            const root = deepClone(base)
+            for (const { segments, value } of entries) {
+                const path = [...segments]
+                const leaf = path.pop()!
+                let cur = root as Record<string, unknown>
+                for (const seg of path) {
+                    if (
+                        cur[seg] === null ||
+                        typeof cur[seg] !== 'object' ||
+                        Array.isArray(cur[seg])
+                    ) {
+                        cur[seg] = {}
+                    }
+                    cur = cur[seg] as Record<string, unknown>
+                }
+                if (
+                    value !== null &&
+                    typeof value === 'object' &&
+                    'isEqual' in value &&
+                    (value as { isEqual: (o: unknown) => boolean }).isEqual(
+                        deleteField()
+                    )
+                ) {
+                    delete cur[leaf]
+                } else {
+                    cur[leaf] = value
+                }
+            }
+            return root
+        }
+
+        it('emits literal path segments instead of dot-joined strings', () => {
+            const nested = { building: { floors: 5, height: 100 }, name: 'Test' }
+            const entries = flattenDiffToFieldPaths(nested)
+            expect(entries).toEqual([
+                { segments: ['building', 'floors'], value: 5 },
+                { segments: ['building', 'height'], value: 100 },
+                { segments: ['name'], value: 'Test' },
+            ])
+        })
+
+        it('keeps a dotted map key (email) as a single literal segment', () => {
+            const diff = { users: { 'tryston@hvakr.com': { role: 4 } } }
+            const entries = flattenDiffToFieldPaths(diff)
+            expect(entries).toEqual([
+                {
+                    segments: ['users', 'tryston@hvakr.com', 'role'],
+                    value: 4,
+                },
+            ])
+        })
+
+        it('updating an email-keyed sub-field hits the right key, not a mis-split nesting', () => {
+            const server = { users: { 'a@b.com': { role: 1 } } }
+            const entries = flattenDiffToFieldPaths({
+                users: { 'a@b.com': { role: 4 } },
+            })
+            const result = applyEntries(server, entries) as {
+                users: Record<string, { role?: number } | undefined>
+            }
+            expect(result.users['a@b.com']?.role).toBe(4)
+            // No `users → "a@b" → "com"` nesting from a mis-split dot.
+            expect(result.users['a@b']).toBeUndefined()
+        })
+
+        it('adds a brand-new email key under its literal name', () => {
+            const server = { users: { 'old@x.com': { role: 2 } } }
+            const entries = flattenDiffToFieldPaths({
+                users: { 'new@x.com': { role: 1 } },
+            })
+            const result = applyEntries(server, entries) as {
+                users: Record<string, { role?: number } | undefined>
+            }
+            expect(result.users['new@x.com']?.role).toBe(1)
+            expect(result.users['old@x.com']?.role).toBe(2)
+            expect(result.users['new@x']).toBeUndefined()
+        })
+
+        it('carries a deleteField() sentinel through at an email-keyed path', () => {
+            const sentinel = deleteField()
+            const entries = flattenDiffToFieldPaths({
+                users: { 'a@b.com': sentinel },
+            })
+            expect(entries).toEqual([
+                { segments: ['users', 'a@b.com'], value: sentinel },
+            ])
+            const server = { users: { 'a@b.com': { role: 1 }, 'c@d.com': { role: 2 } } }
+            const result = applyEntries(server, entries) as {
+                users: Record<string, unknown>
+            }
+            expect(result.users['a@b.com']).toBeUndefined()
+            expect(result.users['c@d.com']).toEqual({ role: 2 })
+        })
+
+        it('preserves arrays and Firestore value types verbatim at their path', () => {
+            const ts = Timestamp.fromMillis(1000)
+            const geo = new GeoPoint(1, 2)
+            const entries = flattenDiffToFieldPaths({
+                tags: ['a', 'b'],
+                meta: { createdAt: ts, where: geo },
+            })
+            expect(entries).toEqual([
+                { segments: ['tags'], value: ['a', 'b'] },
+                { segments: ['meta', 'createdAt'], value: ts },
+                { segments: ['meta', 'where'], value: geo },
+            ])
+        })
+
+        it('writes a FieldValue sentinel and a plain primitive in the same diff', () => {
+            const sentinel = serverTimestamp()
+            const entries = flattenDiffToFieldPaths({
+                updatedAt: sentinel,
+                title: 'hello',
+            })
+            expect(entries).toEqual([
+                { segments: ['updatedAt'], value: sentinel },
+                { segments: ['title'], value: 'hello' },
+            ])
+        })
+
+        it('writes nested dot-free keys correctly', () => {
+            const entries = flattenDiffToFieldPaths({
+                building: { floors: 5 },
+                name: 'Test',
+            })
+            const result = applyEntries({ building: { height: 9 } }, entries) as {
+                building: { floors?: number; height?: number }
+                name?: string
+            }
+            expect(result.building.floors).toBe(5)
+            expect(result.building.height).toBe(9)
+            expect(result.name).toBe('Test')
+        })
+
+        it('returns no entries for an empty diff', () => {
+            expect(flattenDiffToFieldPaths({})).toEqual([])
+        })
+    })
+
     describe('unflattenDiff', () => {
         it('unflattens dot notation to nested object', () => {
             const flat = { 'building.floors': 5, 'building.height': 100, 'name': 'Test' }
@@ -231,10 +387,10 @@ describe('diff utilities', () => {
         })
     })
 
-    // Pins the C1 bug: serverTimestamp() must survive the local pipeline
-    // unchanged so Firestore can expand it on the server. Currently the
-    // sentinel is replaced with the client clock (or destroyed entirely
-    // by deepClone), so the server never gets to stamp its own time.
+    // serverTimestamp() must survive the local pipeline unchanged so Firestore
+    // can expand it on the server. If the sentinel were replaced with the
+    // client clock — or destroyed by deepClone — the server would never get to
+    // stamp its own time.
     describe('serverTimestamp() preservation', () => {
         it('applyDiffMutable preserves the sentinel instead of substituting Timestamp.now()', () => {
             // updateState() funnels every user diff through applyDiffMutable.
@@ -307,10 +463,9 @@ describe('diff utilities', () => {
         })
 
         it('does not re-write the Timestamp when an unrelated field changes', () => {
-            // Regression for the specific shape that wasted writes: clone
-            // the doc, edit one field, send to sync. The Timestamp in the
-            // clone is a different reference but the same value, and
-            // shouldn't end up in the diff.
+            // The shape that would waste writes: clone the doc, edit one
+            // field, send to sync. The Timestamp in the clone is a different
+            // reference but the same value, and must not end up in the diff.
             const syncState = { name: 'old', createdAt: Timestamp.fromMillis(1000) }
             const localState = deepClone(syncState)
             localState.name = 'new'
@@ -322,14 +477,13 @@ describe('diff utilities', () => {
         })
     })
 
-    // Pins C3: non-Timestamp Firestore value types (DocumentReference,
-    // GeoPoint, Bytes, VectorValue) were silently corrupted by deepClone
-    // because it walked their own keys and stripped the prototype. The
-    // first user edit on any doc holding such a field would either fail
-    // the write or store nonsense. GeoPoint is used here as the proxy
-    // for the class because it's the only one constructible without a
-    // Firestore instance — the fix is generic via isFirestoreOpaque.
-    describe('Firestore value types (C3)', () => {
+    // Non-Timestamp Firestore value types (DocumentReference, GeoPoint, Bytes,
+    // VectorValue) must survive deepClone: deepClone must not walk their own
+    // keys and strip the prototype, or the first user edit on a doc holding
+    // such a field would fail the write or store nonsense. GeoPoint is the
+    // proxy for the class here — the only one constructible without a Firestore
+    // instance. deepClone preserves them generically via isFirestoreOpaque.
+    describe('Firestore value types', () => {
         it('deepClone returns GeoPoint by reference instead of stripping its prototype', () => {
             const pt = new GeoPoint(40.7, -74.0)
             const cloned = deepClone({ home: pt })
@@ -381,11 +535,10 @@ describe('diff utilities', () => {
         })
     })
 
-    // Display overrides power the optimistic-UI half of the C1 fix.
-    // Sentinels stay in localState (so the write is correct), but the
-    // merged view substitutes a frozen Timestamp at each sentinel path
-    // so consumers always see a renderable value during the in-flight
-    // window.
+    // Display overrides power the optimistic-UI side of serverTimestamp()
+    // handling. Sentinels stay in localState (so the write is correct), but the
+    // merged view substitutes a frozen Timestamp at each sentinel path so
+    // consumers always see a renderable value during the in-flight window.
     describe('displayOverrides helpers', () => {
         describe('collectServerTimestampPaths', () => {
             it('finds sentinels at the top level', () => {

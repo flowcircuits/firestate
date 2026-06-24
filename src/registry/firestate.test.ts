@@ -277,9 +277,9 @@ describe('buildDocumentDefinition', () => {
         expect(id({ projectId: 'p1' })).toBe('p1')
     })
 
-    it('resolves a doc nested under a dynamic parent (regression for hvakr-style paths)', () => {
-        // This is the case that used to silently break: the collection portion
-        // contained `{projectId}` and was passed verbatim to Firestore.
+    it('resolves a doc nested under a dynamic parent', () => {
+        // The collection portion contains `{projectId}` and must be
+        // interpolated per-call, not passed to Firestore verbatim.
         const def = buildDocumentDefinition(
             doc({
                 path: 'projects/{projectId}/revisions/{revisionId}',

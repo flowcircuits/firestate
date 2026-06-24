@@ -6,6 +6,7 @@ import {
     updateDoc,
     deleteDoc,
     DocumentReference,
+    type FieldPath,
     WithFieldValue,
 } from 'firebase/firestore'
 import type {
@@ -17,17 +18,21 @@ import type {
     Subscriber,
     Unsubscribe,
     UpdateOptions,
-} from './types'
+} from '../types'
 import type { FirestateStore } from './store'
 import {
+    applyDiff,
     applyDiffMutable,
     applyOverridesAtPaths,
     computeDiff,
     deepClone,
-    flattenDiff,
+    diffToFieldPathArgs,
+    dropCommittedSentinels,
     isDeepEqual,
+    observableStateChanged,
     reconcileDisplayOverrides,
-} from './diff'
+    valuesEqualForNoOp,
+} from '../utils/diff'
 
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same document path.
@@ -70,7 +75,7 @@ export interface DocumentOptions<TData extends FirestoreObject> {
  * - `null`: pending delete (the autosave-driven sync will issue deleteDoc)
  * - object: pending update/set (synced via updateDoc/setDoc)
  *
- * The same convention applies to `inflightLocalState`.
+ * The same convention applies to `inflightLocalState` and `committedWrite`.
  */
 interface DocumentInternalState<T extends FirestoreObject> {
     syncState: T | undefined
@@ -79,6 +84,14 @@ interface DocumentInternalState<T extends FirestoreObject> {
     error: Error | undefined
     waitingForUpdate: boolean
     inflightLocalState: T | null | undefined
+    /**
+     * The payload of the last write the server durably accepted (set the
+     * moment the write promise resolves, consumed by the next snapshot's
+     * rebase). Lets the rebase recognize a committed FieldValue sentinel and
+     * drop it instead of re-deriving and re-writing it forever — see
+     * `dropCommittedSentinels`.
+     */
+    committedWrite: T | null | undefined
     /** Whether the pending operation is a full set (create/replace) vs a partial update */
     isSetOperation: boolean
     /**
@@ -175,6 +188,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         error: undefined,
         waitingForUpdate: false,
         inflightLocalState: undefined,
+        committedWrite: undefined,
         isSetOperation: false,
         displayOverrides: new Map(),
     }
@@ -209,6 +223,14 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         error: state.error,
     })
 
+    // Last public state actually published. Used to suppress redundant
+    // notifies (§3/§4 snapshot-side no-op collapse): a snapshot or write that
+    // leaves every observable field unchanged must not invalidate the handle
+    // or wake consumers, or the write-back render loop survives.
+    let lastPublished: DocumentState<TData> | null = null
+
+    const publicStateChanged = observableStateChanged
+
     const notify = () => {
         // Reconcile display overrides against the current localState
         // before publishing — captures Timestamp.now() for any newly
@@ -220,8 +242,15 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 : undefined,
             state.displayOverrides
         )
-        cachedHandle = null
         const publicState = getPublicState()
+        // Snapshot-side no-op collapse: nothing a consumer can observe
+        // changed → publish nothing. Keeps the cached handle identity stable
+        // so useSyncExternalStore does not re-render.
+        if (lastPublished !== null && !publicStateChanged(lastPublished, publicState)) {
+            return
+        }
+        lastPublished = publicState
+        cachedHandle = null
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
     }
@@ -251,6 +280,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         const rawBase = (state.localState ?? state.syncState) as TData
         const newLocalState = deepClone(rawBase)
         applyDiffMutable(newLocalState, diff as Record<string, unknown>)
+
+        // No-op collapse (§3): a write whose merged result equals the current
+        // view must produce NO new state identity, undo entry, notify, or
+        // autosave — otherwise the write-back render loop survives. Compare
+        // raw states (decides whether to STORE); valuesEqualForNoOp closes the
+        // NaN and explicit-undefined gaps that let the loop slip past a naive
+        // equality check.
+        if (valuesEqualForNoOp(rawBase, newLocalState)) {
+            return
+        }
 
         // Push undo eagerly against the pre-mutation state. Cmd+Z within the
         // autosave window pops this entry, applies the inverse via updateState,
@@ -295,6 +334,18 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
         const currentData = getMergedData()
 
+        // No-op collapse (§3): a set() whose payload equals the current stored
+        // value is a complete no-op. Skip only when there IS a current value —
+        // a set against undefined data is a creation and must proceed. Compare
+        // raw state so a held serverTimestamp() sentinel isn't masked by its
+        // display Timestamp.
+        if (
+            currentData !== undefined &&
+            valuesEqualForNoOp(state.localState ?? state.syncState, data)
+        ) {
+            return
+        }
+
         // Push undo eagerly. A set against undefined data is a creation;
         // its undo is a delete. Otherwise we restore the prior snapshot via
         // setData, which is symmetric and handles full-replace semantics
@@ -332,7 +383,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
         const currentData = getMergedData()
         // Nothing to delete — bail rather than queueing a no-op deleteDoc.
-        if (currentData === undefined) return
+        if (currentData === undefined) {
+            return
+        }
 
         // Push undo against the pre-delete data (which includes any pending
         // local edits at this moment).
@@ -367,7 +420,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const sync = async () => {
-        if (state.localState === undefined) return
+        if (state.localState === undefined) {
+            return
+        }
 
         // Pending delete — issue deleteDoc and let the listener confirm via
         // handleMissingDocument. Undo was already pushed at mutation time.
@@ -416,7 +471,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             ? computeDiff(state.syncState, state.localState)
             : undefined
 
-        state.inflightLocalState = deepClone(state.localState)
+        // Snapshot exactly what we're committing so the next snapshot's rebase
+        // can recognize committed FieldValue sentinels and drop them. Captured
+        // in a local const before the await — NOT read back from shared state —
+        // because Firestore fires a local-cache echo snapshot (hasPendingWrites:
+        // true) before this write acks, and handleSnapshot clears
+        // state.inflightLocalState. Reading it back at line `committedWrite = …`
+        // would then capture `undefined`, losing the sentinel record and making
+        // serverTimestamp churn / increment double-apply. Mirrors collection.ts.
+        const committing = deepClone(state.localState)
+        state.inflightLocalState = committing
 
         state.waitingForUpdate = true
 
@@ -426,12 +490,31 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 // replace the document.
                 await setDoc(docRef, state.localState as TData)
             } else {
-                // Partial update - use updateDoc with flattened diff to prevent
-                // accidentally recreating deleted documents. updateDoc will fail
-                // if the document doesn't exist.
-                const flatDiff = flattenDiff(diff as Record<string, unknown>)
-                await updateDoc(docRef, flatDiff)
+                // Partial update — use updateDoc with the variadic FieldPath
+                // form (not a flattened dotted-key object) so that a "." inside
+                // a map key (e.g. an email key `a@b.com`) is preserved as a
+                // literal segment instead of being re-parsed as a path
+                // separator. updateDoc still fails if the document doesn't
+                // exist, so deleted docs are not accidentally recreated.
+                const args = diffToFieldPathArgs(
+                    diff as Record<string, unknown>
+                )
+                if (args.length) {
+                    await updateDoc(
+                        docRef,
+                        ...(args as [
+                            string | FieldPath,
+                            unknown,
+                            ...unknown[]
+                        ])
+                    )
+                }
             }
+            // The server durably accepted this payload. Record it so the next
+            // snapshot's rebase can recognize committed FieldValue sentinels
+            // (serverTimestamp, increment, …) and drop them instead of
+            // re-deriving and re-writing them forever.
+            state.committedWrite = committing
         } catch (error) {
             console.error('Sync failed:', error)
             state.waitingForUpdate = false
@@ -452,39 +535,55 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const handleSnapshot = (newSyncData: TData) => {
+        // `prevSync` is the BASELINE: the server snapshot our pending local
+        // edits are measured against. We advance it to `newSyncData` below,
+        // after using it to re-derive the user's own edits.
+        const prevSync = state.syncState
         state.syncState = newSyncData
         // A successful snapshot supersedes any previous read or write error.
         state.error = undefined
 
-        if (state.waitingForUpdate) {
-            state.waitingForUpdate = false
-            const inflightState = state.inflightLocalState
-            state.inflightLocalState = undefined
-            const currentLocal = state.localState
+        // The rebase below runs on EVERY snapshot, using `prevSync` as the
+        // baseline, regardless of whether one of our own writes happened to be
+        // in flight. This is the fix for the collaborator-clobber class of bugs
+        // — previously the rebase only ran inside the `waitingForUpdate`
+        // window, so a snapshot from another client left `localState` sitting
+        // on a stale base.
+        state.waitingForUpdate = false
+        state.inflightLocalState = undefined
+        // Capture and consume the last committed write before the rebase: a
+        // FieldValue sentinel present in this payload has landed on the server,
+        // so the rebase must drop it rather than re-derive it (see below).
+        const committed = state.committedWrite
+        state.committedWrite = undefined
+        const currentLocal = state.localState
 
-            if (inflightState === null) {
-                // Inflight was a delete but the listener fired with the doc
-                // still present. The deleteDoc result is still in flight (or
-                // failed and reverted). Leave localState alone — it's either
-                // still null (we still want the delete) or non-null (user
-                // changed their mind), and either way the next sync handles it.
-            } else if (currentLocal === null) {
-                // User issued a delete while a set/update was inflight. The
-                // pending delete is the latest intent; preserve it for the
-                // next sync.
-            } else if (
-                inflightState &&
-                currentLocal &&
-                !isDeepEqual(currentLocal, inflightState)
-            ) {
-                // Rebase local changes onto the new sync state.
-                const changesSinceInflight = computeDiff(inflightState, currentLocal)
-                const rebasedLocalState = deepClone(newSyncData)
-                applyDiffMutable(rebasedLocalState, changesSinceInflight as Record<string, unknown>)
-                state.localState = rebasedLocalState
-            } else {
-                state.localState = undefined
-            }
+        if (currentLocal === null) {
+            // Pending delete — our delete intent is the latest word. The doc
+            // is still present on the server here; preserve the tombstone so
+            // the next sync issues deleteDoc.
+        } else if (currentLocal !== undefined && prevSync !== undefined) {
+            // Field-level merge (Bug 1 fix). Re-derive the user's OWN edits
+            // relative to the baseline, then re-apply only those over the new
+            // server truth. Untouched fields follow the server; the client's
+            // actual edits survive. Same-field concurrent edits stay
+            // last-write-wins — the local edit is preserved and re-sent on the
+            // next sync.
+            const userEdits = computeDiff(prevSync, currentLocal)
+            // Drop FieldValue sentinels we already committed: they've been
+            // resolved by the server, so newSyncData is the truth. Without
+            // this a sentinel never compares equal to its resolved value and
+            // would be re-derived and re-written on every snapshot forever.
+            dropCommittedSentinels(
+                userEdits as Record<string, unknown>,
+                committed as Record<string, unknown> | null | undefined
+            )
+            const rebasedLocalState = applyDiff(newSyncData, userEdits)
+            // If the rebase leaves nothing that differs from the server, the
+            // edit has been fully absorbed → drop localState so isSynced flips
+            // back to true and no redundant write is queued.
+            const absorbed = isDeepEqual(rebasedLocalState, newSyncData)
+            state.localState = absorbed ? undefined : rebasedLocalState
         }
 
         if (minLoadTimeElapsed) {
@@ -508,6 +607,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const handleMissingDocument = () => {
         state.syncState = undefined
         state.error = undefined
+        // Drop any committed-write record: it described a now-deleted doc and
+        // must not be matched against a future recreation snapshot.
+        state.committedWrite = undefined
 
         // The only localState that should clear when the doc goes missing is
         // our own pending-delete marker. Any other pending edits (object
@@ -557,7 +659,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const load = () => {
-        if (unsubscribeListener) return
+        if (unsubscribeListener) {
+            return
+        }
 
         loaded = false
         minLoadTimeElapsed = false

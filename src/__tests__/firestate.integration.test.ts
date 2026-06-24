@@ -37,9 +37,9 @@ import {
     col,
     buildDocumentDefinition,
     buildCollectionDefinition,
-} from './firestate'
-import { createDocumentSubscription } from './document'
-import { createStore, type FirestateStore } from './store'
+} from '../registry/firestate'
+import { createDocumentSubscription } from '../core/document'
+import { createStore, type FirestateStore } from '../core/store'
 
 const revisionSchema = z.object({ title: z.string() })
 const spaceSchema = z.object({ label: z.string() })
@@ -77,9 +77,9 @@ describe('Firestate registry → Firestore path', () => {
         )
     })
 
-    it('resolves a document nested under a dynamic parent (regression for hvakr-style paths)', () => {
-        // This is the case that motivated the function-form `collection`.
-        // If the registry-to-Firestore handoff regresses, this test catches it.
+    it('resolves a document nested under a dynamic parent', () => {
+        // The collection portion contains `{projectId}` and must be
+        // interpolated per-call, not passed to Firestore verbatim.
         const definition = buildDocumentDefinition(
             doc({
                 path: 'projects/{projectId}/revisions/{revisionId}',
@@ -122,10 +122,10 @@ describe('Firestate registry → Firestore path', () => {
     })
 })
 
-// Pins the C1 fix end-to-end: a document subscription receiving an
-// update with serverTimestamp() must (a) keep the sentinel in
-// localState so the eventual write ships the sentinel, and (b) expose
-// a real Timestamp to consumers via the handle so optimistic UI works.
+// serverTimestamp() handling end-to-end: a document subscription receiving an
+// update with serverTimestamp() must (a) keep the sentinel in localState so the
+// eventual write ships the sentinel, and (b) expose a real Timestamp to
+// consumers via the handle so optimistic UI works.
 describe('Document subscription: serverTimestamp display overrides', () => {
     let store: FirestateStore
     let snapshotCallback: ((snap: unknown) => void) | undefined
@@ -256,10 +256,10 @@ describe('Document subscription: serverTimestamp display overrides', () => {
     })
 
     it('a chained update() after a serverTimestamp update keeps the sentinel in localState', () => {
-        // Regression: updateState used getMergedData() as the mutation base.
-        // getMergedData() substitutes the display-override Timestamp at the
-        // sentinel path; a second update() would clone that Timestamp into
-        // newLocalState, silently erasing the sentinel. If the sentinel is
+        // updateState must use raw localState as the mutation base, not
+        // getMergedData(): getMergedData() substitutes the display-override
+        // Timestamp at the sentinel path, so a second update() would clone that
+        // Timestamp into newLocalState and silently erase the sentinel. Once
         // erased, reconcileDisplayOverrides drops the override and
         // getMergedData() falls back to the syncState Timestamp(1000).
         const definition = buildDocumentDefinition(
@@ -288,10 +288,11 @@ describe('Document subscription: serverTimestamp display overrides', () => {
     })
 
     it('setData undo restore payload contains the sentinel, not a frozen client Timestamp', async () => {
-        // Regression: setData snapshotted deepClone(getMergedData()) for the
-        // undo restore payload. getMergedData() substitutes frozen Timestamps
-        // for sentinels; undo would then call setData() with a client Timestamp,
-        // re-introducing the C1 regression through the undo path.
+        // The undo restore payload must carry the serverTimestamp() sentinel,
+        // not a frozen client Timestamp. setData must snapshot raw localState,
+        // not deepClone(getMergedData()) — the latter substitutes frozen
+        // Timestamps for sentinels, so undo would call setData() with a client
+        // Timestamp and ship a frozen value where a server timestamp belongs.
         const definition = buildDocumentDefinition(
             doc({ path: 'tasks/{taskId}', schema })
         )

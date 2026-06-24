@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase/firestore'
-import type { ErrorContext, FirestateConfig, Subscriber, Unsubscribe } from './types'
-import { createUndoManager, type UndoManagerWithSubscribe } from './undo'
+import type { ErrorContext, FirestateConfig, Subscriber, Unsubscribe } from '../types'
+import { createUndoManager, type UndoManagerWithSubscribe } from '../utils/undo'
 
 /**
  * Firestate store that holds configuration and shared state

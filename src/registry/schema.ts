@@ -3,7 +3,7 @@ import type {
   CollectionDefinition,
   DocumentDefinition,
   FirestoreObject,
-} from "./types";
+} from "../types";
 
 /**
  * Define a typed document. `TData` is the document's TypeScript shape.

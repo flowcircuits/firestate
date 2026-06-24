@@ -25,14 +25,14 @@ import {
   useCollection,
   type UseDocumentOptions,
   type UseCollectionOptions,
-} from "./hooks";
+} from "../react/hooks";
 import type {
   CollectionDefinition,
   CollectionHandle,
   DocumentDefinition,
   DocumentHandle,
   FirestoreObject,
-} from "./types";
+} from "../types";
 import type { QueryConstraint } from "firebase/firestore";
 import type { ZodType, z } from "zod";
 

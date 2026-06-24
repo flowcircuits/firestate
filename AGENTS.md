@@ -46,21 +46,29 @@ CI runs `pnpm typecheck`, `pnpm build`, and `pnpm test` on Node 22.
 
 ## Source Map
 
+`src/` is organized by layer: `core/` (subscription engine + store), `react/`
+(hooks + providers), `registry/` (public registry API + definition helpers),
+`utils/` (framework-agnostic utilities). `index.ts` and `types.ts` stay at the
+root. Tests live next to their source; cross-module integration tests and the
+test harness live in `src/__tests__/`.
+
 - `src/index.ts` - public exports. Update this when adding public API.
-- `src/firestate.ts` - registry API: `createFirestate`, `doc`, `col`, path
-  template validation, generated hook typing.
-- `src/schema.ts` - lower-level definition helpers.
 - `src/types.ts` - public state, handle, definition, undo, and config types.
-- `src/hooks.ts` - React hooks and `useSyncExternalStore` integration.
-- `src/provider.tsx` - React providers and unsaved-changes hook.
-- `src/store.ts` - shared Firestore config, undo manager, global sync state,
-  error reporting.
-- `src/document.ts` - single-document subscription, optimistic state, set,
+- `src/registry/firestate.ts` - registry API: `createFirestate`, `doc`, `col`,
+  path template validation, generated hook typing.
+- `src/registry/schema.ts` - lower-level definition helpers.
+- `src/react/hooks.ts` - React hooks and `useSyncExternalStore` integration.
+- `src/react/provider.tsx` - React providers and unsaved-changes hook.
+- `src/core/store.ts` - shared Firestore config, undo manager, global sync
+  state, error reporting.
+- `src/core/document.ts` - single-document subscription, optimistic state, set,
   update, delete, sync, conflict rebase.
-- `src/collection.ts` - collection subscription, add, update, remove, batched
-  sync, lazy loading.
-- `src/diff.ts` - Firestore-aware diff, flattening, cloning, equality helpers.
-- `src/undo.ts` - framework-agnostic undo manager.
+- `src/core/collection.ts` - collection subscription, add, update, remove,
+  batched sync, lazy loading.
+- `src/utils/diff.ts` - Firestore-aware diff, flattening, cloning, equality
+  helpers.
+- `src/utils/undo.ts` - framework-agnostic undo manager.
+- `src/__tests__/test-harness.ts` - deterministic Firestore mock for tests.
 - `examples/react-tasks/` - runnable React + Firebase example.
 
 ## Behavioral Contracts
@@ -98,20 +106,33 @@ Preserve these unless the task explicitly changes them.
   redo oldest to newest.
 - Firestore updates use flattened diffs for `updateDoc`; full document
   replacement and creation use `setDoc`.
+- Pending `localState` is rebased onto **every** incoming snapshot, not only
+  the one confirming an inflight write. The prior `syncState` is the baseline:
+  `localState = applyDiff(newSnapshot, computeDiff(baseline, localState))`, then
+  the baseline advances. Untouched fields follow the server; the client's own
+  edits survive; same-field concurrent edits stay last-write-wins (local edit
+  preserved and re-sent). Do not gate this rebase on `waitingForUpdate`.
+- Collections enforce deletes-win: a doc in the baseline but absent from the
+  new snapshot was deleted remotely → drop it (and any local edits to it) and
+  never recreate it. A doc absent from the baseline but present locally is a
+  genuine create (`batch.set`); an existing doc uses `batch.update`.
 
 ## Test Guide
 
 Add or update focused tests near the behavior being changed:
 
-- Registry typing/path behavior: `src/schema.test.ts` and
-  `src/firestate.test.ts`.
-- Document subscription behavior: `src/firestate.test.ts` and
-  `src/firestate.integration.test.ts`.
-- Collection behavior: `src/firestate.integration.test.ts` and
-  `src/store.test.ts`.
-- Diff behavior: `src/diff.test.ts`.
-- Undo behavior: `src/undo.test.ts`.
-- Store/global sync behavior: `src/store.test.ts`.
+- Registry typing/path behavior: `src/registry/schema.test.ts` and
+  `src/registry/firestate.test.ts`.
+- Document subscription behavior: `src/registry/firestate.test.ts` and
+  `src/__tests__/firestate.integration.test.ts`.
+- Collection behavior: `src/__tests__/firestate.integration.test.ts` and
+  `src/core/store.test.ts`.
+- Conflict/rebase and field-path behavior:
+  `src/__tests__/conflict-resolution.test.ts`,
+  `src/__tests__/reconcile.test.ts`, and `src/__tests__/fieldpath.test.ts`.
+- Diff behavior: `src/utils/diff.test.ts`.
+- Undo behavior: `src/utils/undo.test.ts`.
+- Store/global sync behavior: `src/core/store.test.ts`.
 
 Before finishing code changes, run at least:
 

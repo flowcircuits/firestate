@@ -22,10 +22,10 @@ import type {
   UndoManager,
   UndoManagerState,
   UpdateOptions,
-} from "./types";
-import type { FirestateStore } from "./store";
-import { createDocumentSubscription } from "./document";
-import { buildCollectionQuery, createCollectionSubscription } from "./collection";
+} from "../types";
+import type { FirestateStore } from "../core/store";
+import { createDocumentSubscription } from "../core/document";
+import { buildCollectionQuery, createCollectionSubscription } from "../core/collection";
 
 /**
  * Whether two hook-level `queryConstraints` arrays produce the same Firestore

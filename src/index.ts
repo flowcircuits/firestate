@@ -28,17 +28,17 @@ export type {
 } from './types'
 
 // Definition helpers
-export { defineDocument, defineCollection } from './schema'
+export { defineDocument, defineCollection } from './registry/schema'
 
 export type {
     InferDocumentData,
     InferDocument,
     InferCollectionData,
     InferCollectionDocument,
-} from './schema'
+} from './registry/schema'
 
 // Registry-driven API
-export { createFirestate, doc, col } from './firestate'
+export { createFirestate, doc, col } from './registry/firestate'
 
 export type {
     DocEntry,
@@ -46,7 +46,7 @@ export type {
     FirestateEntry,
     FirestateRegistry,
     FirestateApi,
-} from './firestate'
+} from './registry/firestate'
 
 // Diff utilities
 export {
@@ -58,6 +58,7 @@ export {
 
     // Flattening for Firestore
     flattenDiff,
+    flattenDiffToFieldPaths,
     unflattenDiff,
 
     // Path-based utilities
@@ -70,22 +71,22 @@ export {
     deepClone,
     isDiffEmpty,
     mergeDiffs,
-} from './diff'
+} from './utils/diff'
 
 // Store
-export { createStore } from './store'
-export type { FirestateStore, Store } from './store'
+export { createStore } from './core/store'
+export type { FirestateStore, Store } from './core/store'
 
 // Undo manager
-export { createUndoManager } from './undo'
-export type { UndoManagerConfig, UndoManagerWithSubscribe } from './undo'
+export { createUndoManager } from './utils/undo'
+export type { UndoManagerConfig, UndoManagerWithSubscribe } from './utils/undo'
 
 // Low-level subscriptions (for advanced use)
-export { createDocumentSubscription } from './document'
-export type { DocumentOptions } from './document'
+export { createDocumentSubscription } from './core/document'
+export type { DocumentOptions } from './core/document'
 
-export { createCollectionSubscription } from './collection'
-export type { CollectionOptions } from './collection'
+export { createCollectionSubscription } from './core/collection'
+export type { CollectionOptions } from './core/collection'
 
 // React hooks
 export {
@@ -96,18 +97,18 @@ export {
     useIsSynced,
     useUndoKeyboardShortcuts,
     FirestateContext,
-} from './hooks'
+} from './react/hooks'
 
-export type { UseDocumentOptions, UseCollectionOptions } from './hooks'
+export type { UseDocumentOptions, UseCollectionOptions } from './react/hooks'
 
 // React providers
 export {
     FirestateProvider,
     FirestateStoreProvider,
     useUnsavedChangesBlocker,
-} from './provider'
+} from './react/provider'
 
 export type {
     FirestateProviderProps,
     FirestateStoreProviderProps,
-} from './provider'
+} from './react/provider'
