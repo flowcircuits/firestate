@@ -1,19 +1,15 @@
 /**
- * Regression tests for `useCollection` subscription identity.
+ * `useCollection` subscription identity.
  *
- * Motivating bug (HVAKR full-app flash): an app derived `queryConstraints`
- * from an array living inside a document that Firestate deep-clones on every
- * optimistic update. The array's *contents* never changed, but its reference
- * did — so the memoized constraints array changed reference, `useCollection`
- * tore down the Firestore listener, recreated the subscription with
- * `isLoading: true` / `data: {}`, and the app's loading gate unmounted the
- * whole route.
- *
- * The fix keys the subscription on the *semantic identity* of the query:
- * Firestate builds the query and compares it with Firestore's own
- * `queryEqual`, so a fresh constraints array that produces the same query is
- * ignored, while a genuine query change still rebuilds the listener. No
- * caller-supplied key is required.
+ * Contract: the subscription is keyed on the *semantic identity* of the query,
+ * not on the reference of the `queryConstraints` array. Firestate builds the
+ * query and compares it with Firestore's own `queryEqual`, so a fresh
+ * constraints array that produces the same query keeps the existing listener,
+ * while a genuine query change rebuilds it. Callers therefore need not memoize
+ * `queryConstraints` — and a parent document that Firestate deep-clones on
+ * every optimistic update (changing the array reference but not its contents)
+ * does not tear down the listener, recreate the subscription with
+ * `isLoading: true` / `data: {}`, and trip a route-level loading gate.
  *
  * Unlike the rest of the suite, these tests use a real Firestore instance and
  * real `query`/`queryEqual`/`where` — only `onSnapshot` (the network edge) is
@@ -48,9 +44,9 @@ import {
     type QueryConstraint,
 } from 'firebase/firestore'
 import { useCollection, FirestateContext } from './hooks'
-import { defineCollection } from './schema'
-import { createStore, type FirestateStore } from './store'
-import type { CollectionHandle, FirestoreObject } from './types'
+import { defineCollection } from '../registry/schema'
+import { createStore, type FirestateStore } from '../core/store'
+import type { CollectionHandle, FirestoreObject } from '../types'
 
 interface Station extends FirestoreObject {
     name: string
@@ -180,8 +176,8 @@ describe('useCollection queryConstraints identity', () => {
 
         // Semantically identical query, brand-new array + constraint
         // references — as produced by deriving ids from a deep-cloned parent
-        // document. This is the regression: with reference keying the listener
-        // would tear down here.
+        // document. A reference-keyed implementation would tear down the
+        // listener here; semantic-identity keying must keep it.
         act(() => {
             renderer!.update(
                 element({ queryConstraints: constraintsFor([...ids]) })
@@ -222,7 +218,7 @@ describe('useCollection queryConstraints identity', () => {
         ).toBe(true)
     })
 
-    // Regression: the documented `enabled: ids.length > 0` recipe for gating an
+    // Contract: the documented `enabled: ids.length > 0` recipe for gating an
     // `in` query. While disabled the constraints array holds an empty-array
     // `in` filter — a query Firestore refuses to build. The hook must not
     // compare against those constraints captured while disabled when it later
@@ -266,7 +262,7 @@ describe('useCollection queryConstraints identity', () => {
         ).toBe(true)
     })
 
-    // Regression: a lazy collection becomes "active" (enabled + resolved path)
+    // Contract: a lazy collection becomes "active" (enabled + resolved path)
     // as soon as it mounts, before load() attaches any listener. If the first
     // render carries a gated empty-array `in` filter and real IDs arrive on a
     // later render — still before load() — the identity compare would build the

@@ -5,6 +5,7 @@ import {
     query,
     writeBatch,
     deleteField,
+    type FieldPath,
     WithFieldValue,
     QueryConstraint,
     type CollectionReference,
@@ -19,17 +20,21 @@ import type {
     Subscriber,
     Unsubscribe,
     UpdateOptions,
-} from './types'
+} from '../types'
 import type { FirestateStore } from './store'
 import {
+    applyDiff,
     applyDiffMutable,
     applyOverridesAtPaths,
     computeDiff,
     deepClone,
-    flattenDiff,
+    diffToFieldPathArgs,
+    dropCommittedSentinels,
     isDeepEqual,
+    observableStateChanged,
     reconcileDisplayOverrides,
-} from './diff'
+    valuesEqualForNoOp,
+} from '../utils/diff'
 
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same collection path.
@@ -92,8 +97,14 @@ interface CollectionInternalState<T extends FirestoreObject> {
     isLoading: boolean
     isActive: boolean
     error: Error | undefined
-    waitingForUpdate: boolean
-    inflightLocalState: Record<string, T> | undefined
+    /**
+     * The payload of the last batch the server durably accepted (set the
+     * moment `batch.commit()` resolves, consumed by the next snapshot's
+     * rebase). Lets the rebase recognize a committed FieldValue sentinel and
+     * drop it instead of re-deriving and re-writing it forever — see
+     * `dropCommittedSentinels`.
+     */
+    committedWrite: Record<string, T> | undefined
     /**
      * Frozen display values for `serverTimestamp()` sentinels currently
      * sitting in `localState`. Keyed by dotted path (e.g.
@@ -172,8 +183,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         isLoading: !lazy,
         isActive: !lazy,
         error: undefined,
-        waitingForUpdate: false,
-        inflightLocalState: undefined,
+        committedWrite: undefined,
         displayOverrides: new Map(),
     }
 
@@ -205,6 +215,19 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         error: state.error,
     })
 
+    // Last public state actually published — see document.ts for the full
+    // contract behind this snapshot-side no-op collapse (§3/§4).
+    let lastPublished: CollectionState<TData> | null = null
+
+    const publicStateChanged = (
+        prev: CollectionState<TData>,
+        next: CollectionState<TData>
+    ): boolean =>
+        // isActive is collection-specific (lazy loading); the rest of the
+        // observable no-op collapse is shared with documents.
+        prev.isActive !== next.isActive ||
+        observableStateChanged(prev, next)
+
     const notify = () => {
         // Reconcile display overrides against the current localState
         // before publishing — see document.ts for the full contract.
@@ -212,8 +235,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             state.localState as Record<string, unknown> | undefined,
             state.displayOverrides
         )
-        cachedHandle = null
         const publicState = getPublicState()
+        // Snapshot-side no-op collapse: nothing observable changed → publish
+        // nothing, keeping the cached handle identity stable.
+        if (lastPublished !== null && !publicStateChanged(lastPublished, publicState)) {
+            return
+        }
+        lastPublished = publicState
+        cachedHandle = null
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
     }
@@ -255,6 +284,13 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 ;(docData as Record<string, unknown>).id = docId
             }
         }
+
+        // No-op collapse (§3): a write whose merged result equals the current
+        // view produces NO new state identity, undo entry, notify, or
+        // autosave. rawBase and newLocalState are compared after id injection
+        // so both carry ids; valuesEqualForNoOp closes the NaN /
+        // explicit-undefined gaps that defeat a naive guard.
+        if (valuesEqualForNoOp(rawBase, newLocalState)) return
 
         // Push undo eagerly against the pre-mutation snapshot. Cmd+Z within
         // the autosave window pops this entry, applies the inverse via
@@ -333,6 +369,11 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const currentData = getMergedData()
         const newLocalState = deepClone(currentData)
         newLocalState[id] = newDoc
+
+        // No-op collapse (§3): adding an id that already holds identical data
+        // is a complete no-op. The returned id stays meaningful (the doc
+        // exists with that data) but no write/undo/notify is produced.
+        if (valuesEqualForNoOp(currentData, newLocalState)) return id
 
         // Push undo eagerly. Inverse diff deletes the just-added doc.
         if (undoOptions?.undoable !== false && onPushUndo) {
@@ -417,7 +458,6 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
         if (isDeepEqual(state.localState, syncState)) {
             state.localState = undefined
-            state.inflightLocalState = undefined
             notify()
             return
         }
@@ -426,9 +466,11 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             syncState as FirestoreObject,
             state.localState as FirestoreObject
         )
-        state.inflightLocalState = deepClone(state.localState)
 
-        state.waitingForUpdate = true
+        // Snapshot exactly what we're committing so the next snapshot's rebase
+        // can recognize committed FieldValue sentinels and drop them. Captured
+        // before the await because localState may be re-edited mid-flight.
+        const committing = deepClone(state.localState)
 
         try {
             const batch = writeBatch(firestore)
@@ -450,18 +492,34 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                     // New document - use set to create it
                     batch.set(docRef, docDiff as Record<string, unknown>)
                 } else {
-                    // Existing document - use update with flattened diff to prevent
-                    // accidentally recreating deleted documents
-                    const flatDiff = flattenDiff(docDiff as Record<string, unknown>)
-                    batch.update(docRef, flatDiff)
+                    // Existing document — use update with the variadic
+                    // FieldPath form (not a flattened dotted-key object) so a
+                    // "." inside a map key (e.g. an email key `a@b.com`) stays a
+                    // literal segment instead of being re-parsed as a path
+                    // separator. update still fails if the doc doesn't exist, so
+                    // deleted docs are not accidentally recreated.
+                    const args = diffToFieldPathArgs(
+                        docDiff as Record<string, unknown>
+                    )
+                    if (args.length) {
+                        batch.update(
+                            docRef,
+                            ...(args as [
+                                string | FieldPath,
+                                unknown,
+                                ...unknown[]
+                            ])
+                        )
+                    }
                 }
             }
 
             await batch.commit()
+            // The server durably accepted this batch — record it for the
+            // next snapshot's rebase to drop committed sentinels.
+            state.committedWrite = committing
         } catch (error) {
             console.error('Collection sync failed:', error)
-            state.waitingForUpdate = false
-            state.inflightLocalState = undefined
             // Surface to React: handle.error reflects the failure and the
             // listener will keep state.localState so consumers can retry by
             // calling sync(). Autosave is not automatically rescheduled to
@@ -482,38 +540,72 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             newSyncState[id] = { ...data, id } as TData
         }
 
+        // `prevSync` is the BASELINE: the server snapshot our pending local
+        // edits are measured against. Advanced to `newSyncState` here, after
+        // capturing it for the rebase below.
+        const prevSync = state.syncState
         state.syncState = newSyncState
         // A successful snapshot supersedes any previous read or write error.
         state.error = undefined
 
-        if (state.waitingForUpdate) {
-            state.waitingForUpdate = false
-            const inflightState = state.inflightLocalState
-            state.inflightLocalState = undefined
-            const currentLocal = state.localState
+        // Capture and consume the last committed batch before the rebase: a
+        // FieldValue sentinel present in this payload has landed on the server,
+        // so the rebase must drop it rather than re-derive it (see below).
+        const committed = state.committedWrite
+        state.committedWrite = undefined
 
-            // Rebase local changes if they changed since we started the sync
-            if (
-                inflightState &&
-                currentLocal &&
-                !isDeepEqual(currentLocal, inflightState)
-            ) {
-                const changesSinceInflight = computeDiff(
-                    inflightState as FirestoreObject,
-                    currentLocal as FirestoreObject
-                )
-                const rebasedLocalState = deepClone(newSyncState)
-                applyDiffMutable(rebasedLocalState, changesSinceInflight as Record<string, unknown>)
-                // Re-add ids
-                for (const [docId, docData] of Object.entries(rebasedLocalState)) {
-                    if (docData && typeof docData === 'object') {
-                        ;(docData as Record<string, unknown>).id = docId
-                    }
+        // The rebase below runs on EVERY snapshot using `prevSync` as the
+        // baseline, not only the one confirming an inflight write. Previously a
+        // snapshot from another client left `localState` on a stale base, so
+        // the next sync re-wrote untouched fields (collaborator clobber) and
+        // recreated remotely-deleted docs (delete resurrection).
+        const currentLocal = state.localState
+
+        if (currentLocal !== undefined && prevSync !== undefined) {
+            // Field-level merge: re-derive the user's OWN edits relative to the
+            // baseline and re-apply only those over the new server truth.
+            const userEdits = computeDiff(
+                prevSync as FirestoreObject,
+                currentLocal as FirestoreObject
+            )
+            // Drop FieldValue sentinels we already committed: the server has
+            // resolved them, so newSyncState is the truth. Without this a
+            // sentinel never compares equal to its resolved value and would be
+            // re-derived and re-written on every snapshot forever.
+            dropCommittedSentinels(
+                userEdits as Record<string, unknown>,
+                committed as Record<string, unknown> | undefined
+            )
+            const rebasedLocalState = applyDiff(
+                newSyncState as FirestoreObject,
+                userEdits
+            ) as Record<string, TData>
+
+            // Deletes always win (Bug 2). A doc that existed in the baseline
+            // but is gone from the server was deleted remotely → drop it and
+            // any pending local edits to it, and never recreate it. This is
+            // unconditional: classified against the baseline, not the rebased
+            // result, so a stale local copy can't resurrect a deleted doc.
+            for (const docId of Object.keys(prevSync)) {
+                if (!(docId in newSyncState)) {
+                    delete rebasedLocalState[docId]
                 }
-                state.localState = rebasedLocalState
-            } else {
-                state.localState = undefined
             }
+
+            // Re-add ids (applyDiff may have introduced docs from the snapshot
+            // and merged edits onto them).
+            for (const [docId, docData] of Object.entries(rebasedLocalState)) {
+                if (docData && typeof docData === 'object') {
+                    ;(docData as Record<string, unknown>).id = docId
+                }
+            }
+
+            // If the rebase leaves nothing that differs from the server, the
+            // edits are fully absorbed → drop localState so isSynced flips back
+            // to true and no redundant write is queued.
+            state.localState = isDeepEqual(rebasedLocalState, newSyncState)
+                ? undefined
+                : rebasedLocalState
         }
 
         if (minLoadTimeElapsed) {

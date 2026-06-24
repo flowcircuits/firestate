@@ -160,9 +160,9 @@ describe('createStore', () => {
         })
 
         it('tracks multiple instances of the same resource independently', () => {
-            // Regression: previously, sync state was keyed only by resource
-            // path, so two subscriptions to the same path shared one entry
-            // and unmounting one would erase tracking for the other.
+            // Sync state is keyed per-instance, not per-resource-path: two
+            // subscriptions to the same path must track independently, so
+            // unmounting one does not erase tracking for the other.
             const store = createStore({
                 firestore: mockFirestore,
             })

@@ -1,4 +1,4 @@
-import type { Subscriber, Unsubscribe, UndoAction, UndoManager, UndoManagerState } from './types'
+import type { Subscriber, Unsubscribe, UndoAction, UndoManager, UndoManagerState } from '../types'
 
 /**
  * Configuration for creating an undo manager

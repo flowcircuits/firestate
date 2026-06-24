@@ -5,9 +5,9 @@ import React, {
   useSyncExternalStore,
 } from "react";
 import type { Firestore } from "firebase/firestore";
-import { createStore, type FirestateStore } from "./store";
+import { createStore, type FirestateStore } from "../core/store";
 import { FirestateContext } from "./hooks";
-import type { ErrorContext } from "./types";
+import type { ErrorContext } from "../types";
 
 /**
  * Props for FirestateProvider

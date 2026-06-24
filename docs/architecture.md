@@ -45,7 +45,7 @@ as `data: undefined`.
 
 ## Registry API
 
-`src/firestate.ts` owns the registry API.
+`src/registry/firestate.ts` owns the registry API.
 
 Path templates use `{name}` placeholders:
 
@@ -70,7 +70,7 @@ when a plain TypeScript definition or custom path derivation is needed.
 
 ## Definitions
 
-`src/schema.ts` contains the lower-level definition helpers. They are mostly
+`src/registry/schema.ts` contains the lower-level definition helpers. They are mostly
 identity functions with useful generic overloads.
 
 `defineDocument` accepts:
@@ -90,7 +90,7 @@ identity functions with useful generic overloads.
 
 ## Store
 
-`src/store.ts` creates the shared `FirestateStore`.
+`src/core/store.ts` creates the shared `FirestateStore`.
 
 The store owns:
 
@@ -106,7 +106,7 @@ state.
 
 ## React Hooks
 
-`src/hooks.ts` wraps subscriptions with `useSyncExternalStore`.
+`src/react/hooks.ts` wraps subscriptions with `useSyncExternalStore`.
 
 Important details:
 
@@ -125,7 +125,7 @@ Important details:
 
 ## Document Subscriptions
 
-`src/document.ts` owns single-document behavior.
+`src/core/document.ts` owns single-document behavior.
 
 State has three local edit cases:
 
@@ -152,14 +152,24 @@ State has three local edit cases:
 - marks a pending delete locally
 - syncs later with `deleteDoc`
 
-When a snapshot arrives during an inflight write, Firestate compares the
-inflight local state with the current local state. If the user made more local
-edits while the write was inflight, those edits are rebased onto the new
-server snapshot.
+On **every** incoming snapshot — not only the one that confirms an inflight
+write — Firestate rebases pending local edits onto the new server state. The
+snapshot that was previously in `syncState` acts as the *baseline*: the user's
+own edits are re-derived as `computeDiff(baseline, localState)` and re-applied
+over the new snapshot, then the baseline advances. Fields the user did not touch
+follow the server (so a collaborator's change to another field is adopted), and
+the user's actual edits are preserved. If the rebase leaves nothing differing
+from the server, `localState` is dropped and the subscription is back in sync.
+
+Same-field concurrent edits stay last-write-wins: the local edit is preserved
+and re-sent on the next sync. Rebasing continuously (rather than only inside the
+inflight window) is what prevents a concurrent snapshot from leaving a pending
+edit on a stale base — the cause of the optimistic-revert / collaborator-clobber
+class of bugs.
 
 ## Collection Subscriptions
 
-`src/collection.ts` owns collection behavior.
+`src/core/collection.ts` owns collection behavior.
 
 Collections store data as `Record<string, T>`, keyed by Firestore document id.
 Snapshot data is normalized so each document includes its `id`.
@@ -170,15 +180,22 @@ and `remove` bail rather than guessing what server fields exist.
 `add(data)` can auto-generate an id synchronously. It returns `undefined` if
 the mutation is dropped.
 
+The continuous rebase (see Document Subscriptions) runs per document. It also
+enforces **deletes win**: a document present in the baseline but absent from the
+new snapshot was deleted remotely, so it is dropped from `localState` along with
+any pending edits to it and is never recreated — even if this client was editing
+it when the delete landed.
+
 Collection sync uses a Firestore write batch:
 
-- new docs use `batch.set`
-- existing docs use `batch.update` with flattened diffs
+- new docs (absent from the server) use `batch.set`
+- existing docs use `batch.update` with flattened diffs — `updateDoc` fails if
+  the doc was deleted in a race, so a remotely-deleted doc is not resurrected
 - removed docs use `batch.delete`
 
 ## Diff Utilities
 
-`src/diff.ts` is Firestore-aware:
+`src/utils/diff.ts` is Firestore-aware:
 
 - removed fields become `deleteField()`
 - arrays are replaced as whole values
@@ -190,7 +207,7 @@ These helpers are shared by document sync, collection sync, and undo.
 
 ## Undo
 
-`src/undo.ts` is framework agnostic.
+`src/utils/undo.ts` is framework agnostic.
 
 Subscriptions push undo actions eagerly when local mutations are made. Grouped
 actions with the same `groupId` are merged. Undo applies grouped actions from

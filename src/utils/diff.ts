@@ -1,10 +1,11 @@
 import {
     deleteField,
+    FieldPath,
     serverTimestamp,
     Timestamp,
     WithFieldValue,
 } from 'firebase/firestore'
-import type { DeepPartial, FirestoreObject } from './types'
+import type { DeepPartial, FirestoreObject } from '../types'
 
 /**
  * Check if a value is a plain object (not array, null, or special Firestore type)
@@ -86,6 +87,81 @@ export const isDeepEqual = (a: unknown, b: unknown): boolean => {
 }
 
 /**
+ * Equality used solely to decide whether a write is a no-op (§3 of the
+ * update-logic rewrite). Purpose-built to close the "Maximum update depth"
+ * render loop, where a write whose result equals the current view must produce
+ * NO new state identity. It differs from {@link isDeepEqual} in exactly the two
+ * places that let the loop survive a naive guard:
+ *
+ * - `NaN` ≡ `NaN` (via `Object.is`). `computeDiff` compares primitives with
+ *   `!==`, so a field that is `NaN` on both sides emits a spurious diff.
+ * - An explicit-`undefined` key ≡ a missing key (`{x: undefined}` ≡ `{}`).
+ *   `isDeepEqual` rejects these on a keys-length mismatch.
+ *
+ * Standalone ON PURPOSE — do NOT fold this into `isDeepEqual`. `computeDiff`
+ * and `computeUndoDiff` depend on `isDeepEqual`'s current `NaN !== NaN` and
+ * strict keys-length semantics; relaxing them there would change the wire
+ * payload. Firestore opaque values (Timestamp, sentinels, refs) delegate to
+ * their own `.isEqual`; arrays compare elementwise.
+ */
+export const valuesEqualForNoOp = (a: unknown, b: unknown): boolean => {
+    // Primitive / reference identity, with `Object.is` so `NaN` ≡ `NaN`.
+    if (Object.is(a, b)) return true
+
+    // Opaque Firestore types compare by their own identity semantics.
+    if (isFirestoreOpaque(a) || isFirestoreOpaque(b)) {
+        return (
+            isFirestoreOpaque(a) && isFirestoreOpaque(b) && a.isEqual(b)
+        )
+    }
+
+    if (Array.isArray(a) || Array.isArray(b)) {
+        if (!Array.isArray(a) || !Array.isArray(b)) return false
+        if (a.length !== b.length) return false
+        return a.every((item, i) => valuesEqualForNoOp(item, b[i]))
+    }
+
+    if (isPlainObject(a) && isPlainObject(b)) {
+        // Union of keys: an explicit-`undefined` value on one side equals a
+        // missing key on the other, because both recurse to
+        // `valuesEqualForNoOp(undefined, undefined) === true`.
+        const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+        for (const key of keys) {
+            if (!valuesEqualForNoOp(a[key], b[key])) return false
+        }
+        return true
+    }
+
+    return false
+}
+
+/**
+ * Snapshot-side no-op collapse comparison over the observable fields shared by
+ * DocumentState and CollectionState (§3/§4): returns `true` when something a
+ * consumer can observe changed. `data` uses {@link valuesEqualForNoOp} so an
+ * explicit-`undefined` ≡ missing key does not count as a change. Collection
+ * state additionally checks `isActive` at the call site.
+ */
+export const observableStateChanged = (
+    prev: {
+        isLoading: boolean
+        isSynced: boolean
+        error: Error | undefined
+        data: unknown
+    },
+    next: {
+        isLoading: boolean
+        isSynced: boolean
+        error: Error | undefined
+        data: unknown
+    }
+): boolean =>
+    prev.isLoading !== next.isLoading ||
+    prev.isSynced !== next.isSynced ||
+    prev.error !== next.error ||
+    !valuesEqualForNoOp(prev.data, next.data)
+
+/**
  * Compute the minimal diff between two objects for Firestore updates.
  * Returns only the fields that changed, using deleteField() for removed fields.
  *
@@ -162,6 +238,56 @@ export const computeDiff = <T extends FirestoreObject>(
     }
 
     return diff as WithFieldValue<DeepPartial<T>>
+}
+
+/**
+ * Strip FieldValue sentinels from a freshly-computed `edits` object when they
+ * match a write the server has already durably accepted (`committed`).
+ *
+ * A sentinel (`serverTimestamp`, `increment`, `arrayUnion`, `arrayRemove`) is a
+ * fire-once write intent: the client ships the sentinel, the server resolves it
+ * to a concrete value, and the confirming snapshot carries that value. The
+ * snapshot rebase re-derives pending edits with `computeDiff` and re-applies
+ * them over the new server truth — but a sentinel can never compare equal to
+ * its own resolved value (`isDeepEqual` only delegates to `.isEqual` when both
+ * sides are opaque), so a committed sentinel would be re-derived and re-written
+ * on every snapshot forever (and a non-idempotent `increment` would re-apply
+ * each loop — data corruption).
+ *
+ * The fix: once a write's promise resolves, the caller records its payload as
+ * `committed`. On the next snapshot the rebase calls this to drop any sentinel
+ * that sits at the same path AND is `.isEqual` to the committed one — it has
+ * landed, so the server's value is now the truth. Everything else is preserved:
+ * a not-yet-sent sentinel (no `committed` entry), a re-edited sentinel (a
+ * different `.isEqual` result), and every plain value flow through untouched,
+ * so genuine pending edits and collaborator merges are unaffected.
+ *
+ * `edits` is mutated in place (it is always a fresh `computeDiff` result).
+ * Recurses into plain objects, so collection diffs keyed by docId converge too:
+ * when a doc's nested diff empties out, the doc entry itself is removed.
+ *
+ * @internal
+ */
+export const dropCommittedSentinels = (
+    edits: Record<string, unknown>,
+    committed: Record<string, unknown> | null | undefined
+): Record<string, unknown> => {
+    if (!committed) return edits
+    for (const key of Object.keys(edits)) {
+        const value = edits[key]
+        const sent = committed[key]
+        if (isFirestoreOpaque(value)) {
+            if (isFirestoreOpaque(sent) && value.isEqual(sent)) {
+                delete edits[key]
+            }
+        } else if (isPlainObject(value) && isPlainObject(sent)) {
+            dropCommittedSentinels(value, sent)
+            if (Object.keys(value).length === 0) {
+                delete edits[key]
+            }
+        }
+    }
+    return edits
 }
 
 /**
@@ -277,6 +403,13 @@ export const isDiffEmpty = (diff: Record<string, unknown>): boolean =>
  * VectorValue) are NOT flattened — they're preserved at their path so
  * Firestore receives them in their original form.
  *
+ * ⚠️ The dot-joined keys this produces are AMBIGUOUS to Firestore if any map
+ * key itself contains a "." (e.g. an email key `a@b.com`): `updateDoc` parses
+ * the "." as a path separator and writes to the wrong nested field. The
+ * write path uses {@link flattenDiffToFieldPaths} + `FieldPath` instead, which
+ * keeps every segment literal. Reach for this only when dotted-string keys are
+ * what you actually want.
+ *
  * @param diff - The nested diff object
  * @param prefix - Internal: current path prefix for recursion
  * @returns Flattened object with dotted keys
@@ -311,6 +444,74 @@ export const flattenDiff = (
 
     return result
 }
+
+/**
+ * Flatten a nested diff into a list of `{ segments, value }` entries, where
+ * `segments` is the path expressed as an array of *literal* key segments
+ * (never joined into a dotted string).
+ *
+ * This is the segment-preserving sibling of {@link flattenDiff}. It exists
+ * because dot-joined string keys are ambiguous to Firestore: `updateDoc(ref,
+ * { "users.a@b.com.role": 4 })` parses the `.` inside the email key as a path
+ * separator and writes to `users → "a@b" → "com" → role` instead of the
+ * literal key `"a@b.com"`. Feeding these segments to `new FieldPath(...segments)`
+ * (with the variadic `updateDoc(ref, fieldPath, value, …)` form) keeps every
+ * segment literal, so a "." inside a map key is never re-interpreted.
+ *
+ * The opaque/plain-object rules mirror {@link flattenDiff} exactly: arrays,
+ * FieldValue sentinels (deleteField, serverTimestamp, …), and Firestore value
+ * types (Timestamp, DocumentReference, GeoPoint, Bytes, VectorValue) ride
+ * through verbatim at their path; only plain objects are recursed into.
+ *
+ * @param diff - The nested diff object
+ * @param prefix - Internal: accumulated path segments for recursion
+ * @returns Flat list of `{ segments, value }` entries
+ */
+export const flattenDiffToFieldPaths = (
+    diff: Record<string, unknown>,
+    prefix: string[] = []
+): Array<{ segments: string[]; value: unknown }> => {
+    const result: Array<{ segments: string[]; value: unknown }> = []
+
+    for (const key of Object.keys(diff)) {
+        const value = diff[key]
+        const segments = [...prefix, key]
+
+        // Arrays, FieldValue sentinels, and Firestore value types are
+        // opaque from flatten's perspective — kept at the path verbatim.
+        if (Array.isArray(value) || isFirestoreOpaque(value)) {
+            result.push({ segments, value })
+            continue
+        }
+
+        // Plain objects are recursively flattened
+        if (isPlainObject(value)) {
+            result.push(...flattenDiffToFieldPaths(value, segments))
+            continue
+        }
+
+        // Primitives (strings, numbers, booleans, null)
+        result.push({ segments, value })
+    }
+
+    return result
+}
+
+/**
+ * Build the variadic `(fieldPath, value, …)` argument list for the
+ * `updateDoc(ref, …)` / `batch.update(ref, …)` form from a nested diff. Each
+ * segment array becomes a literal `FieldPath`, so a "." inside a map key (e.g.
+ * the email key `a@b.com`) stays a single segment instead of being re-parsed
+ * as a path separator. Returns `[]` for an empty diff — callers should skip
+ * the update entirely in that case.
+ */
+export const diffToFieldPathArgs = (
+    diff: Record<string, unknown>
+): unknown[] =>
+    flattenDiffToFieldPaths(diff).flatMap((e) => [
+        new FieldPath(...e.segments),
+        e.value,
+    ])
 
 /**
  * Merge two diffs together, with the second taking precedence
