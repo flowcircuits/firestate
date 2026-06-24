@@ -106,11 +106,24 @@ state.
 
 ## React Hooks
 
-`src/react/hooks.ts` wraps subscriptions with `useSyncExternalStore`.
+`src/react/hooks.ts` wraps subscriptions with `useSyncExternalStore`
+(`useSyncExternalStoreWithSelector` when a `selector` is supplied).
 
 Important details:
 
 - Hooks return stable disabled handles when `enabled: false`.
+- An optional `selector` narrows the returned `data` to a slice so a component
+  re-renders only when that slice (or a status field) changes. The hook routes
+  through `useSyncExternalStoreWithSelector`: the memoized projection carries the
+  selected `data` plus the status fields (`isLoading`/`isSynced`/`error`/
+  `isActive`), compared by `isEqual` (default: the same `valuesEqualForNoOp`
+  value compare the subscription itself uses, so an identity selector preserves
+  the pre-selector re-render behavior). The hook then re-wraps a full handle.
+  The projection deliberately excludes methods and `ref`; those are read *live*
+  from the current subscription's `getHandle()` at render time. Otherwise a
+  subscription rebuild whose selected slice happened to be value-equal would be
+  collapsed by `isEqual`, and the hook would keep handing back the previous
+  subscription's methods (e.g. `load()` against torn-down constraints).
 - Disabled hooks do not resolve params or create subscriptions.
 - Toggling `undoable` should not rebuild Firestore listeners.
 - `queryConstraints` are keyed by semantic query identity, not array

@@ -253,6 +253,66 @@ Memoizing `queryConstraints` is still a fine micro-optimization — a stable
 reference takes a fast path and skips the per-render query build + compare —
 but it is no longer required to keep the listener stable.
 
+## Render Slicing with Selectors
+
+By default a component re-renders on any change to the subscribed document or
+collection. Pass a `selector` (in the options object, for both the registry and
+lower-level hooks) to narrow `data` to the slice you read; the component then
+re-renders only when that slice changes.
+
+```tsx
+// Re-renders only when `name` changes.
+const { data: name } = useProject(
+    { projectId },
+    { selector: (project) => project?.name }
+)
+
+// Sub-select one document out of a collection.
+const { data: space } = useSpaces(
+    { projectId },
+    { selector: (spaces) => spaces[spaceId] }
+)
+```
+
+The hook still returns a **full handle**. Only `data` becomes the slice —
+`update`/`set`/`delete`/`add`/`remove`, `ref`, and the status flags are
+unchanged and stay typed against the full document. Readers and writers share
+one hook:
+
+```tsx
+const { data: title, update } = useProject(
+    { projectId },
+    { selector: (p) => p?.title }
+)
+update({ archived: true }) // a full-document update, even though we read `title`
+```
+
+`update` takes a *partial* and merges it, so writing a selected field is
+`update({ field: next })`. `set`, by contrast, **replaces the whole document** —
+passing the selected value (`set(title)`) would overwrite every other field.
+From a narrowed handle, prefer `update`; use `set` only when you hold the full
+document.
+
+The slice defaults to a deep value comparison, so returning a fresh object/array
+of the same shape does not over-render. This matters for collection
+sub-selection: an unchanged document may not keep object identity across an
+optimistic rebase, but the default comparison still treats it as equal. Pass
+`isEqual: shallow` for a cheaper one-level compare on flat projections, or a
+custom comparator:
+
+```tsx
+import { shallow } from '@hvakr/firestate'
+
+const { data: ids } = useSpaces(
+    { projectId },
+    { selector: (spaces) => Object.keys(spaces), isEqual: shallow }
+)
+```
+
+Selectors do not need to be memoized — an inline selector is fine. It is
+recomputed each render but only re-renders the component when its result changes
+per `isEqual`.
+
 ## Undo and Redo
 
 Undo is enabled by default.

@@ -139,6 +139,40 @@ export interface CollectionHandle<T extends FirestoreObject> {
 }
 
 /**
+ * A {@link DocumentHandle} whose `data` has been narrowed to a selected slice
+ * by a hook-level `selector`. Only `data` changes type — the writer surface
+ * (`update`/`set`/`delete`) and `ref` stay typed against the full document
+ * `TData`, because a selector changes what you *read*, never what you *write*.
+ *
+ * Note: `update(diff)` takes a *partial* of the full document and merges it, so
+ * writing a selected field is `update({ field: next })`. `set(data)` still
+ * *replaces the entire document*, not the slice — never pass the selected value
+ * to `set`, or you will overwrite every other field. Prefer `update` from a
+ * narrowed handle; reach for `set` only when you hold the full document.
+ */
+export interface SelectedDocumentHandle<
+  TData extends FirestoreObject,
+  TSelected
+> extends Omit<DocumentHandle<TData>, "data"> {
+  /** The slice produced by the hook's `selector`. */
+  data: TSelected;
+}
+
+/**
+ * A {@link CollectionHandle} whose `data` has been narrowed to a selected slice
+ * by a hook-level `selector`. As with {@link SelectedDocumentHandle}, the
+ * writers (`update`/`add`/`remove`) and `ref` stay typed against the full
+ * collection of `TData`.
+ */
+export interface SelectedCollectionHandle<
+  TData extends FirestoreObject,
+  TSelected
+> extends Omit<CollectionHandle<TData>, "data"> {
+  /** The slice produced by the hook's `selector`. */
+  data: TSelected;
+}
+
+/**
  * An undo/redo action
  */
 export interface UndoAction {

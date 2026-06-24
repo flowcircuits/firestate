@@ -12,6 +12,8 @@ export type {
     // Handle types
     DocumentHandle,
     CollectionHandle,
+    SelectedDocumentHandle,
+    SelectedCollectionHandle,
     // Definition types
     DocumentDefinition,
     CollectionDefinition,
@@ -73,6 +75,9 @@ export {
     mergeDiffs,
 } from './utils/diff'
 
+// Selector equality helper (for use as a hook `isEqual`)
+export { shallow } from './utils/shallow'
+
 // Store
 export { createStore } from './core/store'
 export type { FirestateStore, Store } from './core/store'
@@ -99,7 +104,12 @@ export {
     FirestateContext,
 } from './react/hooks'
 
-export type { UseDocumentOptions, UseCollectionOptions } from './react/hooks'
+export type {
+    UseDocumentOptions,
+    UseCollectionOptions,
+    DocumentSelectorOptions,
+    CollectionSelectorOptions,
+} from './react/hooks'
 
 // React providers
 export {
