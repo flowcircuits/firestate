@@ -1,17 +1,22 @@
 /**
- * Per-hook selectors ("sliced subscriptions").
+ * Per-hook selectors ("sliced subscriptions"), pure-selector contract.
  *
  * Contract: `useDocument`/`useCollection` accept an optional `selector` that
- * narrows the returned `data` to a slice, plus an optional `isEqual`. The hook
- * still returns a *full* handle — writers (`update`/`set`/`delete`/`add`/
- * `remove`), `ref`, and status fields are unchanged; only `data` is the slice.
- * A component re-renders only when its slice changes (per `isEqual`) or a status
- * field changes, NOT on every field of the document/collection.
+ * receives the resource's full observable state — `{ data, isLoading, isSynced,
+ * error }` for a document, plus `isActive` for a collection — and returns the
+ * slice the component reacts to (with an optional `isEqual`). A selected hook
+ * re-renders *only* when that slice changes; status the selector did not read
+ * can neither re-render the component nor appear on its handle. The returned
+ * handle therefore exposes ONLY `data` (the slice) plus the writer surface
+ * (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref`. Calling a
+ * hook WITHOUT a selector is unchanged: it returns the full handle and
+ * re-renders on any field or status change.
  *
  * These tests drive real React renders (react-test-renderer) over the
  * deterministic Firestore harness, counting renders to prove a change to an
- * unselected field is collapsed. The harness mocks `onSnapshot` + the write
- * functions; fake timers settle `minLoadTime`.
+ * unselected field — or a status flip the selector ignores — is collapsed. The
+ * harness mocks `onSnapshot` + the write functions; fake timers settle
+ * `minLoadTime`.
  */
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 
@@ -24,7 +29,7 @@ vi.mock('firebase/firestore', async () => {
     return buildFirestoreMock(actual as unknown as Record<string, unknown>)
 })
 
-import { createElement } from 'react'
+import { createElement, useState } from 'react'
 import { create, act, type ReactTestRenderer } from 'react-test-renderer'
 import { z } from 'zod'
 import { createHarness, type Harness } from '../__tests__/test-harness'
@@ -35,7 +40,9 @@ import { createFirestate, doc, col } from '../registry/firestate'
 import { createStore, type FirestateStore } from '../core/store'
 import type {
     CollectionHandle,
+    CollectionState,
     DocumentHandle,
+    DocumentState,
     FirestoreObject,
     SelectedCollectionHandle,
     SelectedDocumentHandle,
@@ -78,14 +85,14 @@ const lazyItemsDef = defineCollection<Item>({
 const callUseDocument = useDocument as unknown as (o: {
     definition: typeof docDef
     params?: Record<string, string>
-    selector?: (d: Doc | undefined) => unknown
+    selector?: (s: DocumentState<Doc>) => unknown
     isEqual?: (a: unknown, b: unknown) => boolean
 }) => DocumentHandle<Doc> | SelectedDocumentHandle<Doc, unknown>
 
 const callUseCollection = useCollection as unknown as (o: {
     definition: typeof itemsDef
     params?: Record<string, string>
-    selector?: (d: Record<string, Item>) => unknown
+    selector?: (s: CollectionState<Item>) => unknown
     isEqual?: (a: unknown, b: unknown) => boolean
 }) => CollectionHandle<Item> | SelectedCollectionHandle<Item, unknown>
 
@@ -133,7 +140,7 @@ describe('useDocument selector', () => {
 
     const Probe = (props: {
         id?: string
-        selector?: (d: Doc | undefined) => unknown
+        selector?: (s: DocumentState<Doc>) => unknown
         isEqual?: (a: unknown, b: unknown) => boolean
     }): null => {
         renders++
@@ -166,7 +173,7 @@ describe('useDocument selector', () => {
     }
 
     it('narrows data to the slice while keeping the full writer surface', () => {
-        mount({ selector: (d) => d?.name })
+        mount({ selector: (s) => s.data?.name })
         fire({ name: 'a', age: 1 })
 
         expect(latest.data).toBe('a')
@@ -174,11 +181,10 @@ describe('useDocument selector', () => {
         expect(typeof latest.set).toBe('function')
         expect(typeof latest.delete).toBe('function')
         expect(latest.ref?.id).toBe('d1')
-        expect(latest.isLoading).toBe(false)
     })
 
     it('does not re-render on an unselected field; re-renders on the slice', () => {
-        mount({ selector: (d) => d?.name })
+        mount({ selector: (s) => s.data?.name })
         fire({ name: 'a', age: 1 })
         const base = renders
 
@@ -194,7 +200,7 @@ describe('useDocument selector', () => {
     })
 
     it('default isEqual collapses a fresh object of equal shape', () => {
-        mount({ selector: (d) => ({ name: d?.name }) })
+        mount({ selector: (s) => ({ name: s.data?.name }) })
         fire({ name: 'a', age: 1 })
         const base = renders
 
@@ -208,32 +214,39 @@ describe('useDocument selector', () => {
         expect(latest.data).toEqual({ name: 'c' })
     })
 
-    it('re-renders on a status change even when the slice is constant', () => {
-        // Constant slice: only status (isLoading) moves it.
+    it('does not re-render on a status change when the slice is constant', () => {
+        // The pure-selector contract: a status flip the selector ignores cannot
+        // re-render. With a constant slice and a selector that reads no status,
+        // the load transition (isLoading true → false) must NOT re-render — the
+        // inverse of the pre-pure behavior where status always gated.
         mount({ selector: () => 0 })
         const base = renders
-        expect(latest.isLoading).toBe(true)
 
         fire({ name: 'a' })
-        expect(latest.isLoading).toBe(false)
-        expect(renders).toBe(base + 1)
+
+        expect(renders).toBe(base)
         expect(latest.data).toBe(0)
     })
 
-    it('writers target the full document while data stays narrowed', () => {
-        mount({ selector: (d) => d?.name })
+    it('reacts to status only when the selector reads it; writers hit the full doc', () => {
+        // Select both a data slice and a status flag. A write to an UNSELECTED
+        // data field still advances the shared state to "pending", which the
+        // selected `synced` flag reflects (proving the writer hit the full doc),
+        // while the selected `name` stays put.
+        mount({
+            selector: (s) => ({ name: s.data?.name, synced: s.isSynced }),
+        })
         fire({ name: 'a', age: 1 })
-        expect(latest.isSynced).toBe(true)
+        expect(latest.data).toEqual({ name: 'a', synced: true })
 
         act(() => {
             // Update a field that is NOT in the slice.
             ;(latest as DocumentHandle<Doc>).update({ age: 9 })
         })
 
-        // The write applied to the full doc (pending → not synced), but the
-        // selected slice is unchanged.
-        expect(latest.isSynced).toBe(false)
-        expect(latest.data).toBe('a')
+        // The write applied to the full doc (pending → not synced); `name` is
+        // unchanged but the selected `synced` flag flipped, so we re-rendered.
+        expect(latest.data).toEqual({ name: 'a', synced: false })
     })
 
     it('set replaces the full document, not the narrowed slice', () => {
@@ -241,7 +254,7 @@ describe('useDocument selector', () => {
         // document. The committed payload must be the full object the caller
         // passed — never just the selected slice — so a `set` from a narrowed
         // handle cannot silently drop the unselected fields.
-        mount({ selector: (d) => d?.name })
+        mount({ selector: (s) => s.data?.name })
         fire({ name: 'a', age: 1 })
 
         act(() => {
@@ -283,6 +296,61 @@ describe('useDocument selector', () => {
         fire({ name: 'a', age: 1 })
         expect(latest.data).toEqual({ name: 'a', age: 1 })
     })
+
+    it('keeps status reactive on a handle with no selector', () => {
+        // The no-selector path is unchanged: a status flip with constant data
+        // still re-renders, and the full handle exposes the status fields.
+        mount({})
+        const base = renders
+        expect((latest as DocumentHandle<Doc>).isLoading).toBe(true)
+
+        fire({ name: 'a' })
+        expect((latest as DocumentHandle<Doc>).isLoading).toBe(false)
+        expect(renders).toBe(base + 1)
+    })
+
+    it('keeps a stable handle across renders with an inline selector', () => {
+        // Contract: handles have stable identity between changes, and an inline
+        // `selector` (a fresh function every render) must not penalize that —
+        // callers need not memoize it. Re-render WITHOUT touching the slice and
+        // assert the handle object is referentially unchanged; otherwise every
+        // inline-selector caller hands a new handle to memoized children each
+        // parent render.
+        let bump = (): void => {}
+        const InlineProbe = (): null => {
+            const [, setTick] = useState(0)
+            bump = () => setTick((t) => t + 1)
+            renders++
+            // A new selector identity on every render.
+            latest = callUseDocument({
+                definition: docDef,
+                params: { id: 'd1' },
+                selector: (s) => s.data?.name,
+            })
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(InlineProbe)
+                )
+            )
+        })
+        fire({ name: 'a', age: 1 })
+        const handleBefore = latest
+        const rendersBefore = renders
+
+        act(() => {
+            bump()
+        })
+
+        // The component really re-rendered (new inline selector identity)...
+        expect(renders).toBeGreaterThan(rendersBefore)
+        // ...but the slice and subscription are unchanged, so the handle is too.
+        expect(latest).toBe(handleBefore)
+    })
 })
 
 describe('useCollection selector', () => {
@@ -309,7 +377,7 @@ describe('useCollection selector', () => {
     })
 
     const Probe = (props: {
-        selector?: (d: Record<string, Item>) => unknown
+        selector?: (s: CollectionState<Item>) => unknown
         isEqual?: (a: unknown, b: unknown) => boolean
     }): null => {
         renders++
@@ -341,7 +409,7 @@ describe('useCollection selector', () => {
     }
 
     it('sub-selects one doc and collapses changes to other docs (value-equal)', () => {
-        mount({ selector: (data) => data['a'] })
+        mount({ selector: (s) => s.data['a'] })
         fire({ a: { v: 1 }, b: { v: 1 } })
         const base = renders
         // The collection injects the doc id into each record.
@@ -360,7 +428,7 @@ describe('useCollection selector', () => {
     })
 
     it('supports shallow isEqual on a fresh array projection', () => {
-        mount({ selector: (data) => Object.keys(data), isEqual: shallow })
+        mount({ selector: (s) => Object.keys(s.data), isEqual: shallow })
         fire({ a: { v: 1 }, b: { v: 1 } })
         const base = renders
         expect(latest.data).toEqual(['a', 'b'])
@@ -386,7 +454,7 @@ describe('useCollection selector + subscription rebuild', () => {
     let store: FirestateStore
     let h: Harness
     let renderer: ReactTestRenderer | undefined
-    let latest: SelectedCollectionHandle<Item, number>
+    let latest: SelectedCollectionHandle<Item, boolean>
 
     beforeEach(() => {
         vi.clearAllMocks()
@@ -407,7 +475,7 @@ describe('useCollection selector + subscription rebuild', () => {
         latest = useCollection({
             definition: lazyItemsDef,
             params: { bucket: props.bucket },
-            selector: () => 0,
+            selector: (s) => s.isActive,
         })
         return null
     }
@@ -425,16 +493,16 @@ describe('useCollection selector + subscription rebuild', () => {
     }
 
     it('load() attaches the listener on the new path after a rebuild', () => {
-        // Lazy + constant selector: the selected projection AND status are
-        // value-equal across the path change (lazy starts isLoading:false,
-        // isActive:false), so a memoized-methods implementation would hand back
-        // the previous subscription's load(). The merge reads methods live, so
-        // load() must attach on the NEW path.
+        // Lazy + an `isActive` selector: pre-load the slice is `false` on both
+        // buckets, so the selected projection is value-equal across the path
+        // change — a memoized-methods implementation would hand back the previous
+        // subscription's load(). The merge reads methods live, so load() must
+        // attach on the NEW path, and the selected `isActive` then flips true.
         render('b1')
         render('b2')
 
         act(() => {
-            ;(latest as SelectedCollectionHandle<Item, number>).load()
+            latest.load()
             vi.runAllTimers()
         })
 
@@ -443,7 +511,7 @@ describe('useCollection selector + subscription rebuild', () => {
         expect((listeners[0]!.ref as { __coll: string }).__coll).toBe(
             'items/b2/list'
         )
-        expect(latest.isActive).toBe(true)
+        expect(latest.data).toBe(true)
     })
 })
 
@@ -477,7 +545,7 @@ describe('createFirestate generated hook selector', () => {
     const Probe = (): null => {
         selected = api.useThing(
             { thingId: 't1' },
-            { selector: (t) => t?.name ?? '' }
+            { selector: (s) => s.data?.name ?? '' }
         )
         return null
     }
@@ -503,24 +571,282 @@ describe('createFirestate generated hook selector', () => {
     })
 })
 
+describe('createFirestate .select generated hooks', () => {
+    let store: FirestateStore
+    let h: Harness
+    let renderer: ReactTestRenderer | undefined
+    let renders = 0
+    let docSlice: SelectedDocumentHandle<
+        { name: string; createdAt: number },
+        unknown
+    >
+    let colSlice: SelectedCollectionHandle<
+        { title: string; completed: boolean },
+        unknown
+    >
+
+    const ListSchema = z.object({ name: z.string(), createdAt: z.number() })
+    const TaskSchema = z.object({ title: z.string(), completed: z.boolean() })
+    // Schema/path declared ONCE; every slice-hook derives from these.
+    const listDoc = doc({ path: 'lists/{listId}', schema: ListSchema })
+    const tasksCol = col({ path: 'lists/{listId}/tasks', schema: TaskSchema })
+
+    const api = createFirestate({
+        // Base hooks (full handle) coexist as flat siblings with slice hooks.
+        list: listDoc,
+        tasks: tasksCol,
+        listName: listDoc.select((s) => s.data?.name),
+        // A comparator baked in that compares only `name` (ignores createdAt).
+        listView: listDoc.select(
+            (s) => ({ name: s.data?.name, createdAt: s.data?.createdAt }),
+            { isEqual: (a, b) => a.name === b.name }
+        ),
+        taskIds: tasksCol.select((s) => Object.keys(s.data)),
+        taskById: tasksCol.select((s, p: { id: string }) => s.data[p.id]),
+    })
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        h = createHarness()
+        store = createStore({ firestore: {} as never })
+        renders = 0
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderer?.unmount()
+        })
+        renderer = undefined
+        vi.useRealTimers()
+    })
+
+    const mount = (render: () => void): void => {
+        const Probe = (): null => {
+            renders++
+            render()
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+    }
+
+    const fireDoc = (
+        data: { name: string; createdAt: number } | null
+    ): void => {
+        act(() => {
+            h.fireDocSnapshot(data)
+            vi.runAllTimers()
+        })
+    }
+
+    const fireCol = (
+        docs: Record<string, { title: string; completed: boolean }>
+    ): void => {
+        act(() => {
+            h.fireCollectionSnapshot(docs)
+            vi.runAllTimers()
+        })
+    }
+
+    it('narrows a document slice and keeps the full writer surface and ref', () => {
+        mount(() => {
+            docSlice = api.useListName({ listId: 'l1' })
+        })
+        fireDoc({ name: 'Groceries', createdAt: 1 })
+
+        expect(docSlice.data).toBe('Groceries')
+        expect(typeof docSlice.update).toBe('function')
+        expect(typeof docSlice.set).toBe('function')
+        expect(docSlice.ref?.id).toBe('l1')
+    })
+
+    it('threads selector params from the merged bag (collection byId)', () => {
+        mount(() => {
+            colSlice = api.useTaskById({ listId: 'l1', id: 'b' })
+        })
+        fireCol({
+            a: { title: 'A', completed: false },
+            b: { title: 'B', completed: true },
+        })
+
+        // The path resolved from `listId`; the selector read `id` from the SAME
+        // bag and picked exactly doc 'b' (the collection injects each doc's id).
+        expect(colSlice.data).toEqual({ title: 'B', completed: true, id: 'b' })
+    })
+
+    it('returns the un-parameterized collection slice (ids)', () => {
+        mount(() => {
+            colSlice = api.useTaskIds({ listId: 'l1' })
+        })
+        fireCol({
+            a: { title: 'A', completed: false },
+            b: { title: 'B', completed: false },
+        })
+
+        expect(colSlice.data).toEqual(['a', 'b'])
+    })
+
+    it('gates re-renders with the comparator baked into the slice, not the default', () => {
+        // useListView bakes in an isEqual comparing only `name`. A snapshot that
+        // changes ONLY createdAt must NOT re-render — the default deep compare
+        // would — proving the baked-in comparator is what gates this hook.
+        mount(() => {
+            docSlice = api.useListView({ listId: 'l1' })
+        })
+        fireDoc({ name: 'a', createdAt: 1 })
+        const base = renders
+        expect(docSlice.data).toEqual({ name: 'a', createdAt: 1 })
+
+        // Only createdAt changes → collapsed by the baked comparator.
+        fireDoc({ name: 'a', createdAt: 2 })
+        expect(renders).toBe(base)
+        expect(docSlice.data).toEqual({ name: 'a', createdAt: 1 })
+
+        // name changes → re-render.
+        fireDoc({ name: 'b', createdAt: 2 })
+        expect(renders).toBe(base + 1)
+        expect(docSlice.data).toEqual({ name: 'b', createdAt: 2 })
+    })
+
+    it('forwards runtime options (enabled) to the underlying hook', () => {
+        // enabled:false → no subscription; the slice is the selector applied to
+        // the disabled state (data undefined), and there is no ref.
+        mount(() => {
+            docSlice = api.useListName({ listId: 'l1' }, { enabled: false })
+        })
+
+        expect(docSlice.data).toBeUndefined()
+        expect(docSlice.ref).toBeUndefined()
+    })
+})
+
+describe('createFirestate .select shares one subscription per resource', () => {
+    let store: FirestateStore
+    let h: Harness
+    let renderer: ReactTestRenderer | undefined
+
+    const ListSchema = z.object({ name: z.string(), n: z.number() })
+    const listDoc = doc({ path: 'lists/{listId}', schema: ListSchema })
+    // A base hook plus two slice-hooks, all derived from the SAME base entry.
+    // (Documents share by string key in this harness; the collection equivalent,
+    // which keys on semantic query identity, is covered in hooks.test.ts.)
+    const api = createFirestate({
+        list: listDoc,
+        listName: listDoc.select((s) => s.data?.name),
+        listN: listDoc.select((s) => s.data?.n),
+    })
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        h = createHarness()
+        store = createStore({ firestore: {} as never })
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderer?.unmount()
+        })
+        renderer = undefined
+        vi.useRealTimers()
+    })
+
+    const mount = (Probe: () => null): void => {
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+    }
+
+    const fireDoc = (data: { name: string; n: number } | null): void => {
+        act(() => {
+            h.fireDocSnapshot(data)
+            vi.runAllTimers()
+        })
+    }
+
+    it('attaches ONE listener for a base hook and its slice siblings', () => {
+        // Regression guard: each generated hook used to build its own definition
+        // object, and the shared registry keys by definition identity — so base +
+        // two slices forked one onSnapshot listener PER hook on a single
+        // resource. createFirestate now memoizes the definition per base entry,
+        // so they collapse to one.
+        const Probe = (): null => {
+            api.useList({ listId: 'l1' })
+            api.useListName({ listId: 'l1' })
+            api.useListN({ listId: 'l1' })
+            return null
+        }
+        mount(Probe)
+        fireDoc({ name: 'A', n: 1 })
+
+        expect(h.listeners().length).toBe(1)
+    })
+
+    it('makes an optimistic write through one hook instantly visible to a sibling', () => {
+        // The semantic half of sharing: a write through the base handle hits the
+        // SAME optimistic state the slice reads, so the sibling sees it WITHOUT a
+        // server snapshot. Separate subscriptions would not.
+        let full: DocumentHandle<{ name: string; n: number }> | undefined
+        let nameSlice:
+            | SelectedDocumentHandle<{ name: string; n: number }, unknown>
+            | undefined
+        const Probe = (): null => {
+            full = api.useList({ listId: 'l1' })
+            nameSlice = api.useListName({ listId: 'l1' })
+            return null
+        }
+        mount(Probe)
+        fireDoc({ name: 'A', n: 1 })
+        expect(nameSlice!.data).toBe('A')
+
+        act(() => {
+            full!.update({ name: 'B' })
+        })
+
+        // No snapshot fired — visibility proves shared optimistic state.
+        expect(nameSlice!.data).toBe('B')
+    })
+})
+
 // Compile-time contract checks (never executed; validated by `tsc --noEmit`).
-// They assert the overloads narrow `data` while keeping writers on the full
-// type, and that the registry hooks expose the same overloads.
+// They assert the overloads narrow `data` to the selector's output while keeping
+// writers on the full type, and that the registry hooks expose the same
+// overloads. A selected handle has NO status fields — see the `@ts-expect-error`
+// guards below.
 export function _typeChecks(): void {
     const fullDef = defineDocument<Doc>({ collection: 'd', id: 'x' })
 
     const full = useDocument({ definition: fullDef })
     const fullData: Doc | undefined = full.data
+    const fullLoading: boolean = full.isLoading
     void fullData
+    void fullLoading
 
     const sliced = useDocument({
         definition: fullDef,
-        selector: (d) => d?.name ?? '',
+        selector: (s) => s.data?.name ?? '',
     })
     const slice: string = sliced.data
     void slice
     // Writer still takes a full-document diff:
     sliced.update({ age: 1 })
+    // A selected handle drops the status fields — reading them is a type error.
+    // @ts-expect-error isSynced is not on a selected handle
+    void sliced.isSynced
 
     const api = createFirestate({
         thing: doc({
@@ -531,7 +857,10 @@ export function _typeChecks(): void {
     const h1 = api.useThing({ thingId: 't' })
     const n: string = h1.data!.name
     void n
-    const h2 = api.useThing({ thingId: 't' }, { selector: (t) => t?.age ?? 0 })
+    const h2 = api.useThing(
+        { thingId: 't' },
+        { selector: (s) => s.data?.age ?? 0 }
+    )
     const age: number = h2.data
     void age
     h2.update({ name: 'y' })

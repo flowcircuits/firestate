@@ -488,3 +488,121 @@ describe('col — function path', () => {
         )
     })
 })
+
+describe('.select derives a named slice entry', () => {
+    it('produces a document-selected entry that reuses the base (schema handed once)', () => {
+        const base = doc({ path: 'taskLists/{listId}', schema: tlSchema })
+        const derived = base.select((s) => s.data?.name)
+
+        expect(derived.__kind).toBe('document-selected')
+        // The derived entry points back at the SAME base object — the schema and
+        // path live there and are never re-specified per slice.
+        expect(derived.base).toBe(base)
+        expect(derived.base.schema).toBe(tlSchema)
+        expect(typeof derived.selector).toBe('function')
+    })
+
+    it('produces a collection-selected entry and carries the baked-in comparator', () => {
+        const base = col({ path: 'taskLists/{listId}/tasks', schema: taskSchema })
+        const cmp = (a: string[], b: string[]): boolean => a.length === b.length
+        const derived = base.select((s) => Object.keys(s.data), { isEqual: cmp })
+
+        expect(derived.__kind).toBe('collection-selected')
+        expect(derived.base).toBe(base)
+        // Comparator is baked into the entry, not passed at the call site.
+        expect(derived.isEqual).toBe(cmp)
+    })
+})
+
+describe('type-level .select param threading', () => {
+    // tsc validates these; vitest only confirms the wrapper exists. Each
+    // `@ts-expect-error` fails the build if the line below does NOT error.
+    it('merges path params with selector params and drops status from the slice handle', () => {
+        function _typeTest(): void {
+            const listDoc = doc({ path: 'taskLists/{listId}', schema: tlSchema })
+            const tasksCol = col({
+                path: 'taskLists/{listId}/tasks',
+                schema: taskSchema,
+            })
+
+            const api = createFirestate({
+                // base hooks (full handle) coexist with derived slice hooks…
+                list: listDoc,
+                tasks: tasksCol,
+                // …all as flat siblings, named by their registry key.
+                listName: listDoc.select((s) => s.data?.name),
+                taskIds: tasksCol.select((s) => Object.keys(s.data)),
+                taskById: tasksCol.select((s, p: { id: string }) => s.data[p.id]),
+            })
+
+            // Un-parameterized doc slice: only the path param is required.
+            const name: string | undefined = api.useListName({ listId: 'l1' }).data
+            void name
+
+            // Parameterized collection slice: the path param AND the selector's
+            // own param, merged into one bag.
+            const handle = api.useTaskById({ listId: 'l1', id: 't1' })
+            const task: Task | undefined = handle.data
+            void task
+            // Writers stay typed against the FULL collection (keyed by id), not
+            // the slice — selecting one doc never narrows what you can write.
+            handle.update({ t1: { completed: true } })
+            // A selected handle drops the status fields.
+            // @ts-expect-error isSynced is not on a selected handle
+            void handle.isSynced
+
+            // Missing the selector param → error.
+            // @ts-expect-error `id` is required by the selector
+            api.useTaskById({ listId: 'l1' })
+            // Missing the path param → error.
+            // @ts-expect-error `listId` is required by the path template
+            api.useTaskById({ id: 't1' })
+
+            // The ids slice is a string[].
+            const ids: string[] = api.useTaskIds({ listId: 'l1' }).data
+            void ids
+
+            // Base hooks are unchanged — the full keyed record.
+            const full: Record<string, Task> = api.useTasks({ listId: 'l1' }).data
+            void full
+
+            // Runtime options pass through; selector/isEqual are NOT call-site
+            // options (they're baked into the named hook).
+            api.useListName({ listId: 'l1' }, { enabled: false })
+            // @ts-expect-error selector is baked in, not passed per call
+            api.useListName({ listId: 'l1' }, { selector: (s) => s.data?.name })
+
+            // No-placeholder path + un-parameterized selector → NO args required.
+            // Regression guard: PExtra must default to `{}`, not resolve to its
+            // old `Record<string, string>` constraint (which wrongly forced a
+            // params arg here).
+            const settings = col({ path: 'settings', schema: taskSchema })
+            const settingsApi = createFirestate({
+                settings,
+                settingIds: settings.select((s) => Object.keys(s.data)),
+            })
+            settingsApi.useSettings()
+            const settingIds: string[] = settingsApi.useSettingIds().data
+            void settingIds
+
+            // A non-string selector param is allowed (PExtra is unconstrained),
+            // and the merged bag type-checks it.
+            const things2 = col({ path: 'things2', schema: taskSchema })
+            const idxApi = createFirestate({
+                things2,
+                byIndex: things2.select(
+                    (s, p: { index: number }) => Object.values(s.data)[p.index]
+                ),
+            })
+            idxApi.useByIndex({ index: 0 })
+            // @ts-expect-error index must be a number, not a string
+            idxApi.useByIndex({ index: 'nope' })
+
+            // No chaining: a derived entry is a leaf, not a base.
+            // @ts-expect-error cannot .select() a selected entry
+            void listDoc.select((s) => s.data?.name).select
+        }
+        void _typeTest
+        expect(true).toBe(true)
+    })
+})

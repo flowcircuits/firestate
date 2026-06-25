@@ -35,7 +35,7 @@ import { useDocument, FirestateContext } from './hooks'
 import { getDocumentShared } from '../core/shared-subscription'
 import { defineDocument } from '../registry/schema'
 import { createStore, type FirestateStore } from '../core/store'
-import type { DocumentHandle, FirestoreObject } from '../types'
+import type { DocumentHandle, DocumentState, FirestoreObject } from '../types'
 
 interface Doc extends FirestoreObject {
     name?: string
@@ -72,7 +72,7 @@ describe('shared document subscriptions', () => {
         tag: string
         id?: string
         readOnly?: boolean
-        selector?: (d: Doc | undefined) => unknown
+        selector?: (s: DocumentState<Doc>) => unknown
     }): null => {
         renders[props.tag] = (renders[props.tag] ?? 0) + 1
         handles[props.tag] = useDocument({
@@ -147,7 +147,7 @@ describe('shared document subscriptions', () => {
         // subscription; a write to an unselected field collapses the selector
         // reader's render but still reaches the full reader.
         mountProbe({ tag: 'full' })
-        mountProbe({ tag: 'name', selector: (d) => d?.name })
+        mountProbe({ tag: 'name', selector: (s) => s.data?.name })
         fire({ name: 'x', age: 1 })
 
         const nameRendersBefore = renders.name

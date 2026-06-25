@@ -45,6 +45,8 @@ import {
 } from 'firebase/firestore'
 import { useCollection, FirestateContext } from './hooks'
 import { defineCollection } from '../registry/schema'
+import { createFirestate, col } from '../registry/firestate'
+import { z } from 'zod'
 import { createStore, type FirestateStore } from '../core/store'
 import type { CollectionHandle, FirestoreObject } from '../types'
 
@@ -524,5 +526,66 @@ describe('shared collection subscriptions', () => {
         })
         expect(handles.a!.data.ws1?.name).toBe('Station 1')
         expect(handles.b!.data.ws1?.name).toBe('Station 1')
+    })
+})
+
+describe('createFirestate .select shares one collection listener (real queries)', () => {
+    let store: FirestateStore
+    let renderer: ReactTestRenderer | undefined
+    let listeners: Array<{ unsubscribe: ReturnType<typeof vi.fn> }>
+    const onSnapshotMock = onSnapshot as unknown as ReturnType<typeof vi.fn>
+
+    const ThingSchema = z.object({ title: z.string() })
+    // Base + two slices off the SAME base entry, all on one collection path.
+    const things = col({ path: 'things', schema: ThingSchema })
+    const api = createFirestate({
+        things,
+        thingById: things.select((s, p: { id: string }) => s.data[p.id]),
+        thingIds: things.select((s) => Object.keys(s.data)),
+    })
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        store = createStore({ firestore })
+        listeners = []
+        onSnapshotMock.mockImplementation(() => {
+            const unsubscribe = vi.fn()
+            listeners.push({ unsubscribe })
+            return unsubscribe
+        })
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderer?.unmount()
+        })
+        renderer = undefined
+        vi.useRealTimers()
+    })
+
+    it('attaches ONE listener for a base hook and its slice siblings on one collection', () => {
+        // Unlike the mocked-query suites, this uses real query/queryEqual: the
+        // base hook and both slice-hooks (same definition, same no-constraint
+        // query) resolve ONE shared entry → one onSnapshot. Pre-fix, each
+        // generated hook built its own definition object and forked one listener
+        // apiece — three for this one collection.
+        const Probe = (): null => {
+            api.useThings()
+            api.useThingById({ id: 'a' })
+            api.useThingIds()
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+
+        expect(listeners.length).toBe(1)
     })
 })

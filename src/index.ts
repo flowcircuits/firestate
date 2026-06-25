@@ -45,6 +45,10 @@ export { createFirestate, doc, col } from './registry/firestate'
 export type {
     DocEntry,
     ColEntry,
+    SelectedDocEntry,
+    SelectedColEntry,
+    SelectOptions,
+    AnySelectedEntry,
     FirestateEntry,
     FirestateRegistry,
     FirestateApi,
