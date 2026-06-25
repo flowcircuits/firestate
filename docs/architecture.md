@@ -56,15 +56,25 @@ divergent copies, and a write through one would not be visible to the other.
 The registry is scoped per `FirestateStore` (a `WeakMap`) and, within that, per
 *definition* object. A resource is keyed by:
 
-- documents: `(resolved collection path, doc id, readOnly)` — a plain string key;
-- collections: `(resolved collection path, readOnly)` plus *semantic query
-  identity*. Distinct queries on one path coexist as separate entries and are
-  matched with Firestore's `queryEqual`, so two hooks whose `queryConstraints`
-  arrays differ by reference but build the same query share one listener.
+- documents: `(resolved collection path, doc id)` — a plain string key;
+- collections: `(resolved collection path)` plus *semantic query identity*.
+  Distinct queries on one path coexist as separate entries and are matched with
+  Firestore's `queryEqual`, so two hooks whose `queryConstraints` arrays differ
+  by reference but build the same query share one listener.
 
 Keying by definition (not just the path string) means two distinct definitions
 that happen to resolve to the same path keep independent subscriptions — their
-schema, autosave, or `readOnly` config may differ.
+schema or autosave config may differ.
+
+`readOnly` is deliberately **not** part of the key. It is a per-handle
+capability over the shared state, not a state fork: a writable hook (the typical
+provider, and the sole writer) and any number of `readOnly: true` hooks (leaves
+that only read-select) resolve the *same* entry, so a write through the writable
+handle is instantly visible to every read-only reader. The shared subscription
+is always built writable; a read-only facade neuters only its own handle's
+writers and `sync` (`load` and reads pass through) and leaves the shared
+`undoable` flag untouched. A hook can pass `readOnly: false` to opt back into
+writing a read-only-by-default definition off the same shared state.
 
 Lifecycle is ref-counted and lazy:
 

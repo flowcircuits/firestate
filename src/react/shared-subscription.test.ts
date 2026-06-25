@@ -9,11 +9,12 @@
  * activation and tears down only when the last subscriber unmounts; a fresh
  * mount afterwards starts a new subscription.
  *
- * Document identity is a string key (path + id + readOnly), so these tests drive
- * the deterministic harness (which mocks the query builders). Collection sharing
- * keys on semantic *query* identity via `queryEqual`, which needs real Query
- * objects — those tests live in `hooks.test.ts`, where only `onSnapshot` is
- * mocked.
+ * Document identity is a string key (path + id), so these tests drive the
+ * deterministic harness (which mocks the query builders). `readOnly` is NOT part
+ * of that key — it is a per-handle capability over the shared state, exercised
+ * below. Collection sharing keys on semantic *query* identity via `queryEqual`,
+ * which needs real Query objects — those tests live in `hooks.test.ts`, where
+ * only `onSnapshot` is mocked.
  */
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 
@@ -70,12 +71,14 @@ describe('shared document subscriptions', () => {
     const Probe = (props: {
         tag: string
         id?: string
+        readOnly?: boolean
         selector?: (d: Doc | undefined) => unknown
     }): null => {
         renders[props.tag] = (renders[props.tag] ?? 0) + 1
         handles[props.tag] = useDocument({
             definition: docDef,
             params: { id: props.id ?? 'd1' },
+            readOnly: props.readOnly,
             // The render-counting probes pass a possibly-undefined selector,
             // which matches neither overload cleanly — cast through.
             selector: props.selector,
@@ -182,6 +185,49 @@ describe('shared document subscriptions', () => {
 
         // Different doc ids → different keys → two listeners, not shared.
         expect(h.listeners()).toHaveLength(2)
+    })
+
+    it('shares one listener and state across a writable and a read-only hook', () => {
+        // The motivating case: a writable "provider" (sole writer) and a
+        // read-only "leaf" on the same document. readOnly is a per-handle
+        // capability, not a state fork — both resolve ONE listener and ONE
+        // optimistic state, so a write through the writer is instantly visible
+        // to the read-only reader.
+        mountProbe({ tag: 'writer' })
+        mountProbe({ tag: 'reader', readOnly: true })
+
+        // readOnly is not part of the share key → one listener for both.
+        expect(h.listeners()).toHaveLength(1)
+
+        fire({ name: 'x', age: 1 })
+        expect(handles.writer!.data).toEqual({ name: 'x', age: 1 })
+        expect(handles.reader!.data).toEqual({ name: 'x', age: 1 })
+
+        // Write through the writable handle (autosave: 0 so it stays optimistic).
+        act(() => {
+            handles.writer!.update({ name: 'y' })
+        })
+        // The read-only leaf sees the optimistic edit immediately, including the
+        // unsynced status — same shared state.
+        expect(handles.reader!.data).toEqual({ name: 'y', age: 1 })
+        expect(handles.reader!.isSynced).toBe(false)
+    })
+
+    it('neuters writers on a read-only handle without forking state', () => {
+        mountProbe({ tag: 'writer' })
+        mountProbe({ tag: 'reader', readOnly: true })
+        fire({ name: 'x', age: 1 })
+
+        // update/set/delete on the read-only handle are no-ops: the shared
+        // state is untouched and stays synced.
+        act(() => {
+            handles.reader!.update({ name: 'z' })
+            handles.reader!.set({ name: 'z', age: 9 })
+            handles.reader!.delete()
+        })
+        expect(handles.writer!.data).toEqual({ name: 'x', age: 1 })
+        expect(handles.reader!.data).toEqual({ name: 'x', age: 1 })
+        expect(handles.writer!.isSynced).toBe(true)
     })
 
     it('re-registers an evicted entry on re-acquire so siblings still share it', () => {

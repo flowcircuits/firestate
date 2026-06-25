@@ -306,10 +306,15 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
  * Hook to subscribe to a Firestore document with real-time updates.
  *
  * The subscription is keyed on the resolved document path (`definition` +
- * computed id) and `readOnly`. When that key changes — typically because
- * `params` produces a different id — the hook tears down the old Firestore
- * listener and attaches a new one. Toggling `undoable` does not rebuild the
- * subscription.
+ * computed id). When that key changes — typically because `params` produces a
+ * different id — the hook tears down the old Firestore listener and attaches a
+ * new one. Toggling `undoable` does not rebuild the subscription.
+ *
+ * `readOnly` is a *per-handle capability*, not part of the key: a `readOnly`
+ * hook shares the same listener and optimistic state as a writable hook on the
+ * same document (a write through the writable handle is instantly visible to
+ * the read-only reader), and only this handle's own writers (`update`/`set`/
+ * `delete`) and `sync` are disabled.
  *
  * Use `enabled: false` to suppress the subscription entirely (e.g., when
  * route params aren't ready yet).
@@ -536,10 +541,12 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
 /**
  * Hook to subscribe to a Firestore collection with real-time updates.
  *
- * The subscription is keyed on the resolved collection path, `readOnly`, and
- * the *semantic identity* of `queryConstraints`. When any of these change, the
- * listener is torn down and re-attached with the new query. Toggling
- * `undoable` does not rebuild the subscription.
+ * The subscription is keyed on the resolved collection path and the *semantic
+ * identity* of `queryConstraints`. When either changes, the listener is torn
+ * down and re-attached with the new query. Toggling `undoable` does not rebuild
+ * the subscription. `readOnly` is a per-handle capability, not part of the key —
+ * a `readOnly` hook shares one listener and optimistic state with a writable
+ * hook on the same query (see {@link useDocument}).
  *
  * **You do not need to memoize `queryConstraints`.** `QueryConstraint` objects
  * are opaque, so Firestate compares the *built query* with Firestore's own
