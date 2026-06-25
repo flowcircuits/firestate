@@ -65,6 +65,10 @@ test harness live in `src/__tests__/`.
   update, delete, sync, conflict rebase.
 - `src/core/collection.ts` - collection subscription, add, update, remove,
   batched sync, lazy loading.
+- `src/core/shared-subscription.ts` - per-store, per-definition registry that
+  ref-counts subscriptions keyed by `(path, doc id / query, readOnly)` so every
+  hook on the same resource shares one listener and one state. The hooks resolve
+  a shared instance through here instead of constructing their own.
 - `src/utils/diff.ts` - Firestore-aware diff, flattening, cloning, equality
   helpers.
 - `src/utils/undo.ts` - framework-agnostic undo manager.
@@ -109,8 +113,27 @@ Preserve these unless the task explicitly changes them.
   over-render. Methods/`ref` are read live from the subscription, not from the
   memoized selection, so a rebuilt subscription always surfaces its own methods
   even when the selected slice is value-equal.
-- Unmounting a subscription clears its autosave timer and unregisters its sync
-  state. Pending debounced edits are not automatically flushed on `stop()`.
+- Subscriptions are shared and ref-counted, keyed by `(definition, resolved
+  path, doc id / semantic query identity, readOnly)`. Every `useDocument` /
+  `useCollection` call for the same resource resolves the *same* underlying
+  subscription through `src/core/shared-subscription.ts`, so there is one
+  `onSnapshot` listener and one reconciled/optimistic state no matter how many
+  hooks (or selectors) read it — a write through any handle is instantly visible
+  to all of them. The listener attaches on the first `load()` and tears down
+  (the underlying `stop()`) only when the *last* subscriber unmounts; the entry
+  is then evicted, so a later mount starts a fresh subscription (a lazy
+  collection resets to `isActive: false`). Keying by definition object means two
+  distinct definitions that resolve to the same path keep independent
+  subscriptions. The lower-level `createDocumentSubscription` /
+  `createCollectionSubscription` remain unshared single instances for direct
+  (non-React) use.
+- Undo recording is a property of the shared subscription, not the individual
+  hook: its `onPushUndo` pushes to the store-global undo manager gated by a
+  shared `undoable` flag that co-mounted hooks keep in sync (last writer wins).
+  Per-call `update(diff, { undoable: false })` still suppresses a single entry.
+- Unmounting the last subscriber clears the shared autosave timer and
+  unregisters its sync state. Pending debounced edits are not automatically
+  flushed on `stop()`.
 - Undo actions are client-local. Grouped undo actions undo newest to oldest and
   redo oldest to newest.
 - Firestore updates use flattened diffs for `updateDoc`; full document

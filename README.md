@@ -21,6 +21,7 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 
 - **Zod schemas as the source of truth**: each document/collection is declared with a [Zod](https://zod.dev) schema; firestate infers the TypeScript type via `z.infer` and validates writes at runtime
 - **Real-time sync**: Automatic Firestore listeners with proper lifecycle management
+- **Shared subscriptions**: Every hook reading the same resource shares one listener and one state, ref-counted across mounts — a write through any handle is instantly visible everywhere
 - **Optimistic updates**: Changes reflect immediately, sync in background
 - **Conflict resolution**: Automatic rebasing when concurrent changes occur
 - **Undo/redo**: Built-in command pattern with action grouping
@@ -394,9 +395,11 @@ function App() {
 
 ### Pending edits on unmount
 
-Writes are debounced by `autosave` (default 1000 ms). If a component unmounts
-while there are unflushed local edits, those edits are dropped silently — the
-subscription is gone and the autosave timer is cleared. To handle this:
+Writes are debounced by `autosave` (default 1000 ms). The subscription is
+shared and ref-counted, so its state and autosave timer survive as long as any
+hook is still reading the resource. Only when the **last** reader unmounts with
+unflushed local edits are those edits dropped silently — the shared subscription
+is torn down and its autosave timer cleared. To handle this:
 
 - **Block navigation** with `useUnsavedChangesBlocker` (shown above) so users
   can't navigate away while writes are pending.
@@ -655,6 +658,12 @@ const { data: ids } = useCollection({
 
 Selectors do not need to be memoized; an inline selector is recomputed each
 render but only triggers a re-render when its result changes per `isEqual`.
+
+Selectors compose cleanly across components because subscriptions are shared:
+every hook reading the same resource (same definition, path, query, and
+`readOnly`) shares one Firestore listener and one reconciled state, so many
+components each selecting a different slice cost a single listener. A write
+through any handle is observed by all of them.
 
 #### `useUndoManager()`
 

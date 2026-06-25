@@ -320,3 +320,170 @@ describe('useCollection queryConstraints identity', () => {
         ).toBe(true)
     })
 })
+
+/**
+ * Shared, ref-counted collection subscriptions keyed by (path, query).
+ *
+ * Contract: hooks whose queries are `queryEqual` share ONE listener and ONE
+ * state, even with fresh constraint arrays; a write through one handle is
+ * instantly visible to the others; the listener is ref-counted (attaches once,
+ * tears down only when the last subscriber unmounts) and lazy `load()` from any
+ * handle activates the one shared listener. Collection identity is *semantic
+ * query* identity, so these tests use real `query`/`queryEqual` (only
+ * `onSnapshot` is mocked).
+ */
+describe('shared collection subscriptions', () => {
+    let store: FirestateStore
+    const renderers: ReactTestRenderer[] = []
+    let listeners: Array<{
+        deliver: (snapshot: MockSnapshot) => void
+        unsubscribe: ReturnType<typeof vi.fn>
+    }>
+    let handles: Record<string, CollectionHandle<Station>>
+
+    const onSnapshotMock = onSnapshot as unknown as ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        store = createStore({ firestore, autosave: 0 })
+        listeners = []
+        handles = {}
+        onSnapshotMock.mockImplementation(
+            (_query: unknown, onNext: (snapshot: MockSnapshot) => void) => {
+                const unsubscribe = vi.fn()
+                listeners.push({ deliver: onNext, unsubscribe })
+                return unsubscribe
+            }
+        )
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderers.splice(0).forEach((r) => r.unmount())
+        })
+        vi.useRealTimers()
+    })
+
+    const Probe = ({
+        tag,
+        queryConstraints,
+        definition = stationsCollection,
+    }: {
+        tag: string
+        queryConstraints?: QueryConstraint[]
+        definition?: typeof stationsCollection
+    }) => {
+        handles[tag] = useCollection({ definition, queryConstraints })
+        return null
+    }
+
+    const mountProbe = (props: Parameters<typeof Probe>[0]): ReactTestRenderer => {
+        let renderer!: ReactTestRenderer
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe, props)
+                )
+            )
+        })
+        renderers.push(renderer)
+        return renderer
+    }
+
+    const constraintsFor = (ids: string[]): QueryConstraint[] => [
+        where(documentId(), 'in', ids),
+    ]
+
+    const snapshot: MockSnapshot = {
+        docs: [{ id: 'ws1', data: () => ({ name: 'Station 1' }) }],
+    }
+
+    it('shares one listener across semantically-equal queries (fresh arrays)', () => {
+        const ids = ['ws1', 'ws2']
+        // Two hooks, two brand-new constraint arrays that build the same query.
+        mountProbe({ tag: 'a', queryConstraints: constraintsFor(ids) })
+        mountProbe({ tag: 'b', queryConstraints: constraintsFor([...ids]) })
+
+        // One listener for both — keyed on query identity, not array reference.
+        expect(onSnapshotMock).toHaveBeenCalledTimes(1)
+        expect(listeners).toHaveLength(1)
+
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+
+        // The single snapshot reached both hooks.
+        expect(handles.a!.data.ws1?.name).toBe('Station 1')
+        expect(handles.b!.data.ws1?.name).toBe('Station 1')
+    })
+
+    it('keeps genuinely different queries on independent listeners', () => {
+        mountProbe({ tag: 'a', queryConstraints: constraintsFor(['ws1']) })
+        mountProbe({ tag: 'b', queryConstraints: constraintsFor(['ws2']) })
+
+        expect(onSnapshotMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('makes a write through one handle visible to the other', () => {
+        const ids = ['ws1', 'ws2']
+        mountProbe({ tag: 'a', queryConstraints: constraintsFor(ids) })
+        mountProbe({ tag: 'b', queryConstraints: constraintsFor([...ids]) })
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+
+        act(() => {
+            handles.a!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
+        })
+
+        // Optimistic add is shared state — the other handle sees it at once.
+        expect(handles.b!.data.ws9?.name).toBe('Added')
+        expect(handles.a!.isSynced).toBe(false)
+        expect(handles.b!.isSynced).toBe(false)
+    })
+
+    it('ref-counts the listener: torn down only when the last hook unmounts', () => {
+        const ids = ['ws1', 'ws2']
+        const r1 = mountProbe({ tag: 'a', queryConstraints: constraintsFor(ids) })
+        const r2 = mountProbe({ tag: 'b', queryConstraints: constraintsFor([...ids]) })
+        expect(listeners).toHaveLength(1)
+        const { unsubscribe } = listeners[0]!
+
+        act(() => r1.unmount())
+        expect(unsubscribe).not.toHaveBeenCalled()
+
+        act(() => r2.unmount())
+        expect(unsubscribe).toHaveBeenCalledTimes(1)
+    })
+
+    it('lazily activates one shared listener via load() from any handle', () => {
+        // Two lazy hooks: no listener until someone calls load().
+        mountProbe({ tag: 'a', definition: lazyStationsCollection })
+        mountProbe({ tag: 'b', definition: lazyStationsCollection })
+        expect(onSnapshotMock).not.toHaveBeenCalled()
+        expect(handles.a!.isActive).toBe(false)
+        expect(handles.b!.isActive).toBe(false)
+
+        // load() through one handle activates the single shared listener; the
+        // other handle observes the activation too.
+        act(() => {
+            handles.a!.load()
+            vi.runAllTimers()
+        })
+        expect(onSnapshotMock).toHaveBeenCalledTimes(1)
+        expect(handles.a!.isActive).toBe(true)
+        expect(handles.b!.isActive).toBe(true)
+
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+        expect(handles.a!.data.ws1?.name).toBe('Station 1')
+        expect(handles.b!.data.ws1?.name).toBe('Station 1')
+    })
+})

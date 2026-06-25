@@ -1,35 +1,39 @@
 import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
-import { useSyncExternalStoreWithSelector } from "use-sync-external-store/shim/with-selector";
-import { collection, queryEqual } from "firebase/firestore";
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useSyncExternalStore,
+} from 'react'
+import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/with-selector'
+import { collection, queryEqual } from 'firebase/firestore'
 import type {
-  CollectionReference,
-  Firestore,
-  QueryConstraint,
-} from "firebase/firestore";
+    CollectionReference,
+    Firestore,
+    Query,
+    QueryConstraint,
+} from 'firebase/firestore'
 import type {
-  CollectionDefinition,
-  CollectionHandle,
-  DocumentDefinition,
-  DocumentHandle,
-  FirestoreObject,
-  SelectedCollectionHandle,
-  SelectedDocumentHandle,
-  UndoManager,
-  UndoManagerState,
-  UpdateOptions,
-} from "../types";
-import { valuesEqualForNoOp } from "../utils/diff";
-import type { FirestateStore } from "../core/store";
-import { createDocumentSubscription } from "../core/document";
-import { buildCollectionQuery, createCollectionSubscription } from "../core/collection";
+    CollectionDefinition,
+    CollectionHandle,
+    DocumentDefinition,
+    DocumentHandle,
+    FirestoreObject,
+    SelectedCollectionHandle,
+    SelectedDocumentHandle,
+    UndoManager,
+    UndoManagerState,
+} from '../types'
+import { valuesEqualForNoOp } from '../utils/diff'
+import type { FirestateStore } from '../core/store'
+import { buildCollectionQuery } from '../core/collection'
+import {
+    buildSharedCollectionQuery,
+    getCollectionShared,
+    getDocumentShared,
+} from '../core/shared-subscription'
 
 /**
  * Whether two hook-level `queryConstraints` arrays produce the same Firestore
@@ -51,23 +55,23 @@ import { buildCollectionQuery, createCollectionSubscription } from "../core/coll
  * carry such a placeholder before `load()` attaches any listener.
  */
 const queryConstraintsEqual = (
-  firestore: Firestore,
-  collectionPath: string,
-  definitionConstraints: QueryConstraint[] | undefined,
-  a: QueryConstraint[] | undefined,
-  b: QueryConstraint[] | undefined
+    firestore: Firestore,
+    collectionPath: string,
+    definitionConstraints: QueryConstraint[] | undefined,
+    a: QueryConstraint[] | undefined,
+    b: QueryConstraint[] | undefined
 ): boolean => {
-  if (a === b) return true;
-  const ref = collection(firestore, collectionPath) as CollectionReference;
-  try {
-    return queryEqual(
-      buildCollectionQuery(ref, definitionConstraints, a),
-      buildCollectionQuery(ref, definitionConstraints, b)
-    );
-  } catch {
-    return false;
-  }
-};
+    if (a === b) return true
+    const ref = collection(firestore, collectionPath) as CollectionReference
+    try {
+        return queryEqual(
+            buildCollectionQuery(ref, definitionConstraints, a),
+            buildCollectionQuery(ref, definitionConstraints, b)
+        )
+    } catch {
+        return false
+    }
+}
 
 /**
  * Returned when a hook is called with `enabled: false`. Module-level constants
@@ -75,41 +79,41 @@ const queryConstraintsEqual = (
  * re-render. Cast at the call site to the generic handle type — every method
  * is a no-op so the cast is sound.
  */
-const NOOP = () => {};
-const ASYNC_NOOP = async () => {};
-const EMPTY_RECORD: Record<string, never> = {};
+const NOOP = () => {}
+const ASYNC_NOOP = async () => {}
+const EMPTY_RECORD: Record<string, never> = {}
 
 const DISABLED_DOCUMENT_HANDLE: DocumentHandle<FirestoreObject> = {
-  data: undefined,
-  update: NOOP,
-  set: NOOP,
-  delete: NOOP,
-  isLoading: false,
-  isSynced: true,
-  sync: ASYNC_NOOP,
-  error: undefined,
-  ref: undefined,
-};
+    data: undefined,
+    update: NOOP,
+    set: NOOP,
+    delete: NOOP,
+    isLoading: false,
+    isSynced: true,
+    sync: ASYNC_NOOP,
+    error: undefined,
+    ref: undefined,
+}
 
 // The disabled add() satisfies both overloads but performs no work and
 // returns undefined to match the bail-path contract from collection.ts.
 // Consumers using `enabled: false` should not be calling mutation methods
 // on the disabled handle.
-const DISABLED_ADD = () => undefined;
+const DISABLED_ADD = () => undefined
 
 const DISABLED_COLLECTION_HANDLE: CollectionHandle<FirestoreObject> = {
-  data: EMPTY_RECORD,
-  update: NOOP,
-  add: DISABLED_ADD,
-  remove: NOOP,
-  isLoading: false,
-  isSynced: true,
-  isActive: false,
-  load: NOOP,
-  sync: ASYNC_NOOP,
-  error: undefined,
-  ref: undefined,
-};
+    data: EMPTY_RECORD,
+    update: NOOP,
+    add: DISABLED_ADD,
+    remove: NOOP,
+    isLoading: false,
+    isSynced: true,
+    isActive: false,
+    load: NOOP,
+    sync: ASYNC_NOOP,
+    error: undefined,
+    ref: undefined,
+}
 
 /**
  * Opts a {@link useDocument} call into a selected slice. The hook still returns
@@ -117,24 +121,24 @@ const DISABLED_COLLECTION_HANDLE: CollectionHandle<FirestoreObject> = {
  * `selector` returns.
  */
 export interface DocumentSelectorOptions<
-  TData extends FirestoreObject,
-  TSelected
+    TData extends FirestoreObject,
+    TSelected,
 > {
-  /**
-   * Project the document data down to the slice this component depends on. The
-   * component then re-renders only when that slice changes (per `isEqual`),
-   * not on every field of the document. Receives `undefined` while the
-   * document is loading or the hook is disabled.
-   */
-  selector: (data: TData | undefined) => TSelected;
-  /**
-   * Decide whether two consecutive slices are equal; the hook re-renders only
-   * when this returns `false`. Defaults to a deep value comparison, so a
-   * selector that returns a fresh object/array of the same shape does not
-   * over-render. Pass {@link shallow} for a one-level compare, or a custom
-   * comparator.
-   */
-  isEqual?: (a: TSelected, b: TSelected) => boolean;
+    /**
+     * Project the document data down to the slice this component depends on. The
+     * component then re-renders only when that slice changes (per `isEqual`),
+     * not on every field of the document. Receives `undefined` while the
+     * document is loading or the hook is disabled.
+     */
+    selector: (data: TData | undefined) => TSelected
+    /**
+     * Decide whether two consecutive slices are equal; the hook re-renders only
+     * when this returns `false`. Defaults to a deep value comparison, so a
+     * selector that returns a fresh object/array of the same shape does not
+     * over-render. Pass {@link shallow} for a one-level compare, or a custom
+     * comparator.
+     */
+    isEqual?: (a: TSelected, b: TSelected) => boolean
 }
 
 /**
@@ -143,16 +147,16 @@ export interface DocumentSelectorOptions<
  * the collection's keyed record.
  */
 export interface CollectionSelectorOptions<
-  TData extends FirestoreObject,
-  TSelected
+    TData extends FirestoreObject,
+    TSelected,
 > {
-  /**
-   * Project the keyed collection record down to the slice this component
-   * depends on (e.g. `data => data[id]` or `data => Object.values(data).length`).
-   */
-  selector: (data: Record<string, TData>) => TSelected;
-  /** See {@link DocumentSelectorOptions.isEqual}. */
-  isEqual?: (a: TSelected, b: TSelected) => boolean;
+    /**
+     * Project the keyed collection record down to the slice this component
+     * depends on (e.g. `data => data[id]` or `data => Object.values(data).length`).
+     */
+    selector: (data: Record<string, TData>) => TSelected
+    /** See {@link DocumentSelectorOptions.isEqual}. */
+    isEqual?: (a: TSelected, b: TSelected) => boolean
 }
 
 /**
@@ -160,7 +164,7 @@ export interface CollectionSelectorOptions<
  * so passing a real `selector` falls through to the selector overload (which
  * infers `TSelected`) instead of silently resolving to the full-data return.
  */
-type WithoutSelector = { selector?: undefined; isEqual?: undefined };
+type WithoutSelector = { selector?: undefined; isEqual?: undefined }
 
 /**
  * The projection `useSyncExternalStoreWithSelector` memoizes and diffs to drive
@@ -176,11 +180,11 @@ type WithoutSelector = { selector?: undefined; isEqual?: undefined };
  * `load()`/`update()` — e.g. firing against torn-down, empty-`in` constraints.
  */
 interface ObservableSelection<TSelected> {
-  data: TSelected;
-  isLoading: boolean;
-  isSynced: boolean;
-  error: Error | undefined;
-  isActive?: boolean;
+    data: TSelected
+    isLoading: boolean
+    isSynced: boolean
+    error: Error | undefined
+    isActive?: boolean
 }
 
 /**
@@ -191,111 +195,111 @@ interface ObservableSelection<TSelected> {
  * component does not re-render.
  */
 const selectionEqual = <TSelected>(
-  a: ObservableSelection<TSelected>,
-  b: ObservableSelection<TSelected>,
-  dataEqual: (a: TSelected, b: TSelected) => boolean
+    a: ObservableSelection<TSelected>,
+    b: ObservableSelection<TSelected>,
+    dataEqual: (a: TSelected, b: TSelected) => boolean
 ): boolean =>
-  a.isLoading === b.isLoading &&
-  a.isSynced === b.isSynced &&
-  a.error === b.error &&
-  a.isActive === b.isActive &&
-  dataEqual(a.data, b.data);
+    a.isLoading === b.isLoading &&
+    a.isSynced === b.isSynced &&
+    a.error === b.error &&
+    a.isActive === b.isActive &&
+    dataEqual(a.data, b.data)
 
 // Default slice comparison: the same value-based no-op compare the subscription
 // itself uses (`valuesEqualForNoOp`), so an identity selector reproduces the
 // pre-selector re-render behavior exactly, and a selector returning a fresh
 // object does not over-render.
 const defaultDataEqual = valuesEqualForNoOp as <TSelected>(
-  a: TSelected,
-  b: TSelected
-) => boolean;
+    a: TSelected,
+    b: TSelected
+) => boolean
 
 /**
  * Context for providing the Firestate store
  */
-export const FirestateContext = createContext<FirestateStore | null>(null);
+export const FirestateContext = createContext<FirestateStore | null>(null)
 
 /**
  * Hook to access the Firestate store
  */
 export const useStore = (): FirestateStore => {
-  const store = useContext(FirestateContext);
-  if (!store) {
-    throw new Error("useStore must be used within a FirestateProvider");
-  }
-  return store;
-};
+    const store = useContext(FirestateContext)
+    if (!store) {
+        throw new Error('useStore must be used within a FirestateProvider')
+    }
+    return store
+}
 
 /**
  * Hook to access the undo manager
  */
 export const useUndoManager = (): UndoManager => {
-  const store = useStore();
-  const { undoManager } = store;
+    const store = useStore()
+    const { undoManager } = store
 
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => undoManager.subscribe(onStoreChange),
-    [undoManager]
-  );
+    const subscribe = useCallback(
+        (onStoreChange: () => void) => undoManager.subscribe(onStoreChange),
+        [undoManager]
+    )
 
-  // Delegate to the manager's cached snapshot so getSnapshot returns a stable
-  // reference across React's multiple per-commit calls. Building the snapshot
-  // inline here would create a new object every call and trip the
-  // "getSnapshot should be cached" warning + an infinite re-render loop.
-  const getSnapshot = useCallback(
-    (): UndoManagerState => undoManager.getState(),
-    [undoManager]
-  );
+    // Delegate to the manager's cached snapshot so getSnapshot returns a stable
+    // reference across React's multiple per-commit calls. Building the snapshot
+    // inline here would create a new object every call and trip the
+    // "getSnapshot should be cached" warning + an infinite re-render loop.
+    const getSnapshot = useCallback(
+        (): UndoManagerState => undoManager.getState(),
+        [undoManager]
+    )
 
-  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+    const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
-  return useMemo(
-    () => ({
-      ...state,
-      push: undoManager.push,
-      undo: undoManager.undo,
-      redo: undoManager.redo,
-      clear: undoManager.clear,
-    }),
-    [state, undoManager]
-  );
-};
+    return useMemo(
+        () => ({
+            ...state,
+            push: undoManager.push,
+            undo: undoManager.undo,
+            redo: undoManager.redo,
+            clear: undoManager.clear,
+        }),
+        [state, undoManager]
+    )
+}
 
 /**
  * Hook to check if all tracked resources are synced
  */
 export const useIsSynced = (): boolean => {
-  const store = useStore();
+    const store = useStore()
 
-  const subscribe = useCallback(
-    (onChange: () => void) => store.subscribeToSyncState(() => onChange()),
-    [store]
-  );
+    const subscribe = useCallback(
+        (onChange: () => void) => store.subscribeToSyncState(() => onChange()),
+        [store]
+    )
 
-  const getSnapshot = useCallback(() => store.isSynced, [store]);
+    const getSnapshot = useCallback(() => store.isSynced, [store])
 
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-};
+    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
 
 /**
  * Options for useDocument hook
  */
 export interface UseDocumentOptions<TData extends FirestoreObject> {
-  /** Document definition from defineDocument() */
-  definition: DocumentDefinition<TData>;
-  /** Route/path parameters for dynamic paths */
-  params?: Record<string, string>;
-  /** Override read-only setting */
-  readOnly?: boolean;
-  /** Enable undo/redo for this document (default: true) */
-  undoable?: boolean;
-  /**
-   * If false, no subscription is created and a no-op handle is returned
-   * (`{ data: undefined, isLoading: false, isSynced: true, ref: undefined }`).
-   * Use this to gate subscriptions on route params that aren't ready yet.
-   * Default: true.
-   */
-  enabled?: boolean;
+    /** Document definition from defineDocument() */
+    definition: DocumentDefinition<TData>
+    /** Route/path parameters for dynamic paths */
+    params?: Record<string, string>
+    /** Override read-only setting */
+    readOnly?: boolean
+    /** Enable undo/redo for this document (default: true) */
+    undoable?: boolean
+    /**
+     * If false, no subscription is created and a no-op handle is returned
+     * (`{ data: undefined, isLoading: false, isSynced: true, ref: undefined }`).
+     * Use this to gate subscriptions on route params that aren't ready yet.
+     * Default: true.
+     */
+    enabled?: boolean
 }
 
 /**
@@ -340,8 +344,8 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
  * ```
  */
 export function useDocument<TData extends FirestoreObject>(
-  options: UseDocumentOptions<TData> & WithoutSelector
-): DocumentHandle<TData>;
+    options: UseDocumentOptions<TData> & WithoutSelector
+): DocumentHandle<TData>
 /**
  * Selector overload: pass `selector` to narrow the returned `data` to a slice
  * and re-render only when that slice changes. Writers (`update`/`set`/`delete`)
@@ -359,165 +363,174 @@ export function useDocument<TData extends FirestoreObject>(
  * ```
  */
 export function useDocument<TData extends FirestoreObject, TSelected>(
-  options: UseDocumentOptions<TData> & DocumentSelectorOptions<TData, TSelected>
-): SelectedDocumentHandle<TData, TSelected>;
+    options: UseDocumentOptions<TData> &
+        DocumentSelectorOptions<TData, TSelected>
+): SelectedDocumentHandle<TData, TSelected>
 export function useDocument<TData extends FirestoreObject, TSelected>(
-  options: UseDocumentOptions<TData> & {
-    selector?: (data: TData | undefined) => TSelected;
-    isEqual?: (a: TSelected, b: TSelected) => boolean;
-  }
+    options: UseDocumentOptions<TData> & {
+        selector?: (data: TData | undefined) => TSelected
+        isEqual?: (a: TSelected, b: TSelected) => boolean
+    }
 ): DocumentHandle<TData> | SelectedDocumentHandle<TData, TSelected> {
-  const {
-    definition,
-    params = {},
-    readOnly,
-    undoable = true,
-    enabled = true,
-    selector,
-    isEqual,
-  } = options;
-  const store = useStore();
-  const undoManager = store.undoManager;
+    const {
+        definition,
+        params = {},
+        readOnly,
+        undoable = true,
+        enabled = true,
+        selector,
+        isEqual,
+    } = options
+    const store = useStore()
 
-  // Hold the latest `undoable` in a ref so the onPushUndo callback can stay
-  // referentially stable. Without this, every undoable toggle would tear
-  // down the Firestore listener and re-attach it for no good reason.
-  const undoableRef = useRef(undoable);
-  undoableRef.current = undoable;
+    // Resolve the doc id and collection path at render time. When disabled we
+    // skip resolution — consumers commonly pass `enabled: false` precisely
+    // because params aren't ready and definition.id(params) would fail.
+    const docId = enabled
+        ? typeof definition.id === 'function'
+            ? definition.id(params)
+            : definition.id
+        : undefined
 
-  const onPushUndo = useCallback(
-    (undoAction: () => void, redoAction: () => void, opts?: UpdateOptions) => {
-      if (!undoableRef.current) return;
-      undoManager.push({
-        undo: undoAction,
-        redo: redoAction,
-        groupId: opts?.undoGroupId,
-      });
-    },
-    [undoManager]
-  );
+    const collectionPath = enabled
+        ? typeof definition.collection === 'function'
+            ? definition.collection(params)
+            : definition.collection
+        : undefined
 
-  // Resolve the doc id and collection path at render time. When disabled we
-  // skip resolution — consumers commonly pass `enabled: false` precisely
-  // because params aren't ready and definition.id(params) would fail.
-  const docId = enabled
-    ? typeof definition.id === "function"
-      ? definition.id(params)
-      : definition.id
-    : undefined;
+    // Resolve (or create) the shared subscription for this resource. Every hook
+    // targeting the same document shares one instance — and so one listener and
+    // one optimistic state — instead of building a private subscription. Created
+    // in render (no listener attached) so getSnapshot returns the real, live
+    // handle immediately, including its `ref`.
+    const shared = useMemo(
+        () =>
+            enabled && docId !== undefined && collectionPath !== undefined
+                ? getDocumentShared<TData>({
+                      store,
+                      definition,
+                      collectionPath,
+                      docId,
+                      readOnly,
+                  })
+                : null,
+        [enabled, store, definition, docId, collectionPath, readOnly]
+    )
 
-  const collectionPath = enabled
-    ? typeof definition.collection === "function"
-      ? definition.collection(params)
-      : definition.collection
-    : undefined;
+    // Keep the shared subscription's undo flag in sync without re-subscribing
+    // (toggling `undoable` must not tear the listener down). Last writer wins
+    // across co-mounted hooks; the common case is a single value per resource.
+    useEffect(() => {
+        shared?.setUndoable(undoable)
+    }, [shared, undoable])
 
-  const subscription = useMemo(
-    () =>
-      enabled && docId !== undefined && collectionPath !== undefined
-        ? createDocumentSubscription({
-            store,
-            definition,
-            docId,
-            collectionPath,
-            readOnly,
-            onPushUndo,
-          })
-        : null,
-    [enabled, store, definition, docId, collectionPath, readOnly, onPushUndo]
-  );
+    const subscribe = useCallback(
+        (onChange: () => void) => {
+            if (!shared) return NOOP
+            shared.setUndoable(undoable)
+            // Bump the shared ref count, register this hook's change callback, and
+            // activate the listener. Release tears the listener down only when this
+            // is the last lease (see shared-subscription.ts).
+            const release = shared.acquire(onChange)
+            // load() attaches the listener and can throw synchronously (e.g. an
+            // invalid ref). acquire() has already taken the lease, so release it
+            // before propagating — otherwise refCount sticks >=1, the entry is never
+            // evicted, and the callback/listener leak (a later sibling on the same
+            // key inherits the zombie entry).
+            try {
+                shared.load()
+            } catch (e) {
+                release()
+                throw e
+            }
+            return release
+        },
+        // `undoable` intentionally omitted: the effect above syncs it without
+        // resubscribing.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [shared]
+    )
 
-  const subscribe = useCallback(
-    (onChange: () => void) => {
-      if (!subscription) return NOOP;
-      const unsub = subscription.subscribe(() => onChange());
-      subscription.load();
-      return () => {
-        unsub();
-        subscription.stop();
-      };
-    },
-    [subscription]
-  );
+    const getSnapshot = useCallback(
+        () =>
+            shared
+                ? shared.getHandle()
+                : (DISABLED_DOCUMENT_HANDLE as DocumentHandle<TData>),
+        [shared]
+    )
 
-  const getSnapshot = useCallback(
-    () =>
-      subscription
-        ? subscription.getHandle()
-        : (DISABLED_DOCUMENT_HANDLE as DocumentHandle<TData>),
-    [subscription]
-  );
+    // Project the handle to the observable slice that drives re-renders. Keyed on
+    // `selector` so a referentially-new selector (e.g. one closing over a prop)
+    // re-projects; an inline selector still dedupes against the committed slice
+    // via `equal`, so callers need not memoize it.
+    const select = useCallback(
+        (handle: DocumentHandle<TData>): ObservableSelection<TSelected> => ({
+            data: (selector ? selector(handle.data) : handle.data) as TSelected,
+            isLoading: handle.isLoading,
+            isSynced: handle.isSynced,
+            error: handle.error,
+        }),
+        [selector]
+    )
 
-  // Project the handle to the observable slice that drives re-renders. Keyed on
-  // `selector` so a referentially-new selector (e.g. one closing over a prop)
-  // re-projects; an inline selector still dedupes against the committed slice
-  // via `equal`, so callers need not memoize it.
-  const select = useCallback(
-    (handle: DocumentHandle<TData>): ObservableSelection<TSelected> => ({
-      data: (selector ? selector(handle.data) : handle.data) as TSelected,
-      isLoading: handle.isLoading,
-      isSynced: handle.isSynced,
-      error: handle.error,
-    }),
-    [selector]
-  );
+    const equal = useCallback(
+        (
+            a: ObservableSelection<TSelected>,
+            b: ObservableSelection<TSelected>
+        ) => selectionEqual(a, b, isEqual ?? defaultDataEqual),
+        [isEqual]
+    )
 
-  const equal = useCallback(
-    (a: ObservableSelection<TSelected>, b: ObservableSelection<TSelected>) =>
-      selectionEqual(a, b, isEqual ?? defaultDataEqual),
-    [isEqual]
-  );
+    const selection = useSyncExternalStoreWithSelector(
+        subscribe,
+        getSnapshot,
+        getSnapshot,
+        select,
+        equal
+    )
 
-  const selection = useSyncExternalStoreWithSelector(
-    subscribe,
-    getSnapshot,
-    getSnapshot,
-    select,
-    equal
-  );
-
-  // Re-wrap into a full handle. Observable fields come from the memoized
-  // `selection`; methods and `ref` are read *live* from the current
-  // subscription so a rebuild always hands back the new subscription's methods,
-  // even when the selected slice was value-equal (see ObservableSelection).
-  return useMemo(() => {
-    const handle = subscription
-      ? subscription.getHandle()
-      : (DISABLED_DOCUMENT_HANDLE as DocumentHandle<TData>);
-    return {
-      data: selection.data,
-      update: handle.update,
-      set: handle.set,
-      delete: handle.delete,
-      isLoading: selection.isLoading,
-      isSynced: selection.isSynced,
-      sync: handle.sync,
-      error: selection.error,
-      ref: handle.ref,
-    };
-  }, [selection, subscription]);
+    // Re-wrap into a full handle. Observable fields come from the memoized
+    // `selection`; methods and `ref` are read *live* from the current shared
+    // subscription (via getSnapshot) so a rebuild always hands back the new
+    // subscription's methods, even when the selected slice was value-equal (see
+    // ObservableSelection). `getSnapshot` identity changes whenever the resource
+    // key does, which re-runs this memo.
+    return useMemo(() => {
+        const handle = getSnapshot()
+        return {
+            data: selection.data,
+            update: handle.update,
+            set: handle.set,
+            delete: handle.delete,
+            isLoading: selection.isLoading,
+            isSynced: selection.isSynced,
+            sync: handle.sync,
+            error: selection.error,
+            ref: handle.ref,
+        }
+    }, [selection, getSnapshot])
 }
 
 /**
  * Options for useCollection hook
  */
 export interface UseCollectionOptions<TData extends FirestoreObject> {
-  /** Collection definition from defineCollection() */
-  definition: CollectionDefinition<TData>;
-  /** Route/path parameters for dynamic paths */
-  params?: Record<string, string>;
-  /** Override read-only setting */
-  readOnly?: boolean;
-  /** Additional query constraints */
-  queryConstraints?: QueryConstraint[];
-  /** Enable undo/redo for this collection (default: true) */
-  undoable?: boolean;
-  /**
-   * If false, no subscription is created and a no-op handle is returned
-   * (`{ data: {}, isLoading: false, isActive: false }`). Use this to gate on
-   * route params that aren't ready yet. Default: true.
-   */
-  enabled?: boolean;
+    /** Collection definition from defineCollection() */
+    definition: CollectionDefinition<TData>
+    /** Route/path parameters for dynamic paths */
+    params?: Record<string, string>
+    /** Override read-only setting */
+    readOnly?: boolean
+    /** Additional query constraints */
+    queryConstraints?: QueryConstraint[]
+    /** Enable undo/redo for this collection (default: true) */
+    undoable?: boolean
+    /**
+     * If false, no subscription is created and a no-op handle is returned
+     * (`{ data: {}, isLoading: false, isActive: false }`). Use this to gate on
+     * route params that aren't ready yet. Default: true.
+     */
+    enabled?: boolean
 }
 
 /**
@@ -585,8 +598,8 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * ```
  */
 export function useCollection<TData extends FirestoreObject>(
-  options: UseCollectionOptions<TData> & WithoutSelector
-): CollectionHandle<TData>;
+    options: UseCollectionOptions<TData> & WithoutSelector
+): CollectionHandle<TData>
 /**
  * Selector overload: pass `selector` to narrow the returned `data` to a slice
  * of the collection and re-render only when that slice changes. Writers
@@ -604,182 +617,203 @@ export function useCollection<TData extends FirestoreObject>(
  * ```
  */
 export function useCollection<TData extends FirestoreObject, TSelected>(
-  options: UseCollectionOptions<TData> &
-    CollectionSelectorOptions<TData, TSelected>
-): SelectedCollectionHandle<TData, TSelected>;
+    options: UseCollectionOptions<TData> &
+        CollectionSelectorOptions<TData, TSelected>
+): SelectedCollectionHandle<TData, TSelected>
 export function useCollection<TData extends FirestoreObject, TSelected>(
-  options: UseCollectionOptions<TData> & {
-    selector?: (data: Record<string, TData>) => TSelected;
-    isEqual?: (a: TSelected, b: TSelected) => boolean;
-  }
+    options: UseCollectionOptions<TData> & {
+        selector?: (data: Record<string, TData>) => TSelected
+        isEqual?: (a: TSelected, b: TSelected) => boolean
+    }
 ): CollectionHandle<TData> | SelectedCollectionHandle<TData, TSelected> {
-  const {
-    definition,
-    params = {},
-    readOnly,
-    queryConstraints,
-    undoable = true,
-    enabled = true,
-    selector,
-    isEqual,
-  } = options;
-  const store = useStore();
-  const undoManager = store.undoManager;
+    const {
+        definition,
+        params = {},
+        readOnly,
+        queryConstraints,
+        undoable = true,
+        enabled = true,
+        selector,
+        isEqual,
+    } = options
+    const store = useStore()
 
-  const undoableRef = useRef(undoable);
-  undoableRef.current = undoable;
+    // Resolve the collection path at render time. When disabled we skip
+    // resolution — consumers commonly pass `enabled: false` precisely because
+    // params aren't ready.
+    const collectionPath = enabled
+        ? typeof definition.path === 'function'
+            ? definition.path(params)
+            : definition.path
+        : undefined
 
-  const onPushUndo = useCallback(
-    (undoAction: () => void, redoAction: () => void, opts?: UpdateOptions) => {
-      if (!undoableRef.current) return;
-      undoManager.push({
-        undo: undoAction,
-        redo: redoAction,
-        groupId: opts?.undoGroupId,
-      });
-    },
-    [undoManager]
-  );
+    // Stabilize `queryConstraints` by *query identity*. QueryConstraint objects
+    // are opaque and can't be deep-compared directly, but the built query can —
+    // see queryConstraintsEqual(). When the incoming array produces the same
+    // query as the one we're already subscribed with (e.g. constraint inputs
+    // read from a deep-cloned document churned the array reference without
+    // changing the query), we keep the previous array reference so the memo
+    // below does not rebuild. A genuine change adopts the new reference and
+    // re-attaches the listener. When the path is unresolved we can't build a
+    // query, so we just pass the constraints through (the memo returns null).
+    //
+    // The comparison may only run against constraints captured during an *active*
+    // render (enabled with a resolved path). Constraints captured while disabled
+    // or unresolved can be ones the caller is gating precisely because they don't
+    // form a valid query yet — e.g. `where(documentId(), 'in', [])`, which
+    // Firestore refuses to build. Building such a stale snapshot just to compare
+    // would throw, so when the prior snapshot wasn't active we adopt the current
+    // constraints outright. There is no live listener to preserve in that case
+    // (the subscription was null), so adopting a fresh reference costs nothing.
+    const stableConstraintsRef = useRef(queryConstraints)
+    const stableActiveRef = useRef(false)
+    const active = enabled && collectionPath !== undefined
+    if (
+        collectionPath === undefined ||
+        !stableActiveRef.current ||
+        !queryConstraintsEqual(
+            store.firestore,
+            collectionPath,
+            definition.queryConstraints,
+            stableConstraintsRef.current,
+            queryConstraints
+        )
+    ) {
+        stableConstraintsRef.current = queryConstraints
+    }
+    stableActiveRef.current = active
+    const stableConstraints = stableConstraintsRef.current
 
-  // Resolve the collection path at render time. When disabled we skip
-  // resolution — consumers commonly pass `enabled: false` precisely because
-  // params aren't ready.
-  const collectionPath = enabled
-    ? typeof definition.path === "function"
-      ? definition.path(params)
-      : definition.path
-    : undefined;
+    const isLazy = definition.lazy ?? false
 
-  // Stabilize `queryConstraints` by *query identity*. QueryConstraint objects
-  // are opaque and can't be deep-compared directly, but the built query can —
-  // see queryConstraintsEqual(). When the incoming array produces the same
-  // query as the one we're already subscribed with (e.g. constraint inputs
-  // read from a deep-cloned document churned the array reference without
-  // changing the query), we keep the previous array reference so the memo
-  // below does not rebuild. A genuine change adopts the new reference and
-  // re-attaches the listener. When the path is unresolved we can't build a
-  // query, so we just pass the constraints through (the memo returns null).
-  //
-  // The comparison may only run against constraints captured during an *active*
-  // render (enabled with a resolved path). Constraints captured while disabled
-  // or unresolved can be ones the caller is gating precisely because they don't
-  // form a valid query yet — e.g. `where(documentId(), 'in', [])`, which
-  // Firestore refuses to build. Building such a stale snapshot just to compare
-  // would throw, so when the prior snapshot wasn't active we adopt the current
-  // constraints outright. There is no live listener to preserve in that case
-  // (the subscription was null), so adopting a fresh reference costs nothing.
-  const stableConstraintsRef = useRef(queryConstraints);
-  const stableActiveRef = useRef(false);
-  const active = enabled && collectionPath !== undefined;
-  if (
-    collectionPath === undefined ||
-    !stableActiveRef.current ||
-    !queryConstraintsEqual(
-      store.firestore,
-      collectionPath,
-      definition.queryConstraints,
-      stableConstraintsRef.current,
-      queryConstraints
+    // Build the query this hook subscribes to, keyed by *query identity*
+    // (stableConstraints already absorbs reference churn). This is what the shared
+    // registry matches on via `queryEqual`, so two hooks with semantically equal
+    // queries share one listener regardless of array identity. `null` when the
+    // constraints can't form a valid query yet (e.g. a gated empty-`in`
+    // placeholder, or while disabled/unresolved): no listener can run, so the hook
+    // resolves no shared entry and returns the disabled handle.
+    const builtQuery = useMemo<Query<unknown> | null>(
+        () =>
+            active
+                ? buildSharedCollectionQuery(
+                      store,
+                      collectionPath!,
+                      definition.queryConstraints,
+                      stableConstraints
+                  )
+                : null,
+        [active, store, collectionPath, definition, stableConstraints]
     )
-  ) {
-    stableConstraintsRef.current = queryConstraints;
-  }
-  stableActiveRef.current = active;
-  const stableConstraints = stableConstraintsRef.current;
 
-  const subscription = useMemo(
-    () =>
-      enabled && collectionPath !== undefined
-        ? createCollectionSubscription({
+    // Resolve (or create) the shared subscription for this resource+query. As with
+    // useDocument, every hook on the same collection+query shares one instance.
+    const shared = useMemo(
+        () =>
+            active && builtQuery !== null
+                ? getCollectionShared<TData>({
+                      store,
+                      definition,
+                      collectionPath: collectionPath!,
+                      readOnly,
+                      queryConstraints: stableConstraints,
+                      query: builtQuery,
+                  })
+                : null,
+        [
+            active,
             store,
             definition,
             collectionPath,
             readOnly,
-            queryConstraints: stableConstraints,
-            onPushUndo,
-          })
-        : null,
-    [
-      enabled,
-      store,
-      definition,
-      collectionPath,
-      readOnly,
-      stableConstraints,
-      onPushUndo,
-    ]
-  );
+            stableConstraints,
+            builtQuery,
+        ]
+    )
 
-  const isLazy = definition.lazy ?? false;
+    useEffect(() => {
+        shared?.setUndoable(undoable)
+    }, [shared, undoable])
 
-  const subscribe = useCallback(
-    (onChange: () => void) => {
-      if (!subscription) return NOOP;
-      const unsub = subscription.subscribe(() => onChange());
-      if (!isLazy) {
-        subscription.load();
-      }
-      return () => {
-        unsub();
-        subscription.stop();
-      };
-    },
-    [subscription, isLazy]
-  );
+    const subscribe = useCallback(
+        (onChange: () => void) => {
+            if (!shared) return NOOP
+            shared.setUndoable(undoable)
+            const release = shared.acquire(onChange)
+            // Lazy collections activate the shared listener only via `load()` on the
+            // handle; non-lazy ones activate on mount. Either way the listener stays
+            // up until the last lease releases.
+            if (!isLazy) {
+                // See useDocument's subscribe: release the lease acquire() just took if
+                // load() throws synchronously, or the entry/listener/callback leak.
+                try {
+                    shared.load()
+                } catch (e) {
+                    release()
+                    throw e
+                }
+            }
+            return release
+        },
+        // `undoable` intentionally omitted: the effect above syncs it without
+        // resubscribing.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [shared, isLazy]
+    )
 
-  const getSnapshot = useCallback(
-    () =>
-      subscription
-        ? subscription.getHandle()
-        : (DISABLED_COLLECTION_HANDLE as CollectionHandle<TData>),
-    [subscription]
-  );
+    const getSnapshot = useCallback(
+        () =>
+            shared
+                ? shared.getHandle()
+                : (DISABLED_COLLECTION_HANDLE as CollectionHandle<TData>),
+        [shared]
+    )
 
-  // See useDocument for the rationale: project to the observable slice (keyed
-  // on `selector`), diff via `equal`, then re-wrap reading methods/`ref` live.
-  const select = useCallback(
-    (handle: CollectionHandle<TData>): ObservableSelection<TSelected> => ({
-      data: (selector ? selector(handle.data) : handle.data) as TSelected,
-      isLoading: handle.isLoading,
-      isSynced: handle.isSynced,
-      error: handle.error,
-      isActive: handle.isActive,
-    }),
-    [selector]
-  );
+    // See useDocument for the rationale: project to the observable slice (keyed
+    // on `selector`), diff via `equal`, then re-wrap reading methods/`ref` live.
+    const select = useCallback(
+        (handle: CollectionHandle<TData>): ObservableSelection<TSelected> => ({
+            data: (selector ? selector(handle.data) : handle.data) as TSelected,
+            isLoading: handle.isLoading,
+            isSynced: handle.isSynced,
+            error: handle.error,
+            isActive: handle.isActive,
+        }),
+        [selector]
+    )
 
-  const equal = useCallback(
-    (a: ObservableSelection<TSelected>, b: ObservableSelection<TSelected>) =>
-      selectionEqual(a, b, isEqual ?? defaultDataEqual),
-    [isEqual]
-  );
+    const equal = useCallback(
+        (
+            a: ObservableSelection<TSelected>,
+            b: ObservableSelection<TSelected>
+        ) => selectionEqual(a, b, isEqual ?? defaultDataEqual),
+        [isEqual]
+    )
 
-  const selection = useSyncExternalStoreWithSelector(
-    subscribe,
-    getSnapshot,
-    getSnapshot,
-    select,
-    equal
-  );
+    const selection = useSyncExternalStoreWithSelector(
+        subscribe,
+        getSnapshot,
+        getSnapshot,
+        select,
+        equal
+    )
 
-  return useMemo(() => {
-    const handle = subscription
-      ? subscription.getHandle()
-      : (DISABLED_COLLECTION_HANDLE as CollectionHandle<TData>);
-    return {
-      data: selection.data,
-      update: handle.update,
-      add: handle.add,
-      remove: handle.remove,
-      isLoading: selection.isLoading,
-      isSynced: selection.isSynced,
-      isActive: selection.isActive ?? false,
-      load: handle.load,
-      sync: handle.sync,
-      error: selection.error,
-      ref: handle.ref,
-    };
-  }, [selection, subscription]);
+    return useMemo(() => {
+        const handle = getSnapshot()
+        return {
+            data: selection.data,
+            update: handle.update,
+            add: handle.add,
+            remove: handle.remove,
+            isLoading: selection.isLoading,
+            isSynced: selection.isSynced,
+            isActive: selection.isActive ?? false,
+            load: handle.load,
+            sync: handle.sync,
+            error: selection.error,
+            ref: handle.ref,
+        }
+    }, [selection, getSnapshot])
 }
 
 /**
@@ -794,34 +828,34 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
  * ```
  */
 export const useUndoKeyboardShortcuts = (): void => {
-  // Read the manager ref directly — we only need .undo() / .redo() (stable
-  // refs), not its state. Subscribing via useUndoManager would re-render
-  // the host component on every undo-stack change.
-  const undoManager = useStore().undoManager;
+    // Read the manager ref directly — we only need .undo() / .redo() (stable
+    // refs), not its state. Subscribing via useUndoManager would re-render
+    // the host component on every undo-stack change.
+    const undoManager = useStore().undoManager
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const platform =
-        (
-          navigator as Navigator & {
-            userAgentData?: { platform: string };
-          }
-        ).userAgentData?.platform ?? navigator.platform;
-      const isMac = platform.toUpperCase().includes("MAC");
-      const modifier = isMac ? e.metaKey : e.ctrlKey;
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const platform =
+                (
+                    navigator as Navigator & {
+                        userAgentData?: { platform: string }
+                    }
+                ).userAgentData?.platform ?? navigator.platform
+            const isMac = platform.toUpperCase().includes('MAC')
+            const modifier = isMac ? e.metaKey : e.ctrlKey
 
-      if (!modifier) return;
+            if (!modifier) return
 
-      if (e.key === "z" && !e.shiftKey) {
-        e.preventDefault();
-        undoManager.undo();
-      } else if ((e.key === "z" && e.shiftKey) || e.key === "y") {
-        e.preventDefault();
-        undoManager.redo();
-      }
-    };
+            if (e.key === 'z' && !e.shiftKey) {
+                e.preventDefault()
+                undoManager.undo()
+            } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
+                e.preventDefault()
+                undoManager.redo()
+            }
+        }
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [undoManager]);
-};
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [undoManager])
+}
