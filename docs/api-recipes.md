@@ -313,6 +313,14 @@ Selectors do not need to be memoized — an inline selector is fine. It is
 recomputed each render but only re-renders the component when its result changes
 per `isEqual`.
 
+Selectors scale for free because subscriptions are **shared**. Every hook call
+for the same resource — same definition, resolved path, query, and `readOnly` —
+shares one `onSnapshot` listener and one reconciled state, so ten components
+each selecting a different slice of the same document attach one listener, not
+ten. A write through any handle is instantly visible to every selector reading
+that resource, and the listener is torn down only when the last of them
+unmounts.
+
 ## Undo and Redo
 
 Undo is enabled by default.

@@ -26,7 +26,9 @@ At runtime, a typical React app follows this flow:
 2. `FirestateProvider` creates a `FirestateStore`.
 3. A generated hook from `createFirestate`, or a direct call to `useDocument`
    / `useCollection`, resolves the Firestore path from params.
-4. The hook creates a document or collection subscription.
+4. The hook resolves a *shared* document or collection subscription for that
+   resource — creating it on first use, reusing it otherwise (see "Shared
+   subscriptions" below).
 5. The subscription attaches an `onSnapshot` listener when loaded.
 6. Snapshots update `syncState`.
 7. Mutations update `localState` immediately and schedule autosave.
@@ -42,6 +44,49 @@ merged = localState ?? syncState
 
 For documents, `localState === null` represents a pending delete and surfaces
 as `data: undefined`.
+
+## Shared subscriptions
+
+`src/core/shared-subscription.ts` is a registry that lets many hooks share one
+subscription. Without it, each `useDocument` / `useCollection` call would build
+its own subscription in a `useMemo` — its own `onSnapshot` listener and its own
+optimistic state — so two components reading the same resource would hold two
+divergent copies, and a write through one would not be visible to the other.
+
+The registry is scoped per `FirestateStore` (a `WeakMap`) and, within that, per
+*definition* object. A resource is keyed by:
+
+- documents: `(resolved collection path, doc id, readOnly)` — a plain string key;
+- collections: `(resolved collection path, readOnly)` plus *semantic query
+  identity*. Distinct queries on one path coexist as separate entries and are
+  matched with Firestore's `queryEqual`, so two hooks whose `queryConstraints`
+  arrays differ by reference but build the same query share one listener.
+
+Keying by definition (not just the path string) means two distinct definitions
+that happen to resolve to the same path keep independent subscriptions — their
+schema, autosave, or `readOnly` config may differ.
+
+Lifecycle is ref-counted and lazy:
+
+- The underlying subscription is created the first time any hook resolves the
+  resource (in the hook's render-phase `useMemo`), attaching no listener.
+- A hook's `subscribe` effect calls `acquire()` (ref count + 1, register its
+  change callback) and then `load()` to activate the one shared listener
+  (idempotent — only the first activation attaches it).
+- The last hook to `release()` runs the underlying `stop()` and evicts the
+  entry, so a subsequent mount starts a fresh subscription. A lazy collection
+  therefore resets to `isActive: false` after a full unmount, exactly as a
+  single hook does.
+
+Because the state is shared, the per-hook `selector` (see below) slices one
+reconciled state rather than maintaining a private one, and a write through any
+handle is observed by every reader on the resource. Undo recording belongs to
+the shared subscription: its `onPushUndo` pushes to the store-global undo
+manager, gated by a shared `undoable` flag that co-mounted hooks keep in sync.
+
+The lower-level `createDocumentSubscription` / `createCollectionSubscription`
+are unaffected — they return unshared single instances for direct, non-React
+use.
 
 ## Registry API
 
