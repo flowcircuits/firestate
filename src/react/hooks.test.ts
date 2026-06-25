@@ -369,12 +369,14 @@ describe('shared collection subscriptions', () => {
         tag,
         queryConstraints,
         definition = stationsCollection,
+        readOnly,
     }: {
         tag: string
         queryConstraints?: QueryConstraint[]
         definition?: typeof stationsCollection
+        readOnly?: boolean
     }) => {
-        handles[tag] = useCollection({ definition, queryConstraints })
+        handles[tag] = useCollection({ definition, queryConstraints, readOnly })
         return null
     }
 
@@ -445,6 +447,43 @@ describe('shared collection subscriptions', () => {
         expect(handles.b!.data.ws9?.name).toBe('Added')
         expect(handles.a!.isSynced).toBe(false)
         expect(handles.b!.isSynced).toBe(false)
+    })
+
+    it('shares one listener and state across a writable and a read-only hook', () => {
+        // readOnly is a per-handle capability, not part of the share key: a
+        // writable hook and a read-only hook on the same query resolve ONE
+        // listener and ONE optimistic state.
+        mountProbe({ tag: 'writer' })
+        mountProbe({ tag: 'reader', readOnly: true })
+
+        // readOnly is not in the key → one listener for both.
+        expect(onSnapshotMock).toHaveBeenCalledTimes(1)
+        expect(listeners).toHaveLength(1)
+
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+
+        // A write through the writable handle is visible to the read-only
+        // reader (shared optimistic state).
+        act(() => {
+            handles.writer!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
+        })
+        expect(handles.reader!.data.ws9?.name).toBe('Added')
+        expect(handles.reader!.isSynced).toBe(false)
+
+        // The read-only handle's writers are no-ops: it cannot mutate the
+        // shared state.
+        act(() => {
+            handles.reader!.add('ws10', {
+                name: 'Nope',
+            } as Omit<Station, 'id'>)
+            handles.reader!.remove('ws1')
+            handles.reader!.update({ ws1: { name: 'Renamed' } } as never)
+        })
+        expect(handles.writer!.data.ws10).toBeUndefined()
+        expect(handles.writer!.data.ws1?.name).toBe('Station 1')
     })
 
     it('ref-counts the listener: torn down only when the last hook unmounts', () => {

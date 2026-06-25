@@ -24,12 +24,22 @@ import {
  * Shared, ref-counted subscription registry.
  *
  * Every `useDocument` / `useCollection` call for the *same* resource — same
- * `(definition, resolved path, doc id / query, readOnly)` — transparently
+ * `(definition, resolved path, doc id / query)` — transparently
  * shares ONE underlying `createDocumentSubscription` / `createCollectionSubscription`
  * instance, and therefore one `onSnapshot` listener and one
  * reconciled/optimistic state. A write through any handle is instantly visible
  * to every reader on that resource, and the per-hook `selector` slices that one
  * shared state instead of building a private subscription per call.
+ *
+ * `readOnly` is deliberately NOT part of the key. It is a *per-handle
+ * capability* over the shared state, not a state fork: a writable hook (the
+ * typical provider — the sole writer, which needs full data for its undo bridge
+ * and global sync tracking) and any number of `readOnly: true` hooks (leaves
+ * that only read-select) resolve the SAME entry, so a write through the writable
+ * handle is instantly visible to every read-only reader. The shared
+ * subscription is always built writable; a read-only facade neuters its own
+ * handle's writers (and `sync`) and leaves the shared undo flag untouched, while
+ * passing reads straight through (see {@link readOnlyDocumentHandle}).
  *
  * Lifecycle is ref-counted and lazy:
  * - A facade is built when a hook resolves the resource (its render-phase
@@ -51,9 +61,9 @@ import {
  * and within that per *definition* (a WeakMap keyed by the definition object).
  * Keying by definition — not just the resolved path string — means two distinct
  * definitions that happen to resolve to the same path keep independent
- * subscriptions (their schema/autosave/readOnly config may differ), while every
- * hook built from one registry entry shares correctly. This matches the headline
- * use case: a registry resource is one definition object referenced everywhere.
+ * subscriptions (their schema/autosave config may differ), while every hook
+ * built from one registry entry shares correctly. This matches the headline use
+ * case: a registry resource is one definition object referenced everywhere.
  */
 
 // `ReturnType<typeof fn>` resolves the generic to its `FirestoreObject`
@@ -101,10 +111,10 @@ interface StoreRegistry {
         Map<string, DocumentEntry>
     >
     /**
-     * Keyed by definition → `${collectionPath}\0${readOnly}` → bucket of entries
-     * that differ only by query. A bucket is scanned with `queryEqual` to find
-     * the entry for a given query; distinct queries on the same path live as
-     * separate entries in the same bucket.
+     * Keyed by definition → `collectionPath` → bucket of entries that differ
+     * only by query. A bucket is scanned with `queryEqual` to find the entry
+     * for a given query; distinct queries on the same path live as separate
+     * entries in the same bucket.
      */
     cols: WeakMap<
         CollectionDefinition<FirestoreObject>,
@@ -123,16 +133,12 @@ const getRegistry = (store: FirestateStore): StoreRegistry => {
     return reg
 }
 
-const docKey = (
-    collectionPath: string,
-    docId: string,
-    readOnly: boolean | undefined
-): string => `${collectionPath}\0${docId}\0${readOnly ? 1 : 0}`
+// `readOnly` is intentionally absent from both keys: read-only and writable
+// hooks on the same resource must resolve the SAME entry (one shared state).
+const docKey = (collectionPath: string, docId: string): string =>
+    `${collectionPath}\0${docId}`
 
-const colBucketKey = (
-    collectionPath: string,
-    readOnly: boolean | undefined
-): string => `${collectionPath}\0${readOnly ? 1 : 0}`
+const colBucketKey = (collectionPath: string): string => collectionPath
 
 /**
  * Semantic query match, hardened for two cases the raw `queryEqual` does not
@@ -161,6 +167,35 @@ const makeOnPushUndo =
             groupId: opts?.undoGroupId,
         })
     }
+
+// A read-only handle is the shared handle with its writers (and `sync`)
+// replaced by no-ops. Reads — `data`, status, `ref`, and a collection's `load`
+// (activating a lazy listener is a read, not a write) — pass straight through,
+// so a read-only facade observes every optimistic edit the writer makes while
+// being unable to author or flush a write itself.
+const noop = (): void => {}
+const asyncNoop = async (): Promise<void> => {}
+const noopAdd = (): undefined => undefined
+
+const readOnlyDocumentHandle = <T extends FirestoreObject>(
+    handle: DocumentHandle<T>
+): DocumentHandle<T> => ({
+    ...handle,
+    update: noop,
+    set: noop,
+    delete: noop,
+    sync: asyncNoop,
+})
+
+const readOnlyCollectionHandle = <T extends FirestoreObject>(
+    handle: CollectionHandle<T>
+): CollectionHandle<T> => ({
+    ...handle,
+    update: noop,
+    add: noopAdd,
+    remove: noop,
+    sync: asyncNoop,
+})
 
 /**
  * A per-hook facade over a shared registry entry. Multiple hooks on the same
@@ -195,6 +230,11 @@ export interface DocumentSharedParams<T extends FirestoreObject> {
     definition: DocumentDefinition<T>
     collectionPath: string
     docId: string
+    /**
+     * Per-handle read-only capability. Neuters only THIS facade's handle
+     * writers; it is not part of the share key, so a read-only and a writable
+     * hook on the same document share one listener and one optimistic state.
+     */
     readOnly?: boolean
 }
 
@@ -211,18 +251,29 @@ export const getDocumentShared = <T extends FirestoreObject>({
     readOnly,
 }: DocumentSharedParams<T>): DocumentShared<T> => {
     const map = getDocMap(store, definition)
-    const key = docKey(collectionPath, docId, readOnly)
+    const key = docKey(collectionPath, docId)
+    // Per-handle capability, resolved exactly as the subscription used to:
+    // explicit hook override wins, then the definition default, then writable.
+    // It gates ONLY this facade's handle — never the shared state or its key.
+    const facadeReadOnly = readOnly ?? definition.readOnly ?? false
 
     // Build a fresh subscription bound to `entry`. Used for a newly built entry
     // and to revive an evicted one on re-acquire (its `sub` was stop()ed, which
     // leaves stale loaded/loading state).
+    //
+    // The shared subscription is ALWAYS writable: the provider (sole writer)
+    // needs functional writers, and read-only facades neuter their own handle
+    // rather than fork a separate read-only subscription. Passing
+    // `readOnly: false` also overrides a read-only *definition*, so a hook that
+    // opts back in with `readOnly: false` gets a writable handle off the same
+    // shared state.
     const buildSub = (entry: DocumentEntry): AnyDocumentSubscription =>
         createDocumentSubscription({
             store,
             definition: definition as DocumentDefinition<FirestoreObject>,
             docId,
             collectionPath,
-            readOnly,
+            readOnly: false,
             onPushUndo: makeOnPushUndo(store, entry),
         })
 
@@ -244,11 +295,28 @@ export const getDocumentShared = <T extends FirestoreObject>({
     // refCount-0 entry stranded. getHandle()/load() operate on `ent` regardless.
     let ent: DocumentEntry = map.get(key) ?? buildEntry()
     let desiredUndoable = true
+    // Memoize the neutered read-only handle on the underlying handle's identity,
+    // so getHandle() stays referentially stable between notifies (a
+    // useSyncExternalStore requirement) and rebuilds the wrapper only when the
+    // shared subscription publishes a new handle.
+    let readOnlySource: DocumentHandle<T> | null = null
+    let readOnlyHandle: DocumentHandle<T> | null = null
 
     return {
-        getHandle: () => ent.sub.getHandle() as DocumentHandle<T>,
+        getHandle: () => {
+            const handle = ent.sub.getHandle() as DocumentHandle<T>
+            if (!facadeReadOnly) return handle
+            if (handle !== readOnlySource) {
+                readOnlySource = handle
+                readOnlyHandle = readOnlyDocumentHandle(handle)
+            }
+            return readOnlyHandle as DocumentHandle<T>
+        },
         load: () => ent.sub.load(),
         setUndoable: (enabled) => {
+            // A read-only facade can't write, so it must not influence the
+            // shared undo flag the writer relies on (last-writer-wins).
+            if (facadeReadOnly) return
             desiredUndoable = enabled
             ent.undoableEnabled = enabled
         },
@@ -269,7 +337,9 @@ export const getDocumentShared = <T extends FirestoreObject>({
                 ent.sub = buildSub(ent)
                 ent.live = true
             }
-            ent.undoableEnabled = desiredUndoable
+            // Only writers set the shared undo flag; a read-only lease leaves it
+            // as the writer (or default) left it (see setUndoable).
+            if (!facadeReadOnly) ent.undoableEnabled = desiredUndoable
             ent.refCount++
             const notifyUnsub = ent.sub.subscribe(onChange)
             let released = false
@@ -305,6 +375,7 @@ export interface CollectionSharedParams<T extends FirestoreObject> {
     store: FirestateStore
     definition: CollectionDefinition<T>
     collectionPath: string
+    /** Per-handle read-only capability — see {@link DocumentSharedParams.readOnly}. */
     readOnly?: boolean
     /** Hook-level extra constraints, passed through to the subscription verbatim. */
     queryConstraints: QueryConstraint[] | undefined
@@ -330,14 +401,18 @@ export const getCollectionShared = <T extends FirestoreObject>({
     queryConstraints,
     query,
 }: CollectionSharedParams<T>): CollectionShared<T> => {
-    const bucket = getColBucket(store, definition, collectionPath, readOnly)
+    const bucket = getColBucket(store, definition, collectionPath)
+    // See getDocumentShared: per-handle capability, never part of the key.
+    const facadeReadOnly = readOnly ?? definition.readOnly ?? false
 
+    // Always writable — read-only facades neuter their own handle. See
+    // getDocumentShared.buildSub for the full rationale.
     const buildSub = (entry: CollectionEntry): AnyCollectionSubscription =>
         createCollectionSubscription({
             store,
             definition: definition as CollectionDefinition<FirestoreObject>,
             collectionPath,
-            readOnly,
+            readOnly: false,
             queryConstraints,
             onPushUndo: makeOnPushUndo(store, entry),
         })
@@ -362,11 +437,25 @@ export const getCollectionShared = <T extends FirestoreObject>({
     let ent: CollectionEntry =
         bucket.find((e) => sameQuery(e.query, query)) ?? buildEntry()
     let desiredUndoable = true
+    // Memoize the neutered read-only handle on the underlying handle's identity.
+    // See getDocumentShared.
+    let readOnlySource: CollectionHandle<T> | null = null
+    let readOnlyHandle: CollectionHandle<T> | null = null
 
     return {
-        getHandle: () => ent.sub.getHandle() as CollectionHandle<T>,
+        getHandle: () => {
+            const handle = ent.sub.getHandle() as CollectionHandle<T>
+            if (!facadeReadOnly) return handle
+            if (handle !== readOnlySource) {
+                readOnlySource = handle
+                readOnlyHandle = readOnlyCollectionHandle(handle)
+            }
+            return readOnlyHandle as CollectionHandle<T>
+        },
         load: () => ent.sub.load(),
         setUndoable: (enabled) => {
+            // See getDocumentShared.setUndoable.
+            if (facadeReadOnly) return
             desiredUndoable = enabled
             ent.undoableEnabled = enabled
         },
@@ -385,7 +474,8 @@ export const getCollectionShared = <T extends FirestoreObject>({
                 ent.sub = buildSub(ent)
                 ent.live = true
             }
-            ent.undoableEnabled = desiredUndoable
+            // Only writers set the shared undo flag (see setUndoable).
+            if (!facadeReadOnly) ent.undoableEnabled = desiredUndoable
             ent.refCount++
             const notifyUnsub = ent.sub.subscribe(onChange)
             let released = false
@@ -408,8 +498,7 @@ export const getCollectionShared = <T extends FirestoreObject>({
 const getColBucket = (
     store: FirestateStore,
     definition: CollectionDefinition<FirestoreObject>,
-    collectionPath: string,
-    readOnly: boolean | undefined
+    collectionPath: string
 ): CollectionEntry[] => {
     const reg = getRegistry(store)
     let byKey = reg.cols.get(definition)
@@ -417,7 +506,7 @@ const getColBucket = (
         byKey = new Map()
         reg.cols.set(definition, byKey)
     }
-    const key = colBucketKey(collectionPath, readOnly)
+    const key = colBucketKey(collectionPath)
     let bucket = byKey.get(key)
     if (!bucket) {
         bucket = []

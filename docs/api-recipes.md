@@ -314,12 +314,12 @@ recomputed each render but only re-renders the component when its result changes
 per `isEqual`.
 
 Selectors scale for free because subscriptions are **shared**. Every hook call
-for the same resource — same definition, resolved path, query, and `readOnly` —
-shares one `onSnapshot` listener and one reconciled state, so ten components
-each selecting a different slice of the same document attach one listener, not
-ten. A write through any handle is instantly visible to every selector reading
-that resource, and the listener is torn down only when the last of them
-unmounts.
+for the same resource — same definition, resolved path, and query — shares one
+`onSnapshot` listener and one reconciled state, so ten components each selecting
+a different slice of the same document attach one listener, not ten. A write
+through any handle is instantly visible to every selector reading that resource,
+and the listener is torn down only when the last of them unmounts. `readOnly` is
+not part of that key — see [Read-Only Handles](#read-only-handles).
 
 ## Undo and Redo
 
@@ -381,4 +381,28 @@ Definitions and hooks can be read-only.
 const project = useProject({ projectId }, { readOnly: true })
 ```
 
-Mutation methods on read-only handles return without queueing writes.
+Mutation methods (`update`/`set`/`delete`/`add`/`remove`) and `sync` on a
+read-only handle return without queueing writes. Reads — `data`, `isLoading`,
+`isSynced`, `ref`, and a lazy collection's `load` — work normally.
+
+`readOnly` is a **per-handle capability over the shared state, not a state
+fork**. A read-only hook shares the same listener and optimistic state as a
+writable hook on the same resource, so a write through the writable handle is
+instantly visible to the read-only reader. This is the provider/leaf pattern:
+one writable hook owns writes (and its undo bridge), while leaves subscribe
+`readOnly: true` purely to read-select slices off the same state.
+
+```ts
+// Provider: the sole writer. Drives updates and the undo stack.
+const project = useProject({ projectId })
+
+// Leaf elsewhere in the tree: reads the same optimistic state, can't write.
+const { data: title } = useProject(
+    { projectId },
+    { readOnly: true, selector: (p) => p?.title }
+)
+```
+
+A read-only-by-default definition can still be written by a specific hook that
+opts back in with `readOnly: false` — it gets a writable handle off the same
+shared state, no fork.

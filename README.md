@@ -660,10 +660,14 @@ Selectors do not need to be memoized; an inline selector is recomputed each
 render but only triggers a re-render when its result changes per `isEqual`.
 
 Selectors compose cleanly across components because subscriptions are shared:
-every hook reading the same resource (same definition, path, query, and
-`readOnly`) shares one Firestore listener and one reconciled state, so many
-components each selecting a different slice cost a single listener. A write
-through any handle is observed by all of them.
+every hook reading the same resource (same definition, path, and query) shares
+one Firestore listener and one reconciled state, so many components each
+selecting a different slice cost a single listener. A write through any handle
+is observed by all of them. `readOnly` is a per-handle capability, not part of
+that key — a read-only hook shares the same listener and optimistic state as a
+writable hook on the same resource, so the common provider/leaf pattern (one
+writable owner, many `readOnly: true` read-selectors) sees the writer's
+optimistic edits live. Only the read-only handle's own writers are disabled.
 
 #### `useUndoManager()`
 

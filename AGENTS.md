@@ -66,9 +66,10 @@ test harness live in `src/__tests__/`.
 - `src/core/collection.ts` - collection subscription, add, update, remove,
   batched sync, lazy loading.
 - `src/core/shared-subscription.ts` - per-store, per-definition registry that
-  ref-counts subscriptions keyed by `(path, doc id / query, readOnly)` so every
-  hook on the same resource shares one listener and one state. The hooks resolve
-  a shared instance through here instead of constructing their own.
+  ref-counts subscriptions keyed by `(path, doc id / query)` so every hook on
+  the same resource shares one listener and one state. `readOnly` is a per-handle
+  capability layered on top, not part of the key. The hooks resolve a shared
+  instance through here instead of constructing their own.
 - `src/utils/diff.ts` - Firestore-aware diff, flattening, cloning, equality
   helpers.
 - `src/utils/undo.ts` - framework-agnostic undo manager.
@@ -100,7 +101,8 @@ Preserve these unless the task explicitly changes them.
   reference. Never hand-roll a deep compare of `QueryConstraint` objects — they
   are opaque. `useCollection` builds the query and compares it with Firestore's
   `queryEqual`, so a fresh array producing the same query does not rebuild the
-  listener; only a real change to the query (or `path`/`readOnly`) does.
+  listener; only a real change to the query (or `path`) does. `readOnly` is not
+  part of the listener key (see the shared-subscription contract below).
   Callers therefore do not need to memoize `queryConstraints` for correctness.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
@@ -114,7 +116,7 @@ Preserve these unless the task explicitly changes them.
   memoized selection, so a rebuilt subscription always surfaces its own methods
   even when the selected slice is value-equal.
 - Subscriptions are shared and ref-counted, keyed by `(definition, resolved
-  path, doc id / semantic query identity, readOnly)`. Every `useDocument` /
+  path, doc id / semantic query identity)`. Every `useDocument` /
   `useCollection` call for the same resource resolves the *same* underlying
   subscription through `src/core/shared-subscription.ts`, so there is one
   `onSnapshot` listener and one reconciled/optimistic state no matter how many
@@ -127,6 +129,15 @@ Preserve these unless the task explicitly changes them.
   subscriptions. The lower-level `createDocumentSubscription` /
   `createCollectionSubscription` remain unshared single instances for direct
   (non-React) use.
+- `readOnly` is a *per-handle capability*, NOT part of the share key. A writable
+  hook (the typical provider — the sole writer) and any number of `readOnly:
+  true` hooks (leaves that only read-select) on the same resource resolve the
+  same entry and the same shared optimistic state. The shared subscription is
+  always built writable; a read-only facade neuters only its own handle's
+  writers (`update`/`set`/`delete`/`add`/`remove`) and `sync` (its `load` and
+  reads pass through), and it does not touch the shared `undoable` flag. A hook
+  may pass `readOnly: false` to opt back into writing a read-only-by-default
+  definition without forking the shared state.
 - Undo recording is a property of the shared subscription, not the individual
   hook: its `onPushUndo` pushes to the store-global undo manager gated by a
   shared `undoable` flag that co-mounted hooks keep in sync (last writer wins).
