@@ -123,6 +123,34 @@ Document paths are split at the final slash. For
 The registry API intentionally requires Zod schemas. Use the lower-level API
 when a plain TypeScript definition or custom path derivation is needed.
 
+### Named slice-hooks (`.select`)
+
+`doc()`/`col()` attach a `.select(selector, { isEqual? })` method that returns a
+*derived entry* (`__kind: "document-selected"` / `"collection-selected"`) holding
+the original entry as `base` plus the selector and comparator. The base is shared
+by reference, so the schema/path is declared once. `createFirestate` builds one
+underlying definition **per base entry**, memoized by the base object (`entry`
+for a base hook, `entry.base` for a selected one), so the base hook and every
+slice derived from it pass the *same* definition to `useDocument`/`useCollection`.
+That sharing is load-bearing: the shared-subscription registry keys by definition
+identity, so one definition means the base hook and all its slice-hooks resolve
+ONE shared subscription (one `onSnapshot` listener, one optimistic state).
+Building a fresh definition per generated hook would fork a listener apiece. Each
+generated hook then just calls `useDocument`/`useCollection` with the selector and
+`isEqual` injected — adapting the entry's `(state, params)` selector to the hook's
+inline `selector` option by closing over the call's params bag. A slice-hook is
+therefore just a base hook with the projection baked in.
+
+The type layer carries four parameters on a derived entry — `T`, the path literal
+`P`, the selector's own params `PExtra` (default `{}`), and the slice `TSelected`.
+`HookFor` matches derived entries first (they have no `path`/`schema`, so they
+never collide with the base arms) and maps them to a hook whose params are
+`ParamsOf<P> & PExtra` (the merged bag) and whose return is the selected handle.
+A single `.select` signature with a defaulted `PExtra` keeps the selector's
+`state` argument reliably contextually typed for both one- and two-argument
+selectors. Derived entries are leaves — they expose no `.select`, so chaining is
+a type error.
+
 ## Definitions
 
 `src/registry/schema.ts` contains the lower-level definition helpers. They are mostly
@@ -162,23 +190,28 @@ state.
 ## React Hooks
 
 `src/react/hooks.ts` wraps subscriptions with `useSyncExternalStore`
-(`useSyncExternalStoreWithSelector` when a `selector` is supplied).
+(`useSyncExternalStoreWithSelector` for `useDocument`/`useCollection`, which
+project and diff the observable state — with or without a `selector`).
 
 Important details:
 
 - Hooks return stable disabled handles when `enabled: false`.
-- An optional `selector` narrows the returned `data` to a slice so a component
-  re-renders only when that slice (or a status field) changes. The hook routes
-  through `useSyncExternalStoreWithSelector`: the memoized projection carries the
-  selected `data` plus the status fields (`isLoading`/`isSynced`/`error`/
-  `isActive`), compared by `isEqual` (default: the same `valuesEqualForNoOp`
-  value compare the subscription itself uses, so an identity selector preserves
-  the pre-selector re-render behavior). The hook then re-wraps a full handle.
-  The projection deliberately excludes methods and `ref`; those are read *live*
-  from the current subscription's `getHandle()` at render time. Otherwise a
-  subscription rebuild whose selected slice happened to be value-equal would be
-  collapsed by `isEqual`, and the hook would keep handing back the previous
-  subscription's methods (e.g. `load()` against torn-down constraints).
+- An optional `selector` receives the resource's full observable state
+  (`DocumentState`/`CollectionState`) and returns the slice that drives
+  re-renders. The hook routes through `useSyncExternalStoreWithSelector` and
+  gates *purely* on that slice via `isEqual` (default: the same
+  `valuesEqualForNoOp` value compare the subscription itself uses). A selected
+  handle is re-wrapped to expose only the slice as `data` plus the writers and
+  `ref`; the status fields (`isLoading`/`isSynced`/`error`/`isActive`) are
+  omitted unless the selector reads them into the slice, so churn on an
+  unselected status flag (e.g. `isSynced` on a save) cannot re-render it. A hook
+  with no `selector` instead projects the full observable state and re-renders on
+  any field or status change — the full handle. Either way the projection
+  deliberately excludes methods and `ref`; those are read *live* from the current
+  subscription's `getHandle()` at render time. Otherwise a subscription rebuild
+  whose projection happened to be value-equal would be collapsed by `isEqual`,
+  and the hook would keep handing back the previous subscription's methods (e.g.
+  `load()` against torn-down constraints).
 - Disabled hooks do not resolve params or create subscriptions.
 - Toggling `undoable` should not rebuild Firestore listeners.
 - `queryConstraints` are keyed by semantic query identity, not array

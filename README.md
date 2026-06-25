@@ -493,6 +493,54 @@ col({
 Path placeholders must look like `{name}`. Empty param values throw at runtime
 when a path is resolved.
 
+#### Named slice-hooks (`.select`)
+
+A bare entry generates a full-handle hook. Call `.select(...)` on an entry to
+derive a **named slice-hook** that shares the entry's schema and path — so the
+schema is declared once and reused — and re-renders only when its slice changes.
+Each derived hook is a flat sibling in the API, named by its registry key:
+
+```typescript
+const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+const tasks = col({ path: 'projects/{projectId}/tasks', schema: TaskSchema })
+
+export const { useProject, useProjectTitle, useTasks, useTaskIds, useTaskById } =
+    createFirestate({
+        project, // → useProject (full handle)
+        projectTitle: project.select((s) => s.data?.name),
+        tasks, // → useTasks (full handle)
+        taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
+        // Parameterized: the selector declares its own params; the generated
+        // hook then requires them alongside the path params, in one bag.
+        taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+    })
+```
+
+The selector receives the same full observable state as the inline `selector`
+option (see [Selecting a slice](#selecting-a-slice-selector--isequal)) and, for a
+parameterized slice, the merged params bag. At the call site you pass that one
+bag and (optionally) the runtime options — the selector and `isEqual` are baked
+into the hook, never passed per call:
+
+```tsx
+const title = useProjectTitle({ projectId }) //         data: string | undefined
+const ids = useTaskIds({ projectId }) //                data: string[]
+const one = useTaskById({ projectId, id }) //           data: Task | undefined  (merged bag)
+const disabled = useTaskById({ projectId, id }, { enabled: false })
+```
+
+A slice-hook returns a selected handle: `data` is the slice, plus the full
+writer surface and `ref` — so `one.update({ ... })` still writes the whole task,
+and a document slice-hook's `set` still replaces the whole document. Status
+fields are not on it unless the slice reads them.
+
+The base hook and all its slice-hooks share **one** subscription (one
+`onSnapshot` listener, one optimistic state), so a write through any of them is
+instantly visible to the rest. The inline `selector` option on the base hook
+still works for one-off slices; reach for `.select` when a slice is named,
+reused, or parameterized. (A derived entry is a leaf — there is no
+`.select(...).select(...)` chaining.)
+
 ### Definition Helpers
 
 #### `defineDocument(definition)`
@@ -607,31 +655,45 @@ remove('oldSpaceId')
 
 #### Selecting a slice (`selector` + `isEqual`)
 
-By default a component re-renders whenever *any* field of the subscribed
-document or collection changes. Pass a `selector` to narrow `data` to the slice
-the component actually reads — it then re-renders only when that slice changes.
-The hook still returns a **full handle**: `update`/`set`/`delete`/`add`/`remove`,
-`ref`, and the status flags are unchanged and still typed against the full
-document. A selector changes what you *read*, never what you *write*.
+By default a component re-renders whenever *any* field — or any status flag — of
+the subscribed document or collection changes, and the hook returns the **full
+handle** (`data`, `isLoading`, `isSynced`, `error`, the writers, and `ref`). Pass
+a `selector` to take control: it receives the resource's full observable state
+and returns the slice the component reacts to, so the component re-renders
+**only** when that slice changes.
+
+A selected handle exposes exactly your slice as `data`, plus the writer surface
+(`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — the status
+flags are **not** on it. You react to precisely what you select; status is not a
+freebie, so read it from the state inside the selector when you need it. A
+selector changes what you *read*, never what you *write*.
 
 ```typescript
-// Re-renders only when the title changes — not on any other field.
+// Re-renders only when the title changes — not on any other field, and not on a
+// save (isSynced) flip, because the selector never reads it.
 const { data: title, update } = useDocument({
     definition: projectDoc,
     params: { projectId },
-    selector: (project) => project?.title,
+    selector: (s) => s.data?.title,
 })
 update({ description: 'edited' }) // still a full-document update
+
+// Need a status flag? Select it — then, and only then, you re-render on it.
+const { data } = useDocument({
+    definition: projectDoc,
+    params: { projectId },
+    selector: (s) => ({ title: s.data?.title, saving: !s.isSynced }),
+})
 
 // On a collection, sub-select a single document or a derived value.
 const { data: space } = useCollection({
     definition: spacesCollection,
     params: { projectId },
-    selector: (spaces) => spaces[spaceId],
+    selector: (s) => s.data[spaceId],
 })
 ```
 
-`data` is `undefined` while a document is loading (and the collection record is
+`s.data` is `undefined` while a document is loading (and the collection record is
 `{}`), so selectors should handle the empty case.
 
 When writing from a narrowed handle, use `update` — it takes a *partial* and
@@ -651,7 +713,7 @@ import { shallow } from '@hvakr/firestate'
 const { data: ids } = useCollection({
     definition: spacesCollection,
     params: { projectId },
-    selector: (spaces) => Object.keys(spaces),
+    selector: (s) => Object.keys(s.data),
     isEqual: shallow,
 })
 ```

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import {
     FirestateProvider,
     useUndoManager,
@@ -7,214 +7,236 @@ import {
 } from '@hvakr/firestate'
 import { db } from './firebase'
 import { Task } from './types'
-import { useTaskList, useTasks } from './schemas'
+import {
+    useTasks,
+    useListName,
+    useListGate,
+    useTaskListView,
+    useTaskById,
+} from './schemas'
 
-// Hardcoded list ID for demo - in a real app this would come from routing
+// Hardcoded list ID for the demo — in a real app this would come from routing.
+// Defined at module scope so the params object identity is STABLE across
+// renders. That matters: `memo`'d children would otherwise see a fresh params
+// object every parent render and re-render anyway.
 const LIST_ID = 'demo-list'
+const PARAMS = { listId: LIST_ID }
 
-function TaskListEditor() {
-    const params = { listId: LIST_ID }
+// --- Why this file is split the way it is -----------------------------------
+//
+// A single component that reads the whole list + collection re-renders wholesale
+// on every keystroke, toggle, and sync flip. Instead, each piece below
+// subscribes to the narrowest slice it needs, via a NAMED slice-hook defined
+// next to the schema in `schemas.ts` (`useListName`, `useTaskById`, ...):
+//
+//   - A slice-hook gates re-renders driven by the STORE (a sibling's change
+//     won't touch you if your slice is value-equal).
+//   - `memo` gates re-renders driven by the PARENT (so when the list container
+//     re-renders on add/delete, existing rows don't re-render too).
+//
+// Minimal re-renders needs BOTH. The result: editing one task re-renders only
+// that row; renaming the list re-renders only the title; toggling sync state
+// re-renders only the sync badge. (The add form's write-only handle is the one
+// trivial one-off left inline, as `useTasks(..., { selector: () => null })`.)
+// ----------------------------------------------------------------------------
 
-    // The two hooks below come straight from `createFirestate(...)` in
-    // schemas.ts — one registry, generated `useTaskList` / `useTasks`.
-    const taskList = useTaskList(params)
-    const tasks = useTasks(params)
+/** List title. Subscribes to just `name` — re-renders only when the name changes. */
+function TitleEditor() {
+    const list = useListName(PARAMS)
+    return (
+        <input
+            type='text'
+            value={list.data ?? ''}
+            onChange={(e) =>
+                list.update({ name: e.target.value, updatedAt: Date.now() })
+            }
+            style={styles.titleInput}
+        />
+    )
+}
 
-    // Undo/redo functionality
-    const { undo, redo, canUndo, canRedo } = useUndoManager()
-
-    // Enable Ctrl/Cmd+Z and Ctrl/Cmd+Y keyboard shortcuts
-    useUndoKeyboardShortcuts()
-
-    // Global sync status
+/** Global "all saved?" indicator — re-renders only when sync state flips. */
+function SyncStatus() {
     const isSynced = useIsSynced()
+    return (
+        <div style={styles.syncStatus}>
+            {isSynced ? (
+                <span style={styles.synced}>All changes saved</span>
+            ) : (
+                <span style={styles.syncing}>Saving...</span>
+            )}
+        </div>
+    )
+}
 
-    // Local state for new task input
-    const [newTaskTitle, setNewTaskTitle] = useState('')
+/** Undo/redo buttons — re-renders only when undo availability changes. */
+function UndoRedo() {
+    const { undo, redo, canUndo, canRedo } = useUndoManager()
+    return (
+        <div style={styles.undoButtons}>
+            <button
+                onClick={undo}
+                disabled={!canUndo}
+                style={styles.undoButton}
+                title='Undo (Ctrl/Cmd+Z)'
+            >
+                Undo
+            </button>
+            <button
+                onClick={redo}
+                disabled={!canRedo}
+                style={styles.undoButton}
+                title='Redo (Ctrl/Cmd+Y)'
+            >
+                Redo
+            </button>
+        </div>
+    )
+}
 
-    // Create the task list if it doesn't exist
-    const createTaskList = () => {
-        taskList.set({
-            name: 'My Tasks',
-            description: 'A demo task list',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-        })
-    }
+/**
+ * Add-task form. Owns its own input state and a write-only handle: the constant
+ * selector keeps its slice value-equal forever, so task data changes never
+ * re-render the form — only its own keystrokes do.
+ */
+function AddTaskForm() {
+    const [title, setTitle] = useState('')
+    const tasks = useTasks(PARAMS, { selector: () => null })
 
-    // Add a new task
     const addTask = () => {
-        if (!newTaskTitle.trim()) return
-
-        const taskId = `task-${Date.now()}`
-        tasks.add(taskId, {
-            title: newTaskTitle.trim(),
+        const trimmed = title.trim()
+        if (!trimmed) return
+        tasks.add(`task-${Date.now()}`, {
+            title: trimmed,
             completed: false,
             priority: 'medium',
             createdAt: Date.now(),
         })
-        setNewTaskTitle('')
+        setTitle('')
     }
-
-    // Toggle task completion
-    const toggleTask = (taskId: string, completed: boolean) => {
-        tasks.update({ [taskId]: { completed: !completed } })
-    }
-
-    // Update task priority
-    const updatePriority = (taskId: string, priority: Task['priority']) => {
-        tasks.update({ [taskId]: { priority } })
-    }
-
-    // Delete a task
-    const deleteTask = (taskId: string) => {
-        tasks.remove(taskId)
-    }
-
-    // Loading state
-    if (taskList.isLoading) {
-        return <div style={styles.loading}>Loading...</div>
-    }
-
-    // Task list doesn't exist yet
-    if (!taskList.data) {
-        return (
-            <div style={styles.container}>
-                <h1>Firestate Tasks Example</h1>
-                <p>No task list found. Create one to get started.</p>
-                <button onClick={createTaskList} style={styles.button}>
-                    Create Task List
-                </button>
-            </div>
-        )
-    }
-
-    const taskArray = Object.entries(tasks.data).map(([id, task]) => ({
-        id,
-        ...task,
-    }))
 
     return (
+        <div style={styles.addForm}>
+            <input
+                type='text'
+                placeholder='Add a new task...'
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addTask()}
+                style={styles.input}
+            />
+            <button onClick={addTask} style={styles.button}>
+                Add
+            </button>
+        </div>
+    )
+}
+
+/**
+ * A single row, subscribed to its OWN task slice via `useTaskById`. The id is
+ * part of the merged params bag (`{ listId, id }`), so the row asks for exactly
+ * its task. Re-renders only when this task changes (store-driven); `memo` stops
+ * the list container from re-rendering it on add/delete. All rows still share
+ * one collection listener — the slice differs per row, the subscription doesn't.
+ */
+const TaskRow = memo(function TaskRow({ id }: { id: string }) {
+    const task = useTaskById({ ...PARAMS, id })
+    const data = task.data
+    if (!data) return null
+
+    return (
+        <li style={styles.taskItem}>
+            <input
+                type='checkbox'
+                checked={data.completed}
+                onChange={() =>
+                    task.update({ [id]: { completed: !data.completed } })
+                }
+                style={styles.checkbox}
+            />
+            <span
+                style={{
+                    ...styles.taskTitle,
+                    textDecoration: data.completed ? 'line-through' : 'none',
+                    opacity: data.completed ? 0.6 : 1,
+                }}
+            >
+                {data.title}
+            </span>
+            <select
+                value={data.priority}
+                onChange={(e) =>
+                    task.update({
+                        [id]: { priority: e.target.value as Task['priority'] },
+                    })
+                }
+                style={{
+                    ...styles.prioritySelect,
+                    backgroundColor: priorityColors[data.priority],
+                }}
+            >
+                <option value='low'>Low</option>
+                <option value='medium'>Medium</option>
+                <option value='high'>High</option>
+            </select>
+            <button onClick={() => task.remove(id)} style={styles.deleteButton}>
+                Delete
+            </button>
+        </li>
+    )
+})
+
+/**
+ * The list container. Its `taskListView` slice is a loading flag plus the
+ * ORDERED set of task ids. `createdAt` is immutable, so the id array is
+ * value-equal across field edits — this re-renders only when a task is added or
+ * removed (or the load flag flips). Each row fetches its own data. Status isn't
+ * free under the pure selector API, so `loading` is part of the slice.
+ */
+function TaskListBody() {
+    const tasks = useTaskListView(PARAMS)
+
+    if (tasks.data.loading) {
+        return <div style={styles.loading}>Loading tasks...</div>
+    }
+    if (tasks.data.ids.length === 0) {
+        return <p style={styles.empty}>No tasks yet. Add one above!</p>
+    }
+    return (
+        <ul style={styles.taskList}>
+            {tasks.data.ids.map((id) => (
+                <TaskRow key={id} id={id} />
+            ))}
+        </ul>
+    )
+}
+
+/** Attaches Ctrl/Cmd+Z / +Y shortcuts. Isolated so undo-state churn here can't
+ *  re-render the editor shell. */
+function UndoKeyboardShortcuts() {
+    useUndoKeyboardShortcuts()
+    return null
+}
+
+/**
+ * Pure layout. Subscribes to nothing, so it never re-renders after mount — each
+ * piece below owns its own subscription and updates independently.
+ */
+function EditorShell() {
+    return (
         <div style={styles.container}>
-            {/* Header with sync indicator */}
+            <UndoKeyboardShortcuts />
             <header style={styles.header}>
                 <div>
-                    <input
-                        type='text'
-                        value={taskList.data.name}
-                        onChange={(e) =>
-                            taskList.update({
-                                name: e.target.value,
-                                updatedAt: Date.now(),
-                            })
-                        }
-                        style={styles.titleInput}
-                    />
-                    <div style={styles.syncStatus}>
-                        {isSynced ? (
-                            <span style={styles.synced}>All changes saved</span>
-                        ) : (
-                            <span style={styles.syncing}>Saving...</span>
-                        )}
-                    </div>
+                    <TitleEditor />
+                    <SyncStatus />
                 </div>
-
-                {/* Undo/Redo buttons */}
-                <div style={styles.undoButtons}>
-                    <button
-                        onClick={undo}
-                        disabled={!canUndo}
-                        style={styles.undoButton}
-                        title='Undo (Ctrl/Cmd+Z)'
-                    >
-                        Undo
-                    </button>
-                    <button
-                        onClick={redo}
-                        disabled={!canRedo}
-                        style={styles.undoButton}
-                        title='Redo (Ctrl/Cmd+Y)'
-                    >
-                        Redo
-                    </button>
-                </div>
+                <UndoRedo />
             </header>
 
-            {/* Add task form */}
-            <div style={styles.addForm}>
-                <input
-                    type='text'
-                    placeholder='Add a new task...'
-                    value={newTaskTitle}
-                    onChange={(e) => setNewTaskTitle(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && addTask()}
-                    style={styles.input}
-                />
-                <button onClick={addTask} style={styles.button}>
-                    Add
-                </button>
-            </div>
+            <AddTaskForm />
+            <TaskListBody />
 
-            {/* Task list */}
-            {tasks.isLoading ? (
-                <div style={styles.loading}>Loading tasks...</div>
-            ) : taskArray.length === 0 ? (
-                <p style={styles.empty}>No tasks yet. Add one above!</p>
-            ) : (
-                <ul style={styles.taskList}>
-                    {taskArray
-                        .sort((a, b) => b.createdAt - a.createdAt)
-                        .map((task) => (
-                            <li key={task.id} style={styles.taskItem}>
-                                <input
-                                    type='checkbox'
-                                    checked={task.completed}
-                                    onChange={() =>
-                                        toggleTask(task.id, task.completed)
-                                    }
-                                    style={styles.checkbox}
-                                />
-                                <span
-                                    style={{
-                                        ...styles.taskTitle,
-                                        textDecoration: task.completed
-                                            ? 'line-through'
-                                            : 'none',
-                                        opacity: task.completed ? 0.6 : 1,
-                                    }}
-                                >
-                                    {task.title}
-                                </span>
-                                <select
-                                    value={task.priority}
-                                    onChange={(e) =>
-                                        updatePriority(
-                                            task.id,
-                                            e.target.value as Task['priority']
-                                        )
-                                    }
-                                    style={{
-                                        ...styles.prioritySelect,
-                                        backgroundColor:
-                                            priorityColors[task.priority],
-                                    }}
-                                >
-                                    <option value='low'>Low</option>
-                                    <option value='medium'>Medium</option>
-                                    <option value='high'>High</option>
-                                </select>
-                                <button
-                                    onClick={() => deleteTask(task.id)}
-                                    style={styles.deleteButton}
-                                >
-                                    Delete
-                                </button>
-                            </li>
-                        ))}
-                </ul>
-            )}
-
-            {/* Footer with tips */}
             <footer style={styles.footer}>
                 <p>
                     <strong>Tips:</strong> Try editing the list name, adding
@@ -231,6 +253,42 @@ function TaskListEditor() {
     )
 }
 
+/**
+ * Decides between loading / create-list / editor. Subscribes only to the list's
+ * EXISTENCE, so editing the name or tasks never re-renders this gate.
+ */
+function TaskListGate() {
+    const list = useListGate(PARAMS)
+
+    if (list.data.loading) {
+        return <div style={styles.loading}>Loading...</div>
+    }
+
+    if (!list.data.exists) {
+        return (
+            <div style={styles.container}>
+                <h1>Firestate Tasks Example</h1>
+                <p>No task list found. Create one to get started.</p>
+                <button
+                    onClick={() =>
+                        list.set({
+                            name: 'My Tasks',
+                            description: 'A demo task list',
+                            createdAt: Date.now(),
+                            updatedAt: Date.now(),
+                        })
+                    }
+                    style={styles.button}
+                >
+                    Create Task List
+                </button>
+            </div>
+        )
+    }
+
+    return <EditorShell />
+}
+
 export default function App() {
     return (
         <FirestateProvider
@@ -241,7 +299,7 @@ export default function App() {
                 console.error('Firestate error:', context.path, error)
             }}
         >
-            <TaskListEditor />
+            <TaskListGate />
         </FirestateProvider>
     )
 }

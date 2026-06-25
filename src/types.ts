@@ -138,11 +138,23 @@ export interface CollectionHandle<T extends FirestoreObject> {
   ref: CollectionReference<T> | undefined;
 }
 
+/** Reactive status fields a selector drops unless it folds them into its slice. */
+type DocumentStatusKeys = "isLoading" | "isSynced" | "error";
+type CollectionStatusKeys = DocumentStatusKeys | "isActive";
+
 /**
- * A {@link DocumentHandle} whose `data` has been narrowed to a selected slice
- * by a hook-level `selector`. Only `data` changes type — the writer surface
- * (`update`/`set`/`delete`) and `ref` stay typed against the full document
- * `TData`, because a selector changes what you *read*, never what you *write*.
+ * A {@link DocumentHandle} reduced to a hook-level `selector`'s output. The
+ * selector receives the full observable state ({@link DocumentState}) and
+ * returns the slice this component reacts to; the handle re-renders *only* when
+ * that slice changes.
+ *
+ * A selected handle deliberately exposes **only** `data` (the slice) plus the
+ * writer surface (`update`/`set`/`delete`/`sync`) and `ref` — never the status
+ * fields (`isLoading`/`isSynced`/`error`). Status is not a freebie here: if a
+ * component needs it, it must select it (`s => ({ slice: s.data?.x, loading:
+ * s.isLoading })`), so what you re-render on is exactly what you select. The
+ * writers stay typed against the full document `TData`, because a selector
+ * changes what you *read*, never what you *write*.
  *
  * Note: `update(diff)` takes a *partial* of the full document and merges it, so
  * writing a selected field is `update({ field: next })`. `set(data)` still
@@ -153,21 +165,24 @@ export interface CollectionHandle<T extends FirestoreObject> {
 export interface SelectedDocumentHandle<
   TData extends FirestoreObject,
   TSelected
-> extends Omit<DocumentHandle<TData>, "data"> {
+> extends Omit<DocumentHandle<TData>, "data" | DocumentStatusKeys> {
   /** The slice produced by the hook's `selector`. */
   data: TSelected;
 }
 
 /**
- * A {@link CollectionHandle} whose `data` has been narrowed to a selected slice
- * by a hook-level `selector`. As with {@link SelectedDocumentHandle}, the
- * writers (`update`/`add`/`remove`) and `ref` stay typed against the full
- * collection of `TData`.
+ * A {@link CollectionHandle} reduced to a hook-level `selector`'s output. As
+ * with {@link SelectedDocumentHandle}, the selector receives the full
+ * observable state ({@link CollectionState}) and the handle exposes only the
+ * slice plus the writer surface (`update`/`add`/`remove`/`load`/`sync`) and
+ * `ref` — status fields (`isLoading`/`isSynced`/`isActive`/`error`) are dropped
+ * unless folded into the slice. Writers stay typed against the full collection
+ * of `TData`.
  */
 export interface SelectedCollectionHandle<
   TData extends FirestoreObject,
   TSelected
-> extends Omit<CollectionHandle<TData>, "data"> {
+> extends Omit<CollectionHandle<TData>, "data" | CollectionStatusKeys> {
   /** The slice produced by the hook's `selector`. */
   data: TSelected;
 }

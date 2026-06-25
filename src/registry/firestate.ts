@@ -31,8 +31,10 @@ import {
 import type {
   CollectionDefinition,
   CollectionHandle,
+  CollectionState,
   DocumentDefinition,
   DocumentHandle,
+  DocumentState,
   FirestoreObject,
   SelectedCollectionHandle,
   SelectedDocumentHandle,
@@ -109,6 +111,44 @@ export interface DocEntry<
    * param typing and no runtime validation.
    */
   schema: ZodType<T>;
+
+  /**
+   * Derive a **named slice-hook** off this document, sharing its schema and
+   * path — the schema is handed to firestate once, here, and never
+   * re-specified. The `selector` receives the full {@link DocumentState};
+   * return the slice the generated hook reacts to. For a *parameterized* slice,
+   * declare the extra params as the selector's second argument — the generated
+   * hook then requires the path params **and** those, merged into one bag.
+   *
+   * Pass the result to {@link createFirestate} under the key the hook is named
+   * for. Status is reactive only if the slice reads it, exactly as the inline
+   * `selector` option (see {@link DocumentHandle}); the comparator (`isEqual`)
+   * is baked in here, not passed per call.
+   *
+   * ```ts
+   * const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+   * const { useProject, useProjectTitle } = createFirestate({
+   *   project,                                           // → useProject (full)
+   *   projectTitle: project.select((s) => s.data?.name), // → useProjectTitle
+   * })
+   * ```
+   *
+   * A derived entry is a leaf, not a base: there is intentionally no
+   * `.select(...).select(...)` chaining.
+   *
+   * `PExtra` (the selector's own params) defaults to `{}`: a one-argument
+   * selector leaves it unbound, a two-argument one infers it from the annotated
+   * second parameter. One signature keeps the selector's `state` arg reliably
+   * typed in both cases. `PExtra` is intentionally unconstrained — leaving it
+   * `extends Record<string, string>` made TS resolve a param-less selector's
+   * `PExtra` to that constraint (not the `{}` default), wrongly forcing a
+   * `params` arg on no-placeholder paths; unconstrained also lets a slice take
+   * non-string params (e.g. `{ index: number }`).
+   */
+  select<TSelected, PExtra = {}>(
+    selector: (state: DocumentState<T>, params: PExtra) => TSelected,
+    options?: SelectOptions<TSelected>
+  ): SelectedDocEntry<T, P, PExtra, TSelected>;
 }
 
 /** Collection entry in a Firestate registry. Produced by {@link col}. */
@@ -130,6 +170,87 @@ export interface ColEntry<
   lazy?: boolean;
   /** Additional Firestore query constraints. */
   queryConstraints?: QueryConstraint[];
+
+  /**
+   * Derive a **named slice-hook** off this collection, sharing its schema,
+   * path, and query — see {@link DocEntry.select}. The `selector` receives the
+   * full {@link CollectionState} (`s.data` is the keyed record), and a
+   * parameterized slice declares its extra params as the selector's second
+   * argument.
+   *
+   * ```ts
+   * const tasks = col({ path: 'projects/{projectId}/tasks', schema: TaskSchema })
+   * const { useTasks, useTaskIds, useTaskById } = createFirestate({
+   *   tasks,                                                  // → useTasks (full)
+   *   taskIds:  tasks.select((s) => Object.keys(s.data)),     // → useTaskIds
+   *   taskById: tasks.select((s, p: { id: string }) => s.data[p.id]), // → useTaskById
+   * })
+   * // useTaskById requires the merged bag: useTaskById({ projectId, id })
+   * ```
+   *
+   * `PExtra` defaults to `{}` and is unconstrained — see {@link DocEntry.select}.
+   */
+  select<TSelected, PExtra = {}>(
+    selector: (state: CollectionState<T>, params: PExtra) => TSelected,
+    options?: SelectOptions<TSelected>
+  ): SelectedColEntry<T, P, PExtra, TSelected>;
+}
+
+/**
+ * Options bundled into a `.select(...)` entry at definition time. Kept separate
+ * from the runtime hook options (`enabled`/`readOnly`/`queryConstraints`)
+ * because these are baked into the named hook, not passed per call.
+ */
+export interface SelectOptions<TSelected> {
+  /**
+   * Comparator for this named hook's slice; the hook re-renders only when it
+   * returns `false`. Defaults to a deep value compare (so a fresh object/array
+   * of equal shape does not over-render). Pass {@link shallow} or a custom fn.
+   */
+  isEqual?: (a: TSelected, b: TSelected) => boolean;
+}
+
+/**
+ * A {@link DocEntry} narrowed by a `.select(...)` projection. Produced by
+ * {@link DocEntry.select}, consumed by {@link createFirestate}, which turns it
+ * into a hook whose `data` is the slice (`TSelected`) and whose params are the
+ * path params (`P`) merged with the selector's own params (`PExtra`).
+ *
+ * The schema/path/options live on `base` — a derived entry never re-declares
+ * them. `PExtra` is `{}` for an un-parameterized selector.
+ */
+export interface SelectedDocEntry<
+  T extends FirestoreObject,
+  P extends string,
+  PExtra,
+  TSelected
+> {
+  readonly __kind: "document-selected";
+  /** Base entry carrying schema/path/options — handed to firestate once. */
+  readonly base: DocEntry<T, P>;
+  /** Projection over the full state; receives the merged params bag at runtime. */
+  readonly selector: (state: DocumentState<T>, params: PExtra) => TSelected;
+  /** Comparator baked in at definition time (see {@link SelectOptions}). */
+  readonly isEqual?: (a: TSelected, b: TSelected) => boolean;
+}
+
+/**
+ * A {@link ColEntry} narrowed by a `.select(...)` projection. See
+ * {@link SelectedDocEntry}; the selector receives the collection's keyed state.
+ */
+export interface SelectedColEntry<
+  T extends FirestoreObject,
+  P extends string,
+  PExtra,
+  TSelected
+> {
+  readonly __kind: "collection-selected";
+  /** Base entry carrying schema/path/query/options — handed to firestate once. */
+  readonly base: ColEntry<T, P>;
+  /** Projection over the full state; receives the merged params bag at runtime. */
+  readonly selector: (state: CollectionState<T>, params: PExtra) => TSelected;
+  /** Comparator baked in at definition time (see {@link SelectOptions}). */
+  readonly isEqual?: (a: TSelected, b: TSelected) => boolean;
 }
 
 export type FirestateEntry<
@@ -137,7 +258,15 @@ export type FirestateEntry<
   P extends string = string
 > = DocEntry<T, P> | ColEntry<T, P>;
 
-export type FirestateRegistry = Record<string, FirestateEntry<any, any>>;
+/** Any `.select(...)`-derived entry, regardless of its type parameters. */
+export type AnySelectedEntry =
+  | SelectedDocEntry<any, any, any, any>
+  | SelectedColEntry<any, any, any, any>;
+
+export type FirestateRegistry = Record<
+  string,
+  FirestateEntry<any, any> | AnySelectedEntry
+>;
 
 // ---------------------------------------------------------------------------
 // Path → params extraction
@@ -185,8 +314,15 @@ export type PathArg<P extends string> =
 // Entry factories
 // ---------------------------------------------------------------------------
 
-type DocOpts<T extends FirestoreObject> = Omit<DocEntry<T>, "__kind" | "__type" | "path">;
-type ColOpts<T extends FirestoreObject> = Omit<ColEntry<T>, "__kind" | "__type" | "path">;
+// `select` is excluded too: it's a method the factory attaches, never an input.
+type DocOpts<T extends FirestoreObject> = Omit<
+  DocEntry<T>,
+  "__kind" | "__type" | "path" | "select"
+>;
+type ColOpts<T extends FirestoreObject> = Omit<
+  ColEntry<T>,
+  "__kind" | "__type" | "path" | "select"
+>;
 
 /**
  * Declare a single-document entry for a Firestate registry.
@@ -231,10 +367,23 @@ export function doc<
     validateTemplate(path);
     splitDocPath(path);
   }
-  return { __kind: "document", path, ...rest } as unknown as DocEntry<
-    z.infer<S>,
-    P
-  >;
+  const entry = { __kind: "document", path, ...rest } as Record<string, unknown>;
+  // Attach the `.select(...)` builder. It closes over `entry`, so a derived
+  // entry's `base` is this exact object — the schema/path/options are handed to
+  // firestate once, here, and reused by every slice-hook derived from it.
+  entry.select = (
+    selector: (
+      state: DocumentState<FirestoreObject>,
+      params: Record<string, string>
+    ) => unknown,
+    options?: SelectOptions<unknown>
+  ): SelectedDocEntry<FirestoreObject, string, Record<string, string>, unknown> => ({
+    __kind: "document-selected",
+    base: entry as unknown as DocEntry<FirestoreObject, string>,
+    selector,
+    isEqual: options?.isEqual,
+  });
+  return entry as unknown as DocEntry<z.infer<S>, P>;
 }
 
 /**
@@ -256,10 +405,22 @@ export function col<
   if (typeof path === "string") {
     validateTemplate(path);
   }
-  return { __kind: "collection", path, ...rest } as unknown as ColEntry<
-    z.infer<S>,
-    P
-  >;
+  const entry = { __kind: "collection", path, ...rest } as Record<string, unknown>;
+  // See doc(): the builder closes over `entry` so derived hooks reuse this
+  // collection's schema/path/query — never re-specified.
+  entry.select = (
+    selector: (
+      state: CollectionState<FirestoreObject>,
+      params: Record<string, string>
+    ) => unknown,
+    options?: SelectOptions<unknown>
+  ): SelectedColEntry<FirestoreObject, string, Record<string, string>, unknown> => ({
+    __kind: "collection-selected",
+    base: entry as unknown as ColEntry<FirestoreObject, string>,
+    selector,
+    isEqual: options?.isEqual,
+  });
+  return entry as unknown as ColEntry<z.infer<S>, P>;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,10 +486,74 @@ interface ColHookRequiredParams<T extends FirestoreObject, P extends string> {
   ): SelectedCollectionHandle<T, TSelected>;
 }
 
-// If the path template has no placeholders, `params` is optional (any
-// caller-supplied object is fine). When the template has placeholders,
-// the caller must pass an object with exactly the extracted keys.
-type HookFor<E> = E extends DocEntry<infer T, infer P>
+// ---------------------------------------------------------------------------
+// Selected (`.select`) hook shapes
+// ---------------------------------------------------------------------------
+
+// The merged params bag for a selected hook: the path-template params (`P`)
+// intersected with the selector's own params (`PExtra`), flattened so errors
+// read as one object instead of an intersection.
+//
+// `PExtra` arrives as `any` when the selector took no params (an empty `{}`
+// `PExtra` widens to `any` through the registry's `AnySelectedEntry` bound — the
+// `{}` is absorbed in the contravariant selector position). `any` here means "no
+// declared params", so the bag is just the path params; otherwise a no-arg slice
+// on a no-placeholder path would wrongly demand a `Record<string, any>`. A real
+// `PExtra` (e.g. `{ id: string }`) is never `any` and merges normally.
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type SelectedParams<P extends string, PExtra> = IsAny<PExtra> extends true
+  ? ParamsOf<P>
+  : Prettify<ParamsOf<P> & PExtra>;
+
+// Generated hook for a selected document entry: `data` is the slice, `params`
+// is the merged bag, and `options` carries only the runtime knobs — the
+// selector and its comparator are baked in, so neither appears here. Params are
+// optional only when the merged bag has no keys (static path, no selector params).
+type SelectedDocHookFor<
+  T extends FirestoreObject,
+  P extends string,
+  PExtra,
+  TSelected
+> = keyof SelectedParams<P, PExtra> extends never
+  ? (
+      params?: Record<string, string>,
+      options?: DocHookOptions<T>
+    ) => SelectedDocumentHandle<T, TSelected>
+  : (
+      params: SelectedParams<P, PExtra>,
+      options?: DocHookOptions<T>
+    ) => SelectedDocumentHandle<T, TSelected>;
+
+// As {@link SelectedDocHookFor}, for a selected collection entry.
+type SelectedColHookFor<
+  T extends FirestoreObject,
+  P extends string,
+  PExtra,
+  TSelected
+> = keyof SelectedParams<P, PExtra> extends never
+  ? (
+      params?: Record<string, string>,
+      options?: ColHookOptions<T>
+    ) => SelectedCollectionHandle<T, TSelected>
+  : (
+      params: SelectedParams<P, PExtra>,
+      options?: ColHookOptions<T>
+    ) => SelectedCollectionHandle<T, TSelected>;
+
+// Selected entries are matched first: they carry no `path`/`schema`, so they
+// never collide with the base Doc/ColEntry arms below. For a base entry, a path
+// template with no placeholders takes optional `params`; one with placeholders
+// requires an object with exactly the extracted keys.
+type HookFor<E> = E extends SelectedDocEntry<
+  infer T,
+  infer P,
+  infer PExtra,
+  infer TSelected
+>
+  ? SelectedDocHookFor<T, P, PExtra, TSelected>
+  : E extends SelectedColEntry<infer T, infer P, infer PExtra, infer TSelected>
+  ? SelectedColHookFor<T, P, PExtra, TSelected>
+  : E extends DocEntry<infer T, infer P>
   ? keyof ParamsOf<P> extends never
     ? DocHookOptionalParams<T>
     : DocHookRequiredParams<T, P>
@@ -358,6 +583,42 @@ export function createFirestate<R extends FirestateRegistry>(
 ): FirestateApi<R> {
   const api: Record<string, unknown> = {};
 
+  // Built definitions are memoized by their *base entry object*, so the base
+  // hook and every `.select` sibling derived from it resolve the SAME definition
+  // — and therefore the SAME shared subscription (one onSnapshot listener, one
+  // optimistic state). `.select` stores the base entry by reference, so `entry`
+  // (a base) and `entry.base` (a selected entry) hit the same key. Without this,
+  // each registry key built a fresh definition and the shared-subscription
+  // registry (keyed by definition identity) forked one listener per hook.
+  const docDefs = new Map<
+    DocEntry<FirestoreObject, string>,
+    DocumentDefinition<FirestoreObject>
+  >();
+  const colDefs = new Map<
+    ColEntry<FirestoreObject, string>,
+    CollectionDefinition<FirestoreObject>
+  >();
+  const docDefFor = (
+    base: DocEntry<FirestoreObject, string>
+  ): DocumentDefinition<FirestoreObject> => {
+    let def = docDefs.get(base);
+    if (!def) {
+      def = buildDocumentDefinition(base);
+      docDefs.set(base, def);
+    }
+    return def;
+  };
+  const colDefFor = (
+    base: ColEntry<FirestoreObject, string>
+  ): CollectionDefinition<FirestoreObject> => {
+    let def = colDefs.get(base);
+    if (!def) {
+      def = buildCollectionDefinition(base);
+      colDefs.set(base, def);
+    }
+    return def;
+  };
+
   for (const key of Object.keys(registry)) {
     if (!isValidKey(key)) {
       throw new Error(
@@ -368,17 +629,51 @@ export function createFirestate<R extends FirestateRegistry>(
     const hookName = toHookName(key);
 
     if (entry.__kind === "document") {
-      const definition = buildDocumentDefinition(entry);
+      const definition = docDefFor(entry);
       api[hookName] = (
         params: Record<string, string> = {},
         options: DocHookOptions<FirestoreObject> = {}
       ) => useDocument({ ...options, definition, params });
-    } else {
-      const definition = buildCollectionDefinition(entry);
+    } else if (entry.__kind === "collection") {
+      const definition = colDefFor(entry);
       api[hookName] = (
         params: Record<string, string> = {},
         options: ColHookOptions<FirestoreObject> = {}
       ) => useCollection({ ...options, definition, params });
+    } else if (entry.__kind === "document-selected") {
+      const definition = docDefFor(entry.base);
+      const { selector, isEqual } = entry;
+      api[hookName] = (
+        params: Record<string, string> = {},
+        options: DocHookOptions<FirestoreObject> = {}
+      ) =>
+        useDocument({
+          ...options,
+          definition,
+          params,
+          // Adapt the (state, params) selector to Level 1's inline `selector`
+          // by closing over this call's params bag — so a parameterized slice
+          // (e.g. `(s, p) => s.data[p.id]`) reads its id from the same bag the
+          // path resolved from. A fresh closure each render is fine: useDocument
+          // dedupes on the selected *value*, not the selector's identity.
+          selector: (state) => selector(state, params),
+          isEqual,
+        });
+    } else {
+      // collection-selected
+      const definition = colDefFor(entry.base);
+      const { selector, isEqual } = entry;
+      api[hookName] = (
+        params: Record<string, string> = {},
+        options: ColHookOptions<FirestoreObject> = {}
+      ) =>
+        useCollection({
+          ...options,
+          definition,
+          params,
+          selector: (state) => selector(state, params),
+          isEqual,
+        });
     }
   }
 

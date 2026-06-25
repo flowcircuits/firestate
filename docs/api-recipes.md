@@ -255,34 +255,37 @@ but it is no longer required to keep the listener stable.
 
 ## Render Slicing with Selectors
 
-By default a component re-renders on any change to the subscribed document or
-collection. Pass a `selector` (in the options object, for both the registry and
-lower-level hooks) to narrow `data` to the slice you read; the component then
-re-renders only when that slice changes.
+By default a component re-renders on any field or status change of the subscribed
+document or collection. Pass a `selector` (in the options object, for both the
+registry and lower-level hooks): it receives the resource's full observable state
+and returns the slice the component reacts to, and the component then re-renders
+only when that slice changes.
 
 ```tsx
-// Re-renders only when `name` changes.
+// Re-renders only when `name` changes — and not on a save (isSynced) flip,
+// because the selector never reads it.
 const { data: name } = useProject(
     { projectId },
-    { selector: (project) => project?.name }
+    { selector: (s) => s.data?.name }
 )
 
 // Sub-select one document out of a collection.
 const { data: space } = useSpaces(
     { projectId },
-    { selector: (spaces) => spaces[spaceId] }
+    { selector: (s) => s.data[spaceId] }
 )
 ```
 
-The hook still returns a **full handle**. Only `data` becomes the slice —
-`update`/`set`/`delete`/`add`/`remove`, `ref`, and the status flags are
-unchanged and stay typed against the full document. Readers and writers share
-one hook:
+A selected handle exposes exactly your slice as `data`, plus the writer surface
+(`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — all still
+typed against the full document. The status flags are **not** on it; fold them
+into the slice (`s => ({ slice: s.data?.x, saving: !s.isSynced })`) when you need
+to react to them. Readers and writers share one hook:
 
 ```tsx
 const { data: title, update } = useProject(
     { projectId },
-    { selector: (p) => p?.title }
+    { selector: (s) => s.data?.title }
 )
 update({ archived: true }) // a full-document update, even though we read `title`
 ```
@@ -305,7 +308,7 @@ import { shallow } from '@hvakr/firestate'
 
 const { data: ids } = useSpaces(
     { projectId },
-    { selector: (spaces) => Object.keys(spaces), isEqual: shallow }
+    { selector: (s) => Object.keys(s.data), isEqual: shallow }
 )
 ```
 
@@ -320,6 +323,60 @@ a different slice of the same document attach one listener, not ten. A write
 through any handle is instantly visible to every selector reading that resource,
 and the listener is torn down only when the last of them unmounts. `readOnly` is
 not part of that key — see [Read-Only Handles](#read-only-handles).
+
+## Named Slice-Hooks (`.select`)
+
+When a slice is reused, named, or parameterized, register it on the entry with
+`.select(...)` instead of passing a `selector` at every call site. The derived
+hook shares the entry's schema and path (declared once) and is a flat sibling in
+the generated API, named by its registry key.
+
+```ts
+import { createFirestate, doc, col, shallow } from '@hvakr/firestate'
+
+const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+const tasks = col({ path: 'projects/{projectId}/tasks', schema: TaskSchema })
+
+export const { useProject, useProjectTitle, useTasks, useTaskIds, useTaskById } =
+    createFirestate({
+        project,
+        projectTitle: project.select((s) => s.data?.name),
+        tasks,
+        taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
+        taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+    })
+```
+
+A parameterized selector declares its own params as the selector's second
+argument. The generated hook requires them merged with the path params, in one
+bag — there is no separate "selector args" position:
+
+```tsx
+const title = useProjectTitle({ projectId })       // data: string | undefined
+const ids = useTaskIds({ projectId })              // data: string[]
+const task = useTaskById({ projectId, id })        // data: Task | undefined
+```
+
+The selector and its `isEqual` are baked into the hook; the call-site options
+object is only for runtime knobs (`enabled`, `readOnly`, `queryConstraints`).
+Passing `selector`/`isEqual` there is a type error — that distinction is the
+point of `.select`.
+
+Most apps wrap these once in a provider hook that pre-supplies the path params,
+so feature components never thread `projectId` themselves:
+
+```tsx
+// In a ProjectProvider, where projectId is already known:
+export function useProjectTaskById(id: string) {
+    return useTaskById({ projectId, id })
+}
+// Feature component: useProjectTaskById(taskId)
+```
+
+`.select` is additive: the inline `selector` option (above) still works for
+one-off slices. Reach for `.select` when the slice earns a name; keep trivial
+one-offs (e.g. a write-only `() => null`) inline. A derived entry is a leaf —
+there is no `.select(...).select(...)` chaining.
 
 ## Undo and Redo
 
@@ -399,7 +456,7 @@ const project = useProject({ projectId })
 // Leaf elsewhere in the tree: reads the same optimistic state, can't write.
 const { data: title } = useProject(
     { projectId },
-    { readOnly: true, selector: (p) => p?.title }
+    { readOnly: true, selector: (s) => s.data?.title }
 )
 ```
 

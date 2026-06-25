@@ -106,15 +106,28 @@ Preserve these unless the task explicitly changes them.
   Callers therefore do not need to memoize `queryConstraints` for correctness.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
-- A hook `selector` only narrows what the handle's `data` field holds and what
-  drives re-renders. It must never change the writer surface
-  (`update`/`set`/`delete`/`add`/`remove`) or `ref`, which stay typed against
-  the full document. The default slice comparison is value-based
-  (`valuesEqualForNoOp`), so an identity selector reproduces the pre-selector
-  re-render behavior and a selector returning a fresh object does not
-  over-render. Methods/`ref` are read live from the subscription, not from the
-  memoized selection, so a rebuilt subscription always surfaces its own methods
-  even when the selected slice is value-equal.
+- A hook `selector` receives the resource's full observable state
+  (`DocumentState`/`CollectionState`) and returns the slice that drives
+  re-renders; the hook gates purely on that slice (default value-based
+  `valuesEqualForNoOp`, or a supplied `isEqual`). A selected handle exposes ONLY
+  that slice as `data` plus the writer surface
+  (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — status
+  fields are absent unless the selector folds them in, so a status flip the
+  selector ignores (e.g. `isSynced` churning on a save) cannot re-render it. A
+  hook called WITHOUT a selector is unchanged: it returns the full handle and
+  re-renders on any field or status change. Writers/`ref` are read live from the
+  subscription, not from the memoized selection, so a rebuilt subscription always
+  surfaces its own methods even when the selected slice is value-equal.
+- A registry entry's `.select(selector, { isEqual? })` derives a **named
+  slice-hook** that shares the entry's schema/path (declared once) and becomes a
+  flat sibling in the generated API, named by its registry key. The selector is
+  `(state, params) => slice`; its second arg declares the slice's own params
+  (`PExtra`, default `{}`), and the generated hook's params are the path-template
+  params intersected with `PExtra` (one merged bag — `useTaskById({ projectId,
+  id })`). `createFirestate` adapts it to the inline `selector` option by closing
+  over the call's params bag, so a slice-hook is just a base hook with the
+  selector/`isEqual` baked in (call-site options carry only `enabled`/`readOnly`/
+  `queryConstraints`). Derived entries are leaves: no `.select(...).select(...)`.
 - Subscriptions are shared and ref-counted, keyed by `(definition, resolved
   path, doc id / semantic query identity)`. Every `useDocument` /
   `useCollection` call for the same resource resolves the *same* underlying
