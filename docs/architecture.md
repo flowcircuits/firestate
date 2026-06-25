@@ -4,7 +4,9 @@ Firestate has two public API layers over the same core subscription system.
 
 The recommended layer is the registry API:
 
-- `createFirestate(registry)` creates named React hooks.
+- `createFirestate(registry)` creates named React hooks. It is used **once per
+  resource** (a document or collection plus its slice-hooks), in that resource's
+  own module — not once for the whole app.
 - `doc({ path, schema })` declares one document entry.
 - `col({ path, schema })` declares one collection entry.
 
@@ -140,6 +142,14 @@ generated hook then just calls `useDocument`/`useCollection` with the selector a
 `isEqual` injected — adapting the entry's `(state, params)` selector to the hook's
 inline `selector` option by closing over the call's params bag. A slice-hook is
 therefore just a base hook with the projection baked in.
+
+The memoization map is local to each `createFirestate` call, which is what makes
+the per-resource layout safe: a resource's base hook and its slices, declared in
+one call, resolve one definition and so one subscription. The flip side is the
+constraint — splitting a single resource's base and slices across two
+`createFirestate` calls produces two definitions and forks the subscription. So
+the recommended unit is one resource (doc/col) per module with its own
+`createFirestate` call; separate resources are independent by construction.
 
 The type layer carries four parameters on a derived entry — `T`, the path literal
 `P`, the selector's own params `PExtra` (default `{}`), and the slice `TSelected`.

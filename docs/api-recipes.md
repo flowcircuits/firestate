@@ -5,16 +5,15 @@ modifying Firestate.
 
 ## Recommended Registry API
 
-Use `createFirestate`, `doc`, and `col` for normal app code.
+Use `createFirestate`, `doc`, and `col` for normal app code — **one
+`createFirestate` call per resource**, in that resource's own module. Each call
+owns one document or collection plus its slice-hooks; sibling resources are
+sibling modules with their own calls.
 
 ```ts
+// firestore/spaces.ts
 import { z } from 'zod'
-import { createFirestate, doc, col } from '@hvakr/firestate'
-
-const ProjectSchema = z.object({
-    name: z.string(),
-    createdAt: z.number(),
-})
+import { createFirestate, col } from '@hvakr/firestate'
 
 const SpaceSchema = z.object({
     name: z.string(),
@@ -22,17 +21,19 @@ const SpaceSchema = z.object({
     floor: z.number(),
 })
 
-export const { useProject, useSpaces } = createFirestate({
-    project: doc({
-        path: 'projects/{projectId}',
-        schema: ProjectSchema,
-    }),
-    spaces: col({
-        path: 'projects/{projectId}/spaces',
-        schema: SpaceSchema,
-        lazy: true,
-    }),
+const spaces = col({
+    path: 'projects/{projectId}/spaces',
+    schema: SpaceSchema,
+    lazy: true,
 })
+
+export const { useSpaces } = createFirestate({ spaces })
+```
+
+```ts
+// firestore/project.ts — a separate resource, its own call
+const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+export const { useProject } = createFirestate({ project })
 ```
 
 Generated hooks require exactly the params implied by the path template:
@@ -41,6 +42,15 @@ Generated hooks require exactly the params implied by the path template:
 const project = useProject({ projectId })
 const spaces = useSpaces({ projectId })
 ```
+
+`createFirestate` is a per-resource hook factory, not an app-wide registry. The
+recommended layout colocates each resource's schema, base hook, and
+[slice-hooks](#named-slice-hooks-select) in one module. Sharing is keyed by
+definition identity (a module-scope definition is one stable object), so hooks
+from a resource module share one listener everywhere they're used, and every
+resource module mounts under the one global `FirestateProvider`. The single
+rule: a resource's base hook and all its `.select` slices must be in the **same**
+call — splitting one resource across two calls forks its subscription.
 
 ## Lower-Level Escape Hatch
 
@@ -331,20 +341,19 @@ When a slice is reused, named, or parameterized, register it on the entry with
 hook shares the entry's schema and path (declared once) and is a flat sibling in
 the generated API, named by its registry key.
 
-```ts
-import { createFirestate, doc, col, shallow } from '@hvakr/firestate'
+A base entry and all its slices go in the same per-resource call (the tasks
+collection here lives in `firestore/tasks.ts`; `project` would be its own module):
 
-const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+```ts
+import { createFirestate, col, shallow } from '@hvakr/firestate'
+
 const tasks = col({ path: 'projects/{projectId}/tasks', schema: TaskSchema })
 
-export const { useProject, useProjectTitle, useTasks, useTaskIds, useTaskById } =
-    createFirestate({
-        project,
-        projectTitle: project.select((s) => s.data?.name),
-        tasks,
-        taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
-        taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
-    })
+export const { useTasks, useTaskIds, useTaskById } = createFirestate({
+    tasks,
+    taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
+    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+})
 ```
 
 A parameterized selector declares its own params as the selector's second
@@ -352,7 +361,6 @@ argument. The generated hook requires them merged with the path params, in one
 bag — there is no separate "selector args" position:
 
 ```tsx
-const title = useProjectTitle({ projectId })       // data: string | undefined
 const ids = useTaskIds({ projectId })              // data: string[]
 const task = useTaskById({ projectId, id })        // data: Task | undefined
 ```

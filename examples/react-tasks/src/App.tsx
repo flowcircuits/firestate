@@ -6,14 +6,10 @@ import {
     useIsSynced,
 } from '@hvakr/firestate'
 import { db } from './firebase'
-import { Task } from './types'
-import {
-    useTasks,
-    useListName,
-    useListGate,
-    useTaskListView,
-    useTaskById,
-} from './schemas'
+// Hooks come from their resource module, not one central registry — the list's
+// slices live in `firestore/taskList.ts`, the collection's in `firestore/tasks.ts`.
+import { useListName, useListGate } from './firestore/taskList'
+import { useTasks, useTaskListView, useTaskById, Task } from './firestore/tasks'
 
 // Hardcoded list ID for the demo — in a real app this would come from routing.
 // Defined at module scope so the params object identity is STABLE across
@@ -27,7 +23,8 @@ const PARAMS = { listId: LIST_ID }
 // A single component that reads the whole list + collection re-renders wholesale
 // on every keystroke, toggle, and sync flip. Instead, each piece below
 // subscribes to the narrowest slice it needs, via a NAMED slice-hook defined
-// next to the schema in `schemas.ts` (`useListName`, `useTaskById`, ...):
+// next to the schema in its resource module (`firestore/taskList.ts`,
+// `firestore/tasks.ts` — `useListName`, `useTaskById`, ...):
 //
 //   - A slice-hook gates re-renders driven by the STORE (a sibling's change
 //     won't touch you if your slice is value-equal).

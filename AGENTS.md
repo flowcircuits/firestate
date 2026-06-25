@@ -9,23 +9,29 @@ Firestate is a TypeScript library for using Cloud Firestore from React with
 real-time listeners, optimistic local state, debounced writes, undo/redo, sync
 state tracking, and optional Zod validation.
 
-The recommended application API is registry-based:
+The recommended application API is registry-based, scoped **one
+`createFirestate` call per resource** (a document or collection), each in its
+own module alongside its schema and slice-hooks:
 
 ```ts
+// firestore/tasks.ts
 import { z } from 'zod'
-import { createFirestate, doc, col } from '@hvakr/firestate'
+import { createFirestate, col } from '@hvakr/firestate'
 
-const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
-const TaskSchema = z.object({
-    title: z.string(),
-    completed: z.boolean(),
-})
+const TaskSchema = z.object({ title: z.string(), completed: z.boolean() })
+const tasks = col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema })
 
-export const { useTaskList, useTasks } = createFirestate({
-    taskList: doc({ path: 'taskLists/{listId}', schema: TaskListSchema }),
-    tasks: col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema }),
+export const { useTasks, useTaskById } = createFirestate({
+    tasks,                                                  // → useTasks (full handle)
+    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
 })
 ```
+
+`createFirestate` is a per-resource hook factory, not an app-global registry:
+sharing is keyed by definition identity, so a resource's base hook and all its
+`.select` slices must go through the SAME call to share one subscription, while
+separate resources are separate calls (and correctly independent). See the
+shared-subscription contract below.
 
 The lower-level API is `defineDocument` / `defineCollection` plus
 `useDocument` / `useCollection`. Use it for custom path derivation, non-React
@@ -128,6 +134,15 @@ Preserve these unless the task explicitly changes them.
   over the call's params bag, so a slice-hook is just a base hook with the
   selector/`isEqual` baked in (call-site options carry only `enabled`/`readOnly`/
   `queryConstraints`). Derived entries are leaves: no `.select(...).select(...)`.
+- `createFirestate` is a *per-resource* hook factory, not an app-global
+  registry. Each call builds its own definitions (memoized per base entry within
+  that call), so a resource's base hook and all its `.select` slices must go
+  through the SAME call to share one subscription — splitting one resource across
+  two calls forks it into two listeners with divergent optimistic state. The
+  recommended layout is one resource (doc/col) per module with its own
+  `createFirestate` call and flat-exported hooks; separate resources are
+  separate calls and are correctly independent. Docs and the `react-tasks`
+  example follow this layout — keep new examples per-resource.
 - Subscriptions are shared and ref-counted, keyed by `(definition, resolved
   path, doc id / semantic query identity)`. Every `useDocument` /
   `useCollection` call for the same resource resolves the *same* underlying

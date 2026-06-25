@@ -32,24 +32,25 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 
 Firestate exposes two layers. Pick one based on what you're building:
 
-- **`createFirestate` + `doc` / `col`** (recommended for app code) — declare every Firestore thing in a single registry object; the library generates one typed React hook per entry. Each entry takes a `path` template and a Zod `schema`. In return you get:
+- **`createFirestate` + `doc` / `col`** (recommended for app code) — declare a Firestore resource (a document or collection) with a `path` template and a Zod `schema`, and the library generates one typed React hook per entry. In return you get:
   - the data type (`TaskList`) inferred from the schema via `z.infer`
   - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
   - runtime validation on `set` / `add` writes — bad data throws at the call site instead of after a Firestore round trip
 
   Partial `update(diff)` calls are intentionally NOT validated: diffs commonly include Firestore sentinels like `serverTimestamp()` that a strict schema would reject.
 
+  Treat `createFirestate` as a **per-resource hook factory**, not an app-wide registry: give each document/collection its own module (`firestore/taskList.ts`, `firestore/tasks.ts`, …) with one `createFirestate` call, and export the hooks flat. See [Organizing by resource](#organizing-by-resource).
+
   ```ts
+  // firestore/taskList.ts
   import { z } from 'zod'
-  import { createFirestate, doc, col } from '@hvakr/firestate'
+  import { createFirestate, doc } from '@hvakr/firestate'
 
   const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
-  const TaskSchema     = z.object({ title: z.string(), completed: z.boolean() })
 
-  export const { useTaskList, useTasks } = createFirestate({
-    taskList: doc({ path: 'taskLists/{listId}',       schema: TaskListSchema }),
-    tasks:    col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema }),
-  })
+  const taskList = doc({ path: 'taskLists/{listId}', schema: TaskListSchema })
+
+  export const { useTaskList } = createFirestate({ taskList })
 
   // useTaskList({ listId })           — { listId: string } statically required
   // useTaskList()                     — type error: missing listId
@@ -64,9 +65,39 @@ Firestate exposes two layers. Pick one based on what you're building:
 
 Both layers share the same store, undo manager, and sync semantics — the registry is a thin layer on top of the lower-level primitives.
 
+### Organizing by resource
+
+`createFirestate` is best used **once per resource**, not once for your whole app. Put each document or collection in its own module — its schema, its base hook, and its [named slice-hooks](#named-slice-hooks-select) together — and call `createFirestate` there:
+
+```ts
+// firestore/tasks.ts
+import { z } from 'zod'
+import { createFirestate, col } from '@hvakr/firestate'
+
+const TaskSchema = z.object({ title: z.string(), completed: z.boolean(), createdAt: z.number() })
+const tasks = col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema })
+
+export const { useTasks, useTaskById } = createFirestate({
+  tasks,                                                  // → useTasks (full handle)
+  taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+})
+
+// firestore/taskList.ts is a sibling module with its own createFirestate call.
+// Components import directly from the resource: `import { useTaskById } from './firestore/tasks'`.
+```
+
+Why per-resource rather than one central call:
+
+- **It scales.** A central registry becomes a chokepoint every feature edits; resource modules keep a resource's schema, hooks, and slices colocated and let you code-split.
+- **Sharing still works app-wide.** Subscriptions are keyed by *definition identity*, and a resource module's definition lives at module scope (one stable object), so every component using `useTasks`/`useTaskById` shares one `onSnapshot` listener and one optimistic state — no matter how many modules.
+- **The store stays global.** All resource modules mount under one `FirestateProvider`, so undo/redo and sync tracking span every resource regardless of how you split the files.
+
+**The one rule:** keep a resource's base hook *and* all its `.select` slices in the **same** `createFirestate` call. Each call builds its own definitions, so splitting one resource across two calls would fork it into two listeners. Separate *resources* in separate calls is exactly what you want; separating *one* resource is the mistake.
+
 ## Table of Contents
 
 - [Choosing an API](#choosing-an-api)
+- [Organizing by resource](#organizing-by-resource)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Examples](#examples)
@@ -420,14 +451,15 @@ awaiting writes is not feasible.
 Creates typed React hooks from a registry object. Each key becomes a hook named
 `use{CapitalizedKey}`.
 
-```typescript
-import { z } from 'zod'
-import { createFirestate, doc, col } from '@hvakr/firestate'
+Call it **once per resource** — a document or collection with its base hook and
+its [slice-hooks](#named-slice-hooks-select) — in that resource's own module. See
+[Organizing by resource](#organizing-by-resource) for why, and the one sharing
+rule that comes with it.
 
-const ProjectSchema = z.object({
-    name: z.string(),
-    createdAt: z.number(),
-})
+```typescript
+// firestore/spaces.ts
+import { z } from 'zod'
+import { createFirestate, col } from '@hvakr/firestate'
 
 const SpaceSchema = z.object({
     name: z.string(),
@@ -435,23 +467,18 @@ const SpaceSchema = z.object({
     floor: z.number(),
 })
 
-export const { useProject, useSpaces } = createFirestate({
-    project: doc({
-        path: 'projects/{projectId}',
-        schema: ProjectSchema,
-    }),
-    spaces: col({
-        path: 'projects/{projectId}/spaces',
-        schema: SpaceSchema,
-        lazy: true,
-    }),
+const spaces = col({
+    path: 'projects/{projectId}/spaces',
+    schema: SpaceSchema,
+    lazy: true,
 })
+
+export const { useSpaces } = createFirestate({ spaces })
 ```
 
 Generated hooks require the params implied by the path template:
 
 ```tsx
-const project = useProject({ projectId })
 const spaces = useSpaces({ projectId })
 ```
 
@@ -500,20 +527,26 @@ derive a **named slice-hook** that shares the entry's schema and path — so the
 schema is declared once and reused — and re-renders only when its slice changes.
 Each derived hook is a flat sibling in the API, named by its registry key:
 
+Define each `.select` slice in the **same** `createFirestate` call as its base
+entry — one resource per module (see [Organizing by resource](#organizing-by-resource)):
+
 ```typescript
-const project = doc({ path: 'projects/{projectId}', schema: ProjectSchema })
+// firestore/tasks.ts
 const tasks = col({ path: 'projects/{projectId}/tasks', schema: TaskSchema })
 
-export const { useProject, useProjectTitle, useTasks, useTaskIds, useTaskById } =
-    createFirestate({
-        project, // → useProject (full handle)
-        projectTitle: project.select((s) => s.data?.name),
-        tasks, // → useTasks (full handle)
-        taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
-        // Parameterized: the selector declares its own params; the generated
-        // hook then requires them alongside the path params, in one bag.
-        taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
-    })
+export const { useTasks, useTaskIds, useTaskById } = createFirestate({
+    tasks, // → useTasks (full handle)
+    taskIds: tasks.select((s) => Object.keys(s.data), { isEqual: shallow }),
+    // Parameterized: the selector declares its own params; the generated
+    // hook then requires them alongside the path params, in one bag.
+    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+})
+
+// firestore/project.ts — a separate resource, its own call:
+// export const { useProject, useProjectTitle } = createFirestate({
+//     project,
+//     projectTitle: project.select((s) => s.data?.name),
+// })
 ```
 
 The selector receives the same full observable state as the inline `selector`
@@ -523,7 +556,6 @@ bag and (optionally) the runtime options — the selector and `isEqual` are bake
 into the hook, never passed per call:
 
 ```tsx
-const title = useProjectTitle({ projectId }) //         data: string | undefined
 const ids = useTaskIds({ projectId }) //                data: string[]
 const one = useTaskById({ projectId, id }) //           data: Task | undefined  (merged bag)
 const disabled = useTaskById({ projectId, id }, { enabled: false })
@@ -534,12 +566,13 @@ writer surface and `ref` — so `one.update({ ... })` still writes the whole tas
 and a document slice-hook's `set` still replaces the whole document. Status
 fields are not on it unless the slice reads them.
 
-The base hook and all its slice-hooks share **one** subscription (one
+A base hook and all its slice-hooks share **one** subscription (one
 `onSnapshot` listener, one optimistic state), so a write through any of them is
-instantly visible to the rest. The inline `selector` option on the base hook
-still works for one-off slices; reach for `.select` when a slice is named,
-reused, or parameterized. (A derived entry is a leaf — there is no
-`.select(...).select(...)` chaining.)
+instantly visible to the rest — which is why they must live in one
+`createFirestate` call. The inline `selector` option on the base hook still works
+for one-off slices; reach for `.select` when a slice is named, reused, or
+parameterized. (A derived entry is a leaf — there is no `.select(...).select(...)`
+chaining.)
 
 ### Definition Helpers
 
