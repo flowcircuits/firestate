@@ -9,6 +9,9 @@ export type {
     // State types
     DocumentState,
     CollectionState,
+    // Per-resource status types
+    SyncStatus,
+    LoadingStatus,
     // Handle types
     DocumentHandle,
     CollectionHandle,
@@ -102,6 +105,10 @@ export {
     useStore,
     useDocument,
     useCollection,
+    useDocumentSyncStatus,
+    useDocumentLoadingStatus,
+    useCollectionSyncStatus,
+    useCollectionLoadingStatus,
     useUndoManager,
     useIsSynced,
     useUndoKeyboardShortcuts,
@@ -111,6 +118,8 @@ export {
 export type {
     UseDocumentOptions,
     UseCollectionOptions,
+    UseDocumentStatusOptions,
+    UseCollectionStatusOptions,
     DocumentSelectorOptions,
     CollectionSelectorOptions,
 } from './react/hooks'

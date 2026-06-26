@@ -219,6 +219,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const getPublicState = (): DocumentState<TData> => ({
         data: getMergedData(),
         isLoading: state.isLoading,
+        // The completion of isLoading: the first snapshot has arrived (and any
+        // minLoadTime has elapsed). isLoading already folds in both, so the
+        // inverse is the "ready to render" signal.
+        isLoaded: !state.isLoading,
         isSynced: state.localState === undefined,
         error: state.error,
     })
@@ -228,6 +232,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     // leaves every observable field unchanged must not invalidate the handle
     // or wake consumers, or the write-back render loop survives.
     let lastPublished: DocumentState<TData> | null = null
+    // Cached public state — like cachedHandle, returns the same reference until
+    // notify() invalidates it, so the hook layer can use getState() as a stable
+    // useSyncExternalStore snapshot.
+    let cachedState: DocumentState<TData> | null = null
 
     const publicStateChanged = observableStateChanged
 
@@ -251,6 +259,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         }
         lastPublished = publicState
         cachedHandle = null
+        // Reuse the just-built state as the cached snapshot so getState() and
+        // the published value share one identity-stable reference.
+        cachedState = publicState
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
     }
@@ -721,8 +732,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         update: updateState,
         set: setData,
         delete: deleteDocument,
-        isLoading: state.isLoading,
-        isSynced: state.localState === undefined,
+        isLoaded: !state.isLoading,
         sync,
         error: state.error,
         ref: docRef,
@@ -735,11 +745,20 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         return cachedHandle
     }
 
+    // Identity-stable like getHandle: rebuilt only after notify() invalidates
+    // the cache, so useSyncExternalStore can treat it as the snapshot.
+    const getState = (): DocumentState<TData> => {
+        if (cachedState === null) {
+            cachedState = getPublicState()
+        }
+        return cachedState
+    }
+
     return {
         load,
         stop,
         subscribe,
-        getState: getPublicState,
+        getState,
         getHandle,
         sync,
     }

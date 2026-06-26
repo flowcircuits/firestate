@@ -48,7 +48,7 @@ import { defineCollection } from '../registry/schema'
 import { createFirestate, col } from '../registry/firestate'
 import { z } from 'zod'
 import { createStore, type FirestateStore } from '../core/store'
-import type { CollectionHandle, FirestoreObject } from '../types'
+import type { CollectionHandle, FirestoreObject, LoadingStatus } from '../types'
 
 interface Station extends FirestoreObject {
     name: string
@@ -158,7 +158,7 @@ describe('useCollection queryConstraints identity', () => {
             listeners[0]!.deliver(snapshot)
             vi.runAllTimers()
         })
-        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.isLoaded).toBe(true)
         expect(latestHandle.data.ws1?.name).toBe('Station 1')
     }
 
@@ -189,7 +189,7 @@ describe('useCollection queryConstraints identity', () => {
         // Same query → same subscription: no teardown, no reload, data intact.
         expect(onSnapshotMock).toHaveBeenCalledTimes(1)
         expect(listeners[0]!.unsubscribe).not.toHaveBeenCalled()
-        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.isLoaded).toBe(true)
         expect(latestHandle.data.ws1?.name).toBe('Station 1')
     })
 
@@ -206,10 +206,10 @@ describe('useCollection queryConstraints identity', () => {
         })
 
         // Different query → old listener torn down, new one attached, loading
-        // state reset.
+        // state reset (isLoaded back to false until the new snapshot arrives).
         expect(onSnapshotMock).toHaveBeenCalledTimes(2)
         expect(listeners[0]!.unsubscribe).toHaveBeenCalledTimes(1)
-        expect(latestHandle.isLoading).toBe(true)
+        expect(latestHandle.isLoaded).toBe(false)
         expect(latestHandle.data).toEqual({})
 
         // The new listener queries with the new constraints.
@@ -254,7 +254,7 @@ describe('useCollection queryConstraints identity', () => {
         })
 
         expect(onSnapshotMock).toHaveBeenCalledTimes(1)
-        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.isLoaded).toBe(true)
         expect(latestHandle.data.ws1?.name).toBe('Station 1')
 
         const queryArg = onSnapshotMock.mock.calls[0]![0]
@@ -312,7 +312,7 @@ describe('useCollection queryConstraints identity', () => {
         })
 
         expect(onSnapshotMock).toHaveBeenCalledTimes(1)
-        expect(latestHandle.isLoading).toBe(false)
+        expect(latestHandle.isLoaded).toBe(true)
         expect(latestHandle.data.ws1?.name).toBe('Station 1')
 
         const queryArg = onSnapshotMock.mock.calls[0]![0]
@@ -445,10 +445,11 @@ describe('shared collection subscriptions', () => {
             handles.a!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
         })
 
-        // Optimistic add is shared state — the other handle sees it at once.
+        // Optimistic add is shared state — the other handle sees it at once,
+        // and the one shared subscription reports unsynced (sync state is read
+        // off the store / sync-status hook, not the default handle).
         expect(handles.b!.data.ws9?.name).toBe('Added')
-        expect(handles.a!.isSynced).toBe(false)
-        expect(handles.b!.isSynced).toBe(false)
+        expect(store.isSynced).toBe(false)
     })
 
     it('shares one listener and state across a writable and a read-only hook', () => {
@@ -473,7 +474,7 @@ describe('shared collection subscriptions', () => {
             handles.writer!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
         })
         expect(handles.reader!.data.ws9?.name).toBe('Added')
-        expect(handles.reader!.isSynced).toBe(false)
+        expect(store.isSynced).toBe(false)
 
         // The read-only handle's writers are no-ops: it cannot mutate the
         // shared state.
@@ -538,10 +539,12 @@ describe('createFirestate .select shares one collection listener (real queries)'
     const ThingSchema = z.object({ title: z.string() })
     // Base + two slices off the SAME base entry, all on one collection path.
     const things = col({ path: 'things', schema: ThingSchema })
+    const lazyThings = col({ path: 'lazyThings', schema: ThingSchema, lazy: true })
     const api = createFirestate({
         things,
         thingById: things.select((s, p: { id: string }) => s.data[p.id]),
         thingIds: things.select((s) => Object.keys(s.data)),
+        lazyThings,
     })
 
     beforeEach(() => {
@@ -587,5 +590,65 @@ describe('createFirestate .select shares one collection listener (real queries)'
         })
 
         expect(listeners.length).toBe(1)
+    })
+
+    it('a generated collection sync-status hook shares the base listener', () => {
+        // The collection counterpart of the sharing guarantee, with real
+        // query/queryEqual: useThingsSyncStatus resolves the SAME (path, query)
+        // entry as useThings — readOnly and the baked sync selector are not part
+        // of the share key — so opting into sync state adds no second listener.
+        const Probe = (): null => {
+            api.useThings()
+            api.useThingsSyncStatus()
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+
+        expect(listeners.length).toBe(1)
+    })
+
+    it('a generated lazy collection loading-status hook rides the data hook load()', () => {
+        // The flip side of the lazy caveat (asserted idle-only in
+        // status-hooks.test.ts): a status hook never calls load() itself, but
+        // when a co-mounted data hook does, both resolve the SAME (path, query)
+        // entry — readOnly and the baked selector aren't part of the key — so the
+        // status hook rides that one listener instead of staying stuck at idle.
+        let data: CollectionHandle<{ title: string }> | undefined
+        let loading: LoadingStatus | undefined
+        const Probe = (): null => {
+            data = api.useLazyThings()
+            loading = api.useLazyThingsLoadingStatus()
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+
+        // Lazy: nothing attaches until load() runs, and the status hook won't.
+        expect(listeners.length).toBe(0)
+        expect(loading).toEqual({ isLoading: false, isLoaded: false })
+
+        // load() through the data handle activates the ONE shared listener; the
+        // status hook rides it (no second listener) and observes the load.
+        act(() => {
+            data!.load()
+            vi.runAllTimers()
+        })
+        expect(listeners.length).toBe(1)
+        expect(loading).toEqual({ isLoading: true, isLoaded: false })
     })
 })

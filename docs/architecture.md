@@ -206,22 +206,35 @@ project and diff the observable state — with or without a `selector`).
 Important details:
 
 - Hooks return stable disabled handles when `enabled: false`.
-- An optional `selector` receives the resource's full observable state
-  (`DocumentState`/`CollectionState`) and returns the slice that drives
-  re-renders. The hook routes through `useSyncExternalStoreWithSelector` and
-  gates *purely* on that slice via `isEqual` (default: the same
-  `valuesEqualForNoOp` value compare the subscription itself uses). A selected
-  handle is re-wrapped to expose only the slice as `data` plus the writers and
-  `ref`; the status fields (`isLoading`/`isSynced`/`error`/`isActive`) are
-  omitted unless the selector reads them into the slice, so churn on an
-  unselected status flag (e.g. `isSynced` on a save) cannot re-render it. A hook
-  with no `selector` instead projects the full observable state and re-renders on
-  any field or status change — the full handle. Either way the projection
-  deliberately excludes methods and `ref`; those are read *live* from the current
-  subscription's `getHandle()` at render time. Otherwise a subscription rebuild
-  whose projection happened to be value-equal would be collapsed by `isEqual`,
-  and the hook would keep handing back the previous subscription's methods (e.g.
-  `load()` against torn-down constraints).
+- The `useSyncExternalStore` snapshot is the resource's full observable state
+  (`DocumentState`/`CollectionState`: `data`, `isLoading`, `isLoaded`,
+  `isSynced`, `error`, and a collection's `isActive`), read from the
+  subscription's cached `getState()`. An optional `selector` receives that state
+  and returns the slice that drives re-renders; the hook routes through
+  `useSyncExternalStoreWithSelector` and gates *purely* on that slice via
+  `isEqual` (default: the same `valuesEqualForNoOp` value compare the
+  subscription itself uses). A selected handle is re-wrapped to expose only the
+  slice as `data` plus the writers and `ref`; the status fields
+  (`isLoaded`/`error`/`isActive`) are omitted unless the selector reads them into
+  the slice, so churn on an unselected status flag (e.g. `isSynced` on a save)
+  cannot re-render it.
+- A hook with **no** `selector` projects the **sync-agnostic default**:
+  `{ data, isLoaded, error }` for a document, plus `isActive` for a collection —
+  never `isSynced`. So the autosave `isSynced` flip cannot re-render a plain data
+  reader; the returned default handle (`{ data, isLoaded, error, ...writers, ref }`,
+  plus `isActive` for collections) likewise has no `isSynced`/`isLoading`.
+  `isLoaded` is `!isLoading` (doc) / `isActive && !isLoading` (col). Save and load
+  state are opt-in: the per-resource `use{Name}SyncStatus` /
+  `use{Name}LoadingStatus` hooks (generated for base entries by `createFirestate`,
+  or the standalone `useDocumentSyncStatus`/… helpers) are thin readers over
+  `useDocument`/`useCollection` with a fixed read-only selector, so they resolve
+  the same shared entry — one listener — and read the same optimistic state.
+- Either way the projection deliberately excludes methods and `ref`; those are
+  read *live* from the current subscription's `getHandle()` at render time (a
+  separate read from the state snapshot). Otherwise a subscription rebuild whose
+  projection happened to be value-equal would be collapsed by `isEqual`, and the
+  hook would keep handing back the previous subscription's methods (e.g. `load()`
+  against torn-down constraints).
 - Disabled hooks do not resolve params or create subscriptions.
 - Toggling `undoable` should not rebuild Firestore listeners.
 - `queryConstraints` are keyed by semantic query identity, not array
@@ -231,8 +244,9 @@ Important details:
   array references without changing the query (e.g. ids read from a
   deep-cloned document), the listener is preserved; a genuine query change
   rebuilds it. Callers need not memoize the array for correctness.
-- Subscription handles are cached until state changes, so React sees stable
-  snapshots between commits.
+- Subscription state and handles are both cached until state changes (`getState()`
+  and `getHandle()` return identity-stable references, rebuilt only on `notify()`),
+  so React sees stable snapshots between commits.
 
 ## Document Subscriptions
 

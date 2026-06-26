@@ -35,28 +35,44 @@ export interface UpdateOptions {
 }
 
 /**
- * State of a document subscription
+ * The full observable state of a document subscription — what a hook `selector`
+ * receives. Carries every status flag (including `isSynced`, which the default
+ * data handle deliberately omits) so a selector can react to exactly the slice
+ * it reads.
  */
 export interface DocumentState<T> {
   /** Current merged state (local changes applied to sync state) */
   data: T | undefined;
-  /** Whether initial data has loaded */
+  /** Whether the initial snapshot has not arrived yet */
   isLoading: boolean;
-  /** Whether there are pending local changes */
+  /**
+   * Whether the initial snapshot has arrived and data is ready to render — the
+   * completion of {@link DocumentState.isLoading} (`!isLoading` for a live
+   * subscription; `false` while the hook is disabled).
+   */
+  isLoaded: boolean;
+  /** Whether all local changes have synced to Firestore (no pending writes) */
   isSynced: boolean;
   /** Error from listener, if any */
   error: Error | undefined;
 }
 
 /**
- * State of a collection subscription
+ * The full observable state of a collection subscription — what a hook
+ * `selector` receives. See {@link DocumentState}.
  */
 export interface CollectionState<T> {
   /** Current merged state keyed by document ID */
   data: Record<string, T>;
-  /** Whether initial data has loaded */
+  /** Whether the initial snapshot has not arrived yet */
   isLoading: boolean;
-  /** Whether there are pending local changes */
+  /**
+   * Whether the collection is active and its initial snapshot has arrived —
+   * `isActive && !isLoading`. `false` for a lazy collection before `load()`,
+   * and while the hook is disabled.
+   */
+  isLoaded: boolean;
+  /** Whether all local changes have synced to Firestore (no pending writes) */
   isSynced: boolean;
   /** Whether the collection has been activated (for lazy loading) */
   isActive: boolean;
@@ -65,7 +81,40 @@ export interface CollectionState<T> {
 }
 
 /**
- * Document handle returned by useDocument hook
+ * Sync status of a single resource, returned by the per-entry
+ * `use{Name}SyncStatus` hook. Opt-in: only components that render save/dirty
+ * state subscribe to it, so the common data path does not re-render when a write
+ * settles. Shares the resource's one `onSnapshot` listener.
+ */
+export interface SyncStatus {
+  /** Whether all local changes have synced to Firestore (no pending writes) */
+  isSynced: boolean;
+  /** Whether there are pending local changes still being saved (`!isSynced`) */
+  isSaving: boolean;
+}
+
+/**
+ * Loading status of a single resource, returned by the per-entry
+ * `use{Name}LoadingStatus` hook. A spinner-only channel: it re-renders on load
+ * transitions but never on data changes. Shares the resource's listener.
+ */
+export interface LoadingStatus {
+  /** Whether the initial snapshot has not arrived yet */
+  isLoading: boolean;
+  /** Whether the initial snapshot has arrived (the completion of `isLoading`) */
+  isLoaded: boolean;
+}
+
+/**
+ * Document handle returned by the `useDocument` hook.
+ *
+ * **Sync-agnostic by default.** The handle carries `data`, `isLoaded`, `error`,
+ * the writers, and `ref` — but NOT `isSynced`. A document hook therefore does
+ * not re-render when a write settles (the `isSynced` flip on every autosave),
+ * so "just render the record" is the cheap, default path. Components that
+ * actually render save/dirty state opt into the per-entry `use{Name}SyncStatus`
+ * hook ({@link SyncStatus}), which shares the same listener. The raw
+ * `isLoading`/`isSynced` flags remain on {@link DocumentState} for selectors.
  */
 export interface DocumentHandle<T extends FirestoreObject> {
   /** Current document data */
@@ -79,10 +128,13 @@ export interface DocumentHandle<T extends FirestoreObject> {
   set: (data: T, options?: UpdateOptions) => void;
   /** Delete the document */
   delete: (options?: UpdateOptions) => void;
-  /** Whether initial data is loading */
-  isLoading: boolean;
-  /** Whether all changes have synced to Firestore */
-  isSynced: boolean;
+  /**
+   * Whether the initial snapshot has arrived and data is ready to render — the
+   * completion of `isLoading`. `false` while loading or when the hook is
+   * disabled. (Use `use{Name}LoadingStatus` for an `isLoading`/`isLoaded`
+   * channel that does not re-render on data changes.)
+   */
+  isLoaded: boolean;
   /** Force sync pending changes immediately */
   sync: () => Promise<void>;
   /** Error from listener, if any */
@@ -95,7 +147,13 @@ export interface DocumentHandle<T extends FirestoreObject> {
 }
 
 /**
- * Collection handle returned by useCollection hook
+ * Collection handle returned by the `useCollection` hook.
+ *
+ * Sync-agnostic by default, exactly like {@link DocumentHandle}: it carries
+ * `data`, `isLoaded`, `isActive`, `error`, the writers, `load`, and `ref` — but
+ * NOT `isSynced`. Opt into `use{Name}SyncStatus` for save state. `isActive`
+ * stays (lazy collections gate a "Load" button on it); `isLoaded` is
+ * `isActive && !isLoading`.
  */
 export interface CollectionHandle<T extends FirestoreObject> {
   /** Current collection data keyed by document ID */
@@ -119,10 +177,12 @@ export interface CollectionHandle<T extends FirestoreObject> {
   };
   /** Remove a document from the collection */
   remove: (id: string, options?: UpdateOptions) => void;
-  /** Whether initial data is loading */
-  isLoading: boolean;
-  /** Whether all changes have synced to Firestore */
-  isSynced: boolean;
+  /**
+   * Whether the collection is active and its initial snapshot has arrived
+   * (ready to render) — `isActive && !isLoading`. `false` for a lazy
+   * collection before `load()`, while loading, or when the hook is disabled.
+   */
+  isLoaded: boolean;
   /** Whether subscription is active (for lazy collections) */
   isActive: boolean;
   /** Activate a lazy subscription */
@@ -139,7 +199,7 @@ export interface CollectionHandle<T extends FirestoreObject> {
 }
 
 /** Reactive status fields a selector drops unless it folds them into its slice. */
-type DocumentStatusKeys = "isLoading" | "isSynced" | "error";
+type DocumentStatusKeys = "isLoaded" | "error";
 type CollectionStatusKeys = DocumentStatusKeys | "isActive";
 
 /**
@@ -150,8 +210,8 @@ type CollectionStatusKeys = DocumentStatusKeys | "isActive";
  *
  * A selected handle deliberately exposes **only** `data` (the slice) plus the
  * writer surface (`update`/`set`/`delete`/`sync`) and `ref` — never the status
- * fields (`isLoading`/`isSynced`/`error`). Status is not a freebie here: if a
- * component needs it, it must select it (`s => ({ slice: s.data?.x, loading:
+ * fields (`isLoaded`/`error`). Status is not a freebie here: if a component
+ * needs it, it must select it (`s => ({ slice: s.data?.x, loading:
  * s.isLoading })`), so what you re-render on is exactly what you select. The
  * writers stay typed against the full document `TData`, because a selector
  * changes what you *read*, never what you *write*.
@@ -175,9 +235,9 @@ export interface SelectedDocumentHandle<
  * with {@link SelectedDocumentHandle}, the selector receives the full
  * observable state ({@link CollectionState}) and the handle exposes only the
  * slice plus the writer surface (`update`/`add`/`remove`/`load`/`sync`) and
- * `ref` — status fields (`isLoading`/`isSynced`/`isActive`/`error`) are dropped
- * unless folded into the slice. Writers stay typed against the full collection
- * of `TData`.
+ * `ref` — status fields (`isLoaded`/`isActive`/`error`) are dropped unless
+ * folded into the slice. Writers stay typed against the full collection of
+ * `TData`.
  */
 export interface SelectedCollectionHandle<
   TData extends FirestoreObject,
