@@ -1063,7 +1063,19 @@ export function useDocumentLoadingStatus<TData extends FirestoreObject>(
     }).data
 }
 
-/** Collection counterpart of {@link useDocumentSyncStatus}. */
+/**
+ * Collection counterpart of {@link useDocumentSyncStatus} — `{ isSynced,
+ * isSaving }` over a collection query, sharing its one listener.
+ *
+ * **Lazy caveat.** On a `lazy` collection this hook never calls `load()` itself:
+ * activating a lazy listener is the data hook's job, and a passive status reader
+ * must not silently start the listener (and bill the reads) the laziness exists
+ * to defer. As the *lone* subscriber it therefore attaches no listener and stays
+ * at the idle `{ isSynced: true, isSaving: false }`. Mount it alongside a
+ * {@link useCollection} on the same query whose `load()` has run — the status
+ * hook rides that one shared listener and reports real sync state. Non-lazy
+ * collections activate on mount, so this hook works standalone there.
+ */
 export function useCollectionSyncStatus<TData extends FirestoreObject>(
     options: UseCollectionStatusOptions<TData>
 ): SyncStatus {
@@ -1077,7 +1089,16 @@ export function useCollectionSyncStatus<TData extends FirestoreObject>(
     }).data
 }
 
-/** Collection counterpart of {@link useDocumentLoadingStatus}. */
+/**
+ * Collection counterpart of {@link useDocumentLoadingStatus} — `{ isLoading,
+ * isLoaded }` over a collection query, sharing its one listener.
+ *
+ * Same lazy caveat as {@link useCollectionSyncStatus}: on a `lazy` collection it
+ * never calls `load()`, so as the lone subscriber it attaches no listener and
+ * stays at the idle `{ isLoading: false, isLoaded: false }` until a co-mounted
+ * {@link useCollection} (or any active hook on the same query) activates the
+ * shared listener via `load()`. Non-lazy collections activate on mount.
+ */
 export function useCollectionLoadingStatus<TData extends FirestoreObject>(
     options: UseCollectionStatusOptions<TData>
 ): LoadingStatus {

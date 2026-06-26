@@ -576,6 +576,12 @@ type HookFor<E> = E extends SelectedDocEntry<
 // Each *base* doc/col entry also gets `use{Name}SyncStatus` and
 // `use{Name}LoadingStatus`. `.select` (derived) entries do not: a slice's sync
 // and loading status are the resource's, read through its base hooks.
+//
+// Lazy caveat: for a `lazy` collection these status hooks never call `load()`
+// themselves (a passive reader must not activate the listener the laziness
+// defers), so a lone status hook reports idle until a co-mounted `use{Name}`
+// data hook activates the shared listener via `load()`. See
+// useCollectionSyncStatus in ../react/hooks for the full rationale.
 type SyncStatusHookName<K extends string> = `${HookName<K>}SyncStatus`;
 type LoadingStatusHookName<K extends string> = `${HookName<K>}LoadingStatus`;
 

@@ -48,6 +48,9 @@ const api = createFirestate({
     // entries only (see the type checks at the bottom).
     thingName: thingDoc.select((s) => s.data?.name),
     things: col({ path: 'things', schema: ThingSchema }),
+    // A lazy collection — its listener attaches ONLY via load(), so a status
+    // hook (which never calls load()) can't activate it on its own.
+    lazyThings: col({ path: 'lazyThings', schema: ThingSchema, lazy: true }),
 })
 
 describe('sync-agnostic default handle', () => {
@@ -298,6 +301,62 @@ describe('useDocumentLoadingStatus (generated useThingLoadingStatus)', () => {
         expect(status).toEqual({ isLoading: false, isLoaded: false })
         expect(h.listeners()).toHaveLength(0)
     })
+})
+
+// A lazy collection attaches its listener ONLY when something calls load().
+// Status hooks return a status object, not a handle — they discard load() — and
+// useCollection's subscribe() skips load() for lazy collections. So a status
+// hook can only observe a lazy collection by riding a co-mounted data hook that
+// activates the shared listener; on its own it can never leave the idle status.
+describe('collection status hooks on a lazy collection', () => {
+    let store: FirestateStore
+    let h: Harness
+    let renderer: ReactTestRenderer | undefined
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        h = createHarness()
+        store = createStore({ firestore: {} as never, autosave: 0 })
+    })
+
+    afterEach(() => {
+        act(() => renderer?.unmount())
+        renderer = undefined
+        vi.useRealTimers()
+    })
+
+    const mount = (node: ReactNode): void => {
+        act(() => {
+            renderer = create(
+                createElement(FirestateContext.Provider, { value: store }, node)
+            )
+        })
+    }
+
+    it('stays idle with no listener as the lone subscriber (the documented caveat)', () => {
+        let sync: SyncStatus | undefined
+        let loading: LoadingStatus | undefined
+        const Probe = (): null => {
+            sync = api.useLazyThingsSyncStatus()
+            loading = api.useLazyThingsLoadingStatus()
+            return null
+        }
+        mount(createElement(Probe))
+
+        // No data hook ran load(), and the status hooks deliberately won't — so
+        // no listener ever attaches and the status is stuck at idle. Asserted so
+        // a future "auto-load inside the status hook" change is caught: that
+        // would silently activate a lazy listener a passive reader should defer.
+        expect(h.listeners()).toHaveLength(0)
+        expect(sync).toEqual({ isSynced: true, isSaving: false })
+        expect(loading).toEqual({ isLoading: false, isLoaded: false })
+    })
+
+    // The flip side — a status hook riding a co-mounted data hook's load() to
+    // observe real state — needs cross-hook collection sharing, which keys on
+    // semantic query identity and so requires the real-query harness. It lives in
+    // hooks.test.ts ('a generated lazy collection loading-status hook ...').
 })
 
 // Compile-time contract checks (never executed; validated by `tsc --noEmit`).

@@ -48,7 +48,7 @@ import { defineCollection } from '../registry/schema'
 import { createFirestate, col } from '../registry/firestate'
 import { z } from 'zod'
 import { createStore, type FirestateStore } from '../core/store'
-import type { CollectionHandle, FirestoreObject } from '../types'
+import type { CollectionHandle, FirestoreObject, LoadingStatus } from '../types'
 
 interface Station extends FirestoreObject {
     name: string
@@ -539,10 +539,12 @@ describe('createFirestate .select shares one collection listener (real queries)'
     const ThingSchema = z.object({ title: z.string() })
     // Base + two slices off the SAME base entry, all on one collection path.
     const things = col({ path: 'things', schema: ThingSchema })
+    const lazyThings = col({ path: 'lazyThings', schema: ThingSchema, lazy: true })
     const api = createFirestate({
         things,
         thingById: things.select((s, p: { id: string }) => s.data[p.id]),
         thingIds: things.select((s) => Object.keys(s.data)),
+        lazyThings,
     })
 
     beforeEach(() => {
@@ -611,5 +613,42 @@ describe('createFirestate .select shares one collection listener (real queries)'
         })
 
         expect(listeners.length).toBe(1)
+    })
+
+    it('a generated lazy collection loading-status hook rides the data hook load()', () => {
+        // The flip side of the lazy caveat (asserted idle-only in
+        // status-hooks.test.ts): a status hook never calls load() itself, but
+        // when a co-mounted data hook does, both resolve the SAME (path, query)
+        // entry — readOnly and the baked selector aren't part of the key — so the
+        // status hook rides that one listener instead of staying stuck at idle.
+        let data: CollectionHandle<{ title: string }> | undefined
+        let loading: LoadingStatus | undefined
+        const Probe = (): null => {
+            data = api.useLazyThings()
+            loading = api.useLazyThingsLoadingStatus()
+            return null
+        }
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Probe)
+                )
+            )
+        })
+
+        // Lazy: nothing attaches until load() runs, and the status hook won't.
+        expect(listeners.length).toBe(0)
+        expect(loading).toEqual({ isLoading: false, isLoaded: false })
+
+        // load() through the data handle activates the ONE shared listener; the
+        // status hook rides it (no second listener) and observes the load.
+        act(() => {
+            data!.load()
+            vi.runAllTimers()
+        })
+        expect(listeners.length).toBe(1)
+        expect(loading).toEqual({ isLoading: true, isLoaded: false })
     })
 })

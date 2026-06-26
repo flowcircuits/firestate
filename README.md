@@ -817,6 +817,12 @@ re-renders only when sync state flips; `useSpacesLoadingStatus` re-renders only
 on the load transition, never on data. Collection status hooks take the same
 `queryConstraints` as the data hook (pass the same query to share the listener).
 
+On a **lazy** collection, a status hook does not call `load()` itself — so as
+the *only* subscriber it stays idle (`{ isSynced: true, isSaving: false }` /
+`{ isLoading: false, isLoaded: false }`) and attaches no listener. Pair it with
+the data hook, whose `load()` activates the one shared listener the status hook
+then rides. Non-lazy collections activate on mount, so this is lazy-only.
+
 `.select` (slice) entries do **not** get their own status hooks — a slice's sync
 and loading state is the resource's, read through the base entry's status hooks.
 

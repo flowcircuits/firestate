@@ -413,6 +413,13 @@ Both share the entry's one `onSnapshot` listener with the data hook (sharing is
 keyed by `(definition, path, query)`, not by which hook calls it), so opting in
 adds no subscription. Collection status hooks take the same `queryConstraints` as
 the data hook — pass the same query so they resolve the same shared entry.
+
+On a **lazy** collection, a status hook never calls `load()` itself — so if it
+is the *only* subscriber it attaches no listener and stays idle
+(`{ isSynced: true, isSaving: false }` / `{ isLoading: false, isLoaded: false }`).
+Mount it alongside the data hook, whose `load()` activates the shared listener
+the status hook then rides. Non-lazy collections activate on mount, so this only
+affects lazy ones.
 `.select` (slice) entries don't get status hooks; read a slice's status through
 its base entry. The lower-level API exposes the same as standalone
 `useDocumentSyncStatus` / `useDocumentLoadingStatus` /
