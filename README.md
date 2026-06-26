@@ -220,22 +220,33 @@ function App() {
 
 ```tsx
 // ProjectEditor.tsx
-import { useDocument, useCollection, useUndoManager } from '@hvakr/firestate'
+import {
+    useDocument,
+    useCollection,
+    useDocumentSyncStatus,
+    useUndoManager,
+} from '@hvakr/firestate'
 import { projectDoc, spacesCollection } from './schemas'
 
 function ProjectEditor({ projectId }: { projectId: string }) {
     const params = { projectId }
 
-    // Subscribe to project document
+    // Subscribe to project document. The default handle is sync-agnostic — it
+    // carries `data`/`isLoaded`/`error`, not `isSynced`, so it does NOT
+    // re-render when a save settles.
     const project = useDocument({ definition: projectDoc, params })
 
     // Subscribe to spaces collection (lazy)
     const spaces = useCollection({ definition: spacesCollection, params })
 
+    // Opt into save state only where you render it — shares the project's one
+    // listener, so it doesn't add a subscription.
+    const { isSaving } = useDocumentSyncStatus({ definition: projectDoc, params })
+
     // Access undo/redo
     const { undo, redo, canUndo, canRedo } = useUndoManager()
 
-    if (project.isLoading) return <Spinner />
+    if (!project.isLoaded) return <Spinner />
     if (!project.data) return <NotFound />
 
     return (
@@ -253,7 +264,7 @@ function ProjectEditor({ projectId }: { projectId: string }) {
             {/* Lazy-load spaces */}
             {!spaces.isActive ? (
                 <button onClick={spaces.load}>Load Spaces</button>
-            ) : spaces.isLoading ? (
+            ) : !spaces.isLoaded ? (
                 <Spinner />
             ) : (
                 <ul>
@@ -266,7 +277,7 @@ function ProjectEditor({ projectId }: { projectId: string }) {
             )}
 
             {/* Sync indicator */}
-            {!project.isSynced && <span>Saving...</span>}
+            {isSaving && <span>Saving...</span>}
         </div>
     )
 }
@@ -622,8 +633,7 @@ const {
     update,         // Update with partial diff
     set,            // Replace entire document
     delete: del,    // Delete the document
-    isLoading,      // Whether initial data is loading
-    isSynced,       // Whether all changes are synced
+    isLoaded,       // Whether the initial snapshot has arrived (ready to render)
     sync,           // Force sync immediately
     error,          // Error from listener, if any
     ref,            // Firestore DocumentReference
@@ -634,6 +644,12 @@ const {
     undoable: true,      // Optional: enable undo (default: true)
     enabled: true,       // Optional: set false until required params exist
 })
+
+// The default handle is SYNC-AGNOSTIC: no `isSynced`, so a save settling does
+// not re-render it. For save state, use the per-entry sync-status hook (with the
+// registry API) or fold `isSynced` into a `selector`. `isLoading` likewise moved
+// to the loading-status hook; the data handle keeps `isLoaded` for the common
+// "spinner until ready" gate.
 ```
 
 #### `useCollection(options)`
@@ -646,9 +662,8 @@ const {
     update,         // Update one or more documents
     add,            // Add a new document (explicit or auto-generated id)
     remove,         // Remove a document
-    isLoading,      // Whether initial data is loading
-    isSynced,       // Whether all changes are synced
-    isActive,       // Whether subscription is active
+    isLoaded,       // Active AND past the initial load (isActive && !isLoading)
+    isActive,       // Whether subscription is active (for lazy collections)
     load,           // Activate a lazy subscription
     sync,           // Force sync immediately
     error,          // Error from listener, if any
@@ -688,12 +703,14 @@ remove('oldSpaceId')
 
 #### Selecting a slice (`selector` + `isEqual`)
 
-By default a component re-renders whenever *any* field — or any status flag — of
-the subscribed document or collection changes, and the hook returns the **full
-handle** (`data`, `isLoading`, `isSynced`, `error`, the writers, and `ref`). Pass
-a `selector` to take control: it receives the resource's full observable state
-and returns the slice the component reacts to, so the component re-renders
-**only** when that slice changes.
+By default a component re-renders when the data, the load state (`isLoaded`), or
+`error` of the subscribed document/collection changes, and the hook returns the
+**sync-agnostic default handle** (`data`, `isLoaded`, `error`, the writers, and
+`ref` — plus a collection's `isActive`). It deliberately omits `isSynced`, so a
+save settling does not re-render it (see [Sync status and loading status](#sync-status-and-loading-status)).
+Pass a `selector` to take further control: it receives the resource's *full*
+observable state — including `isLoading`/`isSynced` — and returns the slice the
+component reacts to, so the component re-renders **only** when that slice changes.
 
 A selected handle exposes exactly your slice as `data`, plus the writer surface
 (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — the status
@@ -763,6 +780,53 @@ that key — a read-only hook shares the same listener and optimistic state as a
 writable hook on the same resource, so the common provider/leaf pattern (one
 writable owner, many `readOnly: true` read-selectors) sees the writer's
 optimistic edits live. Only the read-only handle's own writers are disabled.
+
+#### Sync status and loading status
+
+The default data handle is **sync-agnostic**: it carries `data`/`isLoaded`/
+`error` but never `isSynced`. That matters because `isSynced` flips on *every*
+autosave settle — so if the data handle carried it, every component that merely
+reads a record would re-render an extra time after each save. Most readers only
+want the data; the few that render save state (a "Saving…" indicator, a
+navigation blocker) opt in explicitly.
+
+For each registry entry, `createFirestate` generates two opt-in status hooks
+beside the data hook:
+
+```typescript
+const { useSpaces, useSpacesSyncStatus, useSpacesLoadingStatus } =
+    createFirestate({ spaces: spacesEntry })
+
+// Only this component re-renders when a save settles — not every data reader.
+function SaveIndicator(params) {
+    const { isSynced, isSaving } = useSpacesSyncStatus(params)
+    return isSaving ? <Spinner /> : <Check />
+}
+
+// A spinner that shows load progress WITHOUT re-rendering when data changes.
+function SpacesSpinner(params) {
+    const { isLoading, isLoaded } = useSpacesLoadingStatus(params)
+    return isLoading ? <Spinner /> : null
+}
+```
+
+Both share the entry's **one** `onSnapshot` listener with the data hook (and any
+slice hooks) — sharing is keyed by `(definition, path, query)`, not by which
+hook you call — so opting in costs no extra subscription. `useSpacesSyncStatus`
+re-renders only when sync state flips; `useSpacesLoadingStatus` re-renders only
+on the load transition, never on data. Collection status hooks take the same
+`queryConstraints` as the data hook (pass the same query to share the listener).
+
+`.select` (slice) entries do **not** get their own status hooks — a slice's sync
+and loading state is the resource's, read through the base entry's status hooks.
+
+With the lower-level API there are standalone equivalents —
+`useDocumentSyncStatus` / `useDocumentLoadingStatus` /
+`useCollectionSyncStatus` / `useCollectionLoadingStatus`, each taking
+`{ definition, params, enabled }` (collections also `queryConstraints`).
+
+This is the per-resource counterpart to [`useIsSynced()`](#useissynced), which
+reports a single provider-wide aggregate across *all* tracked resources.
 
 #### `useUndoManager()`
 
@@ -915,7 +979,7 @@ const combined = mergeDiffs(diff1, diff2)
 ## Notes
 
 - **`enabled` flag** — pass `enabled: false` to generated hooks or to `useDocument`/`useCollection` when route params or auth-derived ids are not ready yet. Disabled hooks do not resolve paths or attach listeners, which avoids building invalid Firestore paths like `projects//spaces`.
-- **Navigation flicker** — changing `params` rebuilds the listener and briefly shows `isLoading: true`. To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
+- **Navigation flicker** — changing `params` rebuilds the listener and briefly shows the loading state (`isLoaded: false`). To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
 - **No cross-doc transactions** — writes are atomic per document and per collection (via `writeBatch`), but not across them. For now, use Firestore's `runTransaction` directly via `handle.ref`.
 - **Per-client undo** — `useUndoManager` is local; one user's undo doesn't propagate to others.
 - **Multi-tab sync** — handled automatically by Firestore's listeners; no extra setup.
@@ -1008,9 +1072,9 @@ const project = useDocument({
     params: { projectId: '123' },
 })
 
-// Missing documents are not errors — `data` is undefined and `isLoading`
-// is false. Render a create/empty state for that case.
-if (!project.isLoading && !project.data) {
+// Missing documents are not errors — once loaded, `data` is undefined.
+// Render a create/empty state for that case.
+if (project.isLoaded && !project.data) {
     return <CreateProject />
 }
 
@@ -1075,8 +1139,7 @@ vi.mock('@hvakr/firestate', () => ({
         update: vi.fn(),
         set: vi.fn(),
         delete: vi.fn(),
-        isLoading: false,
-        isSynced: true,
+        isLoaded: true,
         sync: vi.fn(),
         error: undefined,
         ref: {},

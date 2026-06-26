@@ -23,6 +23,10 @@ import { defineDocument, defineCollection } from "./schema";
 import {
   useDocument,
   useCollection,
+  useDocumentSyncStatus,
+  useDocumentLoadingStatus,
+  useCollectionSyncStatus,
+  useCollectionLoadingStatus,
   type UseDocumentOptions,
   type UseCollectionOptions,
   type DocumentSelectorOptions,
@@ -36,8 +40,10 @@ import type {
   DocumentHandle,
   DocumentState,
   FirestoreObject,
+  LoadingStatus,
   SelectedCollectionHandle,
   SelectedDocumentHandle,
+  SyncStatus,
 } from "../types";
 import type { QueryConstraint } from "firebase/firestore";
 import type { ZodType, z } from "zod";
@@ -563,8 +569,67 @@ type HookFor<E> = E extends SelectedDocEntry<
     : ColHookRequiredParams<T, P>
   : never;
 
+// ---------------------------------------------------------------------------
+// Per-entry status hooks (sync / loading)
+// ---------------------------------------------------------------------------
+
+// Each *base* doc/col entry also gets `use{Name}SyncStatus` and
+// `use{Name}LoadingStatus`. `.select` (derived) entries do not: a slice's sync
+// and loading status are the resource's, read through its base hooks.
+type SyncStatusHookName<K extends string> = `${HookName<K>}SyncStatus`;
+type LoadingStatusHookName<K extends string> = `${HookName<K>}LoadingStatus`;
+
+// Base (non-selected) entries, used to gate which keys produce status hooks.
+type BaseEntry = DocEntry<any, any> | ColEntry<any, any>;
+
+// Runtime knobs forwarded to a generated status hook. Documents take only
+// `enabled`; collections add `queryConstraints` (which must match the data
+// hook's, or the status hook resolves a different shared entry — i.e. a second
+// listener). `readOnly`/`selector`/`isEqual` are owned by the status hook.
+type DocStatusHookOptions = { enabled?: boolean };
+type ColStatusHookOptions = {
+  enabled?: boolean;
+  queryConstraints?: QueryConstraint[];
+};
+
+// Params follow the same optional-vs-required rule as the data hooks: a path
+// with no `{placeholder}` takes optional `params`; one with placeholders
+// requires exactly those keys. `R` is the returned status shape.
+type DocStatusHookFor<P extends string, Ret> = keyof ParamsOf<P> extends never
+  ? (params?: Record<string, string>, options?: DocStatusHookOptions) => Ret
+  : (params: ParamsOf<P>, options?: DocStatusHookOptions) => Ret;
+
+type ColStatusHookFor<P extends string, Ret> = keyof ParamsOf<P> extends never
+  ? (params?: Record<string, string>, options?: ColStatusHookOptions) => Ret
+  : (params: ParamsOf<P>, options?: ColStatusHookOptions) => Ret;
+
+type SyncStatusHookFor<E> = E extends DocEntry<any, infer P>
+  ? DocStatusHookFor<P, SyncStatus>
+  : E extends ColEntry<any, infer P>
+  ? ColStatusHookFor<P, SyncStatus>
+  : never;
+
+type LoadingStatusHookFor<E> = E extends DocEntry<any, infer P>
+  ? DocStatusHookFor<P, LoadingStatus>
+  : E extends ColEntry<any, infer P>
+  ? ColStatusHookFor<P, LoadingStatus>
+  : never;
+
+// The generated API: the data/slice hooks, plus a sync-status and a
+// loading-status hook for every BASE entry (selected entries map their status
+// key to `never`, which drops it). Three mapped types intersected because key
+// remapping yields one key per source key — destructuring resolves the
+// intersection member-by-member.
 export type FirestateApi<R extends FirestateRegistry> = {
   [K in keyof R & string as HookName<K>]: HookFor<R[K]>;
+} & {
+  [K in keyof R & string as R[K] extends BaseEntry
+    ? SyncStatusHookName<K>
+    : never]: SyncStatusHookFor<R[K]>;
+} & {
+  [K in keyof R & string as R[K] extends BaseEntry
+    ? LoadingStatusHookName<K>
+    : never]: LoadingStatusHookFor<R[K]>;
 };
 
 /**
@@ -634,12 +699,44 @@ export function createFirestate<R extends FirestateRegistry>(
         params: Record<string, string> = {},
         options: DocHookOptions<FirestoreObject> = {}
       ) => useDocument({ ...options, definition, params });
+      // Sync/loading status siblings share the same `definition`, so they
+      // resolve the SAME shared subscription as the data hook (no extra
+      // listener) — see the shared-subscription contract.
+      api[`${hookName}SyncStatus`] = (
+        params: Record<string, string> = {},
+        options: DocStatusHookOptions = {}
+      ) => useDocumentSyncStatus({ definition, params, enabled: options.enabled });
+      api[`${hookName}LoadingStatus`] = (
+        params: Record<string, string> = {},
+        options: DocStatusHookOptions = {}
+      ) =>
+        useDocumentLoadingStatus({ definition, params, enabled: options.enabled });
     } else if (entry.__kind === "collection") {
       const definition = colDefFor(entry);
       api[hookName] = (
         params: Record<string, string> = {},
         options: ColHookOptions<FirestoreObject> = {}
       ) => useCollection({ ...options, definition, params });
+      api[`${hookName}SyncStatus`] = (
+        params: Record<string, string> = {},
+        options: ColStatusHookOptions = {}
+      ) =>
+        useCollectionSyncStatus({
+          definition,
+          params,
+          enabled: options.enabled,
+          queryConstraints: options.queryConstraints,
+        });
+      api[`${hookName}LoadingStatus`] = (
+        params: Record<string, string> = {},
+        options: ColStatusHookOptions = {}
+      ) =>
+        useCollectionLoadingStatus({
+          definition,
+          params,
+          enabled: options.enabled,
+          queryConstraints: options.queryConstraints,
+        });
     } else if (entry.__kind === "document-selected") {
       const definition = docDefFor(entry.base);
       const { selector, isEqual } = entry;

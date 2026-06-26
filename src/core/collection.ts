@@ -210,6 +210,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     const getPublicState = (): CollectionState<TData> => ({
         data: getMergedData(),
         isLoading: state.isLoading,
+        // Active AND past the initial load: a lazy collection is not "loaded"
+        // until load() activates it and the first snapshot settles. This is the
+        // app-level "ready to render the list" signal.
+        isLoaded: state.isActive && !state.isLoading,
         isSynced: state.localState === undefined,
         isActive: state.isActive,
         error: state.error,
@@ -218,6 +222,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     // Last public state actually published — see document.ts for the full
     // contract behind this snapshot-side no-op collapse (§3/§4).
     let lastPublished: CollectionState<TData> | null = null
+    // Cached public state — see document.ts; lets the hook layer use getState()
+    // as a stable useSyncExternalStore snapshot.
+    let cachedState: CollectionState<TData> | null = null
 
     const publicStateChanged = (
         prev: CollectionState<TData>,
@@ -243,6 +250,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
         lastPublished = publicState
         cachedHandle = null
+        // Reuse the published state as the cached snapshot (see document.ts).
+        cachedState = publicState
         subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
     }
@@ -724,8 +733,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         update: updateState,
         add: addDocument,
         remove: removeDocument,
-        isLoading: state.isLoading,
-        isSynced: state.localState === undefined,
+        isLoaded: state.isActive && !state.isLoading,
         isActive: state.isActive,
         load,
         sync,
@@ -740,6 +748,14 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         return cachedHandle
     }
 
+    // Identity-stable like getHandle (see document.ts.getState).
+    const getState = (): CollectionState<TData> => {
+        if (cachedState === null) {
+            cachedState = getPublicState()
+        }
+        return cachedState
+    }
+
     // No constructor-side auto-start: callers (the hook for non-lazy, or
     // users directly for lazy) invoke load() to attach the listener. This
     // keeps subscription creation side-effect-free, matching document.ts.
@@ -748,7 +764,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         load,
         stop,
         subscribe,
-        getState: getPublicState,
+        getState,
         getHandle,
         sync,
     }

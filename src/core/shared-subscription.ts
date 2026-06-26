@@ -8,8 +8,10 @@ import {
 import type {
     CollectionDefinition,
     CollectionHandle,
+    CollectionState,
     DocumentDefinition,
     DocumentHandle,
+    DocumentState,
     FirestoreObject,
     UpdateOptions,
 } from '../types'
@@ -206,6 +208,13 @@ const readOnlyCollectionHandle = <T extends FirestoreObject>(
 export interface DocumentShared<T extends FirestoreObject> {
     /** The shared, identity-stable handle for this resource. */
     getHandle: () => DocumentHandle<T>
+    /**
+     * The shared, identity-stable full observable state (data + every status
+     * flag, including `isSynced`). Passes through the read-only facade
+     * unchanged — state carries no writers to neuter — so a status hook reads
+     * the same state a writable hook does.
+     */
+    getState: () => DocumentState<T>
     /** Activate the shared Firestore listener (idempotent across leases). */
     load: () => void
     /** Set whether this resource records undo entries (shared across leases). */
@@ -220,6 +229,8 @@ export interface DocumentShared<T extends FirestoreObject> {
 
 export interface CollectionShared<T extends FirestoreObject> {
     getHandle: () => CollectionHandle<T>
+    /** See {@link DocumentShared.getState}. */
+    getState: () => CollectionState<T>
     load: () => void
     setUndoable: (enabled: boolean) => void
     acquire: (onChange: () => void) => () => void
@@ -312,6 +323,7 @@ export const getDocumentShared = <T extends FirestoreObject>({
             }
             return readOnlyHandle as DocumentHandle<T>
         },
+        getState: () => ent.sub.getState() as DocumentState<T>,
         load: () => ent.sub.load(),
         setUndoable: (enabled) => {
             // A read-only facade can't write, so it must not influence the
@@ -452,6 +464,7 @@ export const getCollectionShared = <T extends FirestoreObject>({
             }
             return readOnlyHandle as CollectionHandle<T>
         },
+        getState: () => ent.sub.getState() as CollectionState<T>,
         load: () => ent.sub.load(),
         setUndoable: (enabled) => {
             // See getDocumentShared.setUndoable.

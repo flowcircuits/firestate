@@ -173,10 +173,10 @@ if (!spaces.isActive) {
 ```
 
 Collection mutations are dropped before the first snapshot. Gate mutations on
-`isActive`, `isLoading`, or existing data.
+`isLoaded` (which is `isActive && !isLoading`) or existing data.
 
 ```ts
-if (spaces.isActive && !spaces.isLoading) {
+if (spaces.isLoaded) {
     spaces.add({ name: 'Lobby', area: 500, floor: 1 })
 }
 ```
@@ -204,8 +204,8 @@ const project = useDocument({
 })
 ```
 
-Disabled hooks return no-op handles with `isSynced: true` and no Firestore
-reference.
+Disabled hooks return no-op handles with `isLoaded: false` and no Firestore
+reference (the sync-status hooks report `{ isSynced: true, isSaving: false }`).
 
 ## Query Constraints
 
@@ -235,8 +235,8 @@ are identical. The memo then produces a new constraints array on each edit.
 `useCollection` handles this for you. It keys the subscription on the
 *semantic identity* of the query, not the array reference: it builds the query
 and compares it with Firestore's own `queryEqual`. A fresh array that produces
-the same query is ignored, so the listener is not torn down, `isLoading` does
-not flip back to `true`, and a loading gate above the hook does not flash. You
+the same query is ignored, so the listener is not torn down, `isLoaded` does
+not flip back to `false`, and a loading gate above the hook does not flash. You
 can pass constraints derived from churning document data directly:
 
 ```tsx
@@ -265,11 +265,13 @@ but it is no longer required to keep the listener stable.
 
 ## Render Slicing with Selectors
 
-By default a component re-renders on any field or status change of the subscribed
-document or collection. Pass a `selector` (in the options object, for both the
-registry and lower-level hooks): it receives the resource's full observable state
-and returns the slice the component reacts to, and the component then re-renders
-only when that slice changes.
+By default a component re-renders on data, load (`isLoaded`), or `error` changes
+of the subscribed document or collection — but **not** on `isSynced`, since the
+default handle is sync-agnostic (see [Sync and loading status](#sync-and-loading-status)).
+Pass a `selector` (in the options object, for both the registry and lower-level
+hooks): it receives the resource's full observable state — `isLoading`/`isSynced`
+included — and returns the slice the component reacts to, and the component then
+re-renders only when that slice changes.
 
 ```tsx
 // Re-renders only when `name` changes — and not on a save (isSynced) flip,
@@ -386,6 +388,41 @@ one-off slices. Reach for `.select` when the slice earns a name; keep trivial
 one-offs (e.g. a write-only `() => null`) inline. A derived entry is a leaf —
 there is no `.select(...).select(...)` chaining.
 
+## Sync and Loading Status
+
+The default data handle is **sync-agnostic**: `data`, `isLoaded`, `error` (plus a
+collection's `isActive`) — but no `isSynced`. `isSynced` flips on *every* autosave
+settle, so keeping it off the data handle means a component that just renders a
+record does not re-render after each save. The handful of components that render
+save state opt in instead.
+
+`createFirestate` generates two status hooks beside each base entry's data hook:
+
+```tsx
+const { useSpaces, useSpacesSyncStatus, useSpacesLoadingStatus } =
+    createFirestate({ spaces: spacesEntry })
+
+// Save indicator / nav blocker — re-renders only when sync state flips.
+const { isSynced, isSaving } = useSpacesSyncStatus({ projectId })
+
+// Spinner that does NOT re-render when the data changes.
+const { isLoading, isLoaded } = useSpacesLoadingStatus({ projectId })
+```
+
+Both share the entry's one `onSnapshot` listener with the data hook (sharing is
+keyed by `(definition, path, query)`, not by which hook calls it), so opting in
+adds no subscription. Collection status hooks take the same `queryConstraints` as
+the data hook — pass the same query so they resolve the same shared entry.
+`.select` (slice) entries don't get status hooks; read a slice's status through
+its base entry. The lower-level API exposes the same as standalone
+`useDocumentSyncStatus` / `useDocumentLoadingStatus` /
+`useCollectionSyncStatus` / `useCollectionLoadingStatus`, each taking
+`{ definition, params, enabled }` (collections also `queryConstraints`).
+
+Keep `isLoaded` on the data handle for the common "spinner until ready" gate —
+`useSpacesLoadingStatus` is an extra channel for progress UI rendered apart from
+the data, not a replacement.
+
 ## Undo and Redo
 
 Undo is enabled by default.
@@ -427,7 +464,9 @@ await project.sync()
 
 ## Unsaved Changes
 
-Use global sync state for save indicators and route blockers.
+Use global sync state for save indicators and route blockers. `useIsSynced()` is
+the provider-wide aggregate across *all* tracked resources; for one resource's
+status, use its [`use{Name}SyncStatus`](#sync-and-loading-status) hook.
 
 ```tsx
 const isSynced = useIsSynced()
@@ -447,8 +486,9 @@ const project = useProject({ projectId }, { readOnly: true })
 ```
 
 Mutation methods (`update`/`set`/`delete`/`add`/`remove`) and `sync` on a
-read-only handle return without queueing writes. Reads — `data`, `isLoading`,
-`isSynced`, `ref`, and a lazy collection's `load` — work normally.
+read-only handle return without queueing writes. Reads — `data`, `isLoaded`,
+`error`, `ref`, a collection's `isActive`, and a lazy collection's `load` — work
+normally (as do the sync/loading status hooks).
 
 `readOnly` is a **per-handle capability over the shared state, not a state
 fork**. A read-only hook shares the same listener and optimistic state as a

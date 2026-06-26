@@ -23,8 +23,10 @@ import type {
     DocumentHandle,
     DocumentState,
     FirestoreObject,
+    LoadingStatus,
     SelectedCollectionHandle,
     SelectedDocumentHandle,
+    SyncStatus,
     UndoManager,
     UndoManagerState,
 } from '../types'
@@ -90,8 +92,7 @@ const DISABLED_DOCUMENT_HANDLE: DocumentHandle<FirestoreObject> = {
     update: NOOP,
     set: NOOP,
     delete: NOOP,
-    isLoading: false,
-    isSynced: true,
+    isLoaded: false,
     sync: ASYNC_NOOP,
     error: undefined,
     ref: undefined,
@@ -108,13 +109,36 @@ const DISABLED_COLLECTION_HANDLE: CollectionHandle<FirestoreObject> = {
     update: NOOP,
     add: DISABLED_ADD,
     remove: NOOP,
-    isLoading: false,
-    isSynced: true,
+    isLoaded: false,
     isActive: false,
     load: NOOP,
     sync: ASYNC_NOOP,
     error: undefined,
     ref: undefined,
+}
+
+// State snapshots for the disabled (`enabled: false`) path. A disabled resource
+// is *idle*: not loading, not loaded, synced (no pending writes), no data/error.
+// getStateSnapshot returns these so the selector — and the no-selector default
+// projection — run against a consistent shape (e.g. a disabled sync-status hook
+// yields `{ isSynced: true, isSaving: false }`, a disabled data handle
+// `isLoaded: false`). `isLoaded` is set explicitly false because `!isLoading`
+// would wrongly read as loaded here.
+const DISABLED_DOCUMENT_STATE: DocumentState<FirestoreObject> = {
+    data: undefined,
+    isLoading: false,
+    isLoaded: false,
+    isSynced: true,
+    error: undefined,
+}
+
+const DISABLED_COLLECTION_STATE: CollectionState<FirestoreObject> = {
+    data: EMPTY_RECORD,
+    isLoading: false,
+    isLoaded: false,
+    isSynced: true,
+    isActive: false,
+    error: undefined,
 }
 
 /**
@@ -129,8 +153,9 @@ export interface DocumentSelectorOptions<
     /**
      * Project the document's observable state down to the slice this component
      * reacts to. The selector receives the full {@link DocumentState} —
-     * `{ data, isLoading, isSynced, error }`, where `data` is `undefined` while
-     * the document is loading or the hook is disabled — and the component
+     * `{ data, isLoading, isLoaded, isSynced, error }`, where `data` is
+     * `undefined` while the document is loading or the hook is disabled — and
+     * the component
      * re-renders *only* when the returned slice changes (per `isEqual`). Status
      * is not a freebie: read `s.isLoading`/`s.isSynced`/`s.error` here if you
      * want to react to them (e.g. `s => ({ title: s.data?.title, saving:
@@ -160,8 +185,9 @@ export interface CollectionSelectorOptions<
     /**
      * Project the collection's observable state down to the slice this component
      * reacts to. The selector receives the full {@link CollectionState} —
-     * `{ data, isLoading, isSynced, isActive, error }`, where `data` is the keyed
-     * record (e.g. `s => s.data[id]` or `s => Object.keys(s.data)`) — and the
+     * `{ data, isLoading, isLoaded, isSynced, isActive, error }`, where `data` is
+     * the keyed record (e.g. `s => s.data[id]` or `s => Object.keys(s.data)`) —
+     * and the
      * component re-renders *only* when the returned slice changes. As with
      * {@link DocumentSelectorOptions.selector}, status is reactive only if you
      * select it, and the returned handle exposes just the slice plus
@@ -180,44 +206,43 @@ export interface CollectionSelectorOptions<
 type WithoutSelector = { selector?: undefined; isEqual?: undefined }
 
 /**
- * The projection used by the **no-selector** path of each hook: the full
- * observable state (`data` = the whole document/collection data plus every
- * status field; `isActive` is collection-only — `undefined` for documents, so
- * it no-ops in {@link selectionEqual}). `useSyncExternalStoreWithSelector`
- * memoizes and diffs it so a plain hook re-renders on any field or status
- * change — the pre-selector full-handle behavior. (The selector path projects
- * to the selector's output instead and gates purely on it.)
+ * The projection used by the **no-selector (default) path** of each hook: the
+ * *sync-agnostic* public view — `data` plus `isLoaded` and `error` (and a
+ * collection's `isActive`; `undefined` for documents, so it no-ops in
+ * {@link defaultSelectionEqual}). It deliberately OMITS `isSynced`, so a write
+ * settling (the `isSynced` flip on every autosave) does NOT re-render a plain
+ * data consumer — "just render the record" is the cheap default. Components that
+ * render save state opt into the per-entry sync-status hook. The raw
+ * `isLoading`/`isSynced` flags remain on the full state the selector path sees.
  *
- * It deliberately omits the handle's methods and `ref`: those are read *live*
- * from the subscription in the final merge, never memoized here. If they rode
- * along in this projection, a subscription rebuild (id/path/query/enabled
- * change) whose projection happened to be value-equal would be collapsed by the
- * equality check, and the hook would keep returning the *previous*
- * subscription's `load()`/`update()` — e.g. firing against torn-down, empty-`in`
- * constraints. This rationale holds for the selector path too, which is why it
- * also reads methods/`ref` live.
+ * It also omits the handle's methods and `ref`: those are read *live* from the
+ * subscription in the final merge, never memoized here. If they rode along, a
+ * subscription rebuild (id/path/query/enabled change) whose projection happened
+ * to be value-equal would be collapsed by the equality check, and the hook would
+ * keep returning the *previous* subscription's `load()`/`update()` — e.g. firing
+ * against torn-down, empty-`in` constraints. This holds for the selector path
+ * too, which is why it also reads methods/`ref` live.
  */
-interface ObservableSelection<TSelected> {
+interface DefaultSelection<TSelected> {
     data: TSelected
-    isLoading: boolean
-    isSynced: boolean
+    isLoaded: boolean
     error: Error | undefined
     isActive?: boolean
 }
 
 /**
- * Equality over an {@link ObservableSelection} (no-selector path): status fields
- * compared by identity, the `data` slice by `dataEqual` (the default value
- * comparison). This is what lets a change to a value-equal `data` be collapsed
- * while any status change still re-renders the plain handle.
+ * Equality over a {@link DefaultSelection} (no-selector path): `isLoaded`,
+ * `error`, and a collection's `isActive` compared by identity, the `data` slice
+ * by `dataEqual` (the default value comparison). `isSynced` is absent by design,
+ * so a sync flip cannot re-render the plain handle; a change to value-equal
+ * `data` is still collapsed, while a load transition re-renders.
  */
-const selectionEqual = <TSelected>(
-    a: ObservableSelection<TSelected>,
-    b: ObservableSelection<TSelected>,
+const defaultSelectionEqual = <TSelected>(
+    a: DefaultSelection<TSelected>,
+    b: DefaultSelection<TSelected>,
     dataEqual: (a: TSelected, b: TSelected) => boolean
 ): boolean =>
-    a.isLoading === b.isLoading &&
-    a.isSynced === b.isSynced &&
+    a.isLoaded === b.isLoaded &&
     a.error === b.error &&
     a.isActive === b.isActive &&
     dataEqual(a.data, b.data)
@@ -312,9 +337,8 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
     undoable?: boolean
     /**
      * If false, no subscription is created and a no-op handle is returned
-     * (`{ data: undefined, isLoading: false, isSynced: true, ref: undefined }`).
-     * Use this to gate subscriptions on route params that aren't ready yet.
-     * Default: true.
+     * (`{ data: undefined, isLoaded: false, ref: undefined }`). Use this to gate
+     * subscriptions on route params that aren't ready yet. Default: true.
      */
     enabled?: boolean
 }
@@ -337,9 +361,14 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
  * route params aren't ready yet).
  *
  * **SSR.** On the server there is no Firestore listener, so this hook returns
- * the initial handle (`{ data: undefined, isLoading: true }`). Mutations like
+ * the initial handle (`{ data: undefined, isLoaded: false }`). Mutations like
  * `update`/`set` will mutate orphaned local state with no effect — avoid
  * calling them server-side.
+ *
+ * The default handle is **sync-agnostic** — it carries `data`/`isLoaded`/`error`
+ * but not `isSynced`, so it does not re-render when a write settles. Render save
+ * state via the per-entry `use{Name}SyncStatus` hook, or fold `isSynced` into a
+ * `selector`.
  *
  * @example
  * ```tsx
@@ -349,12 +378,12 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
  * })
  *
  * function ProjectEditor({ projectId }: { projectId: string }) {
- *   const { data, update, isLoading, isSynced } = useDocument({
+ *   const { data, update, isLoaded } = useDocument({
  *     definition: projectDoc,
  *     params: { projectId },
  *   })
  *
- *   if (isLoading) return <Spinner />
+ *   if (!isLoaded) return <Spinner />
  *
  *   return (
  *     <input
@@ -473,7 +502,24 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
         [shared]
     )
 
-    const getSnapshot = useCallback(
+    // The useSyncExternalStore snapshot is the full observable STATE (data +
+    // every status flag, including isSynced). The selector projects from it; the
+    // no-selector path projects the sync-agnostic default. getState() is
+    // identity-stable between notifies, as useSyncExternalStore requires.
+    const getStateSnapshot = useCallback(
+        () =>
+            shared
+                ? shared.getState()
+                : (DISABLED_DOCUMENT_STATE as DocumentState<TData>),
+        [shared]
+    )
+
+    // The live handle, read for writers and `ref` only. Kept separate from the
+    // state snapshot so re-renders gate on the projected slice while methods/ref
+    // always come from the CURRENT subscription — a rebuild whose slice is
+    // value-equal still hands back the new subscription's methods (this callback's
+    // identity changes with `shared`, re-running the merge memo).
+    const getHandle = useCallback(
         () =>
             shared
                 ? shared.getHandle()
@@ -481,39 +527,40 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
         [shared]
     )
 
-    // Project the live handle to the value that drives re-renders. Keyed on
-    // `selector` so a referentially-new selector (e.g. one closing over a prop)
-    // re-projects; an inline selector still dedupes against the committed value
-    // via `equal`, so callers need not memoize it.
+    // Project the state snapshot to the value that drives re-renders. Keyed on
+    // `selector` so a referentially-new selector re-projects; an inline selector
+    // still dedupes against the committed value via `equal`, so callers need not
+    // memoize it.
     //
-    // With a `selector` (pure mode): build the observable state and hand it to
-    // the selector — the projection IS the selector's output, gated purely by
-    // `equal` below, so a status field the selector did not read can neither
-    // re-render the component nor appear on its handle. Without one: project the
-    // full state and gate on `data` + every status field (legacy full handle).
+    // With a `selector` (pure mode): the projection IS the selector's output over
+    // the full state, gated purely by `equal`, so a status field it ignores (e.g.
+    // isSynced) can neither re-render the component nor appear on its handle.
+    // Without one: the sync-agnostic default — data + isLoaded + error — so a
+    // write settling does not re-render.
     const select = useCallback(
-        (handle: DocumentHandle<TData>): TSelected | DocumentState<TData> => {
-            const state: DocumentState<TData> = {
-                data: handle.data,
-                isLoading: handle.isLoading,
-                isSynced: handle.isSynced,
-                error: handle.error,
-            }
-            return selector ? selector(state) : state
-        },
+        (
+            state: DocumentState<TData>
+        ): TSelected | DefaultSelection<TData | undefined> =>
+            selector
+                ? selector(state)
+                : {
+                      data: state.data,
+                      isLoaded: state.isLoaded,
+                      error: state.error,
+                  },
         [selector]
     )
 
     const equal = useCallback(
         (
-            a: TSelected | DocumentState<TData>,
-            b: TSelected | DocumentState<TData>
+            a: TSelected | DefaultSelection<TData | undefined>,
+            b: TSelected | DefaultSelection<TData | undefined>
         ): boolean =>
             selector
                 ? (isEqual ?? defaultDataEqual)(a as TSelected, b as TSelected)
-                : selectionEqual(
-                      a as DocumentState<TData>,
-                      b as DocumentState<TData>,
+                : defaultSelectionEqual(
+                      a as DefaultSelection<TData | undefined>,
+                      b as DefaultSelection<TData | undefined>,
                       defaultDataEqual
                   ),
         [selector, isEqual]
@@ -521,17 +568,15 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
 
     const selection = useSyncExternalStoreWithSelector(
         subscribe,
-        getSnapshot,
-        getSnapshot,
+        getStateSnapshot,
+        getStateSnapshot,
         select,
         equal
     )
 
-    // Re-wrap into a handle. Methods and `ref` are read *live* from the current
-    // shared subscription (via getSnapshot) so a rebuild always hands back the
-    // new subscription's methods, even when the projection was value-equal (see
-    // ObservableSelection). `getSnapshot` identity changes whenever the resource
-    // key does, which re-runs this memo.
+    // Re-wrap into a handle. Methods and `ref` are read *live* via getHandle()
+    // (keyed on `shared`) so a rebuild always hands back the new subscription's
+    // methods even when the projection was value-equal (see DefaultSelection).
     //
     // Keyed on selector *presence*, never its identity: an inline selector is a
     // fresh function each render yet yields a value-equal `selection`, so the
@@ -539,7 +584,7 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
     // the handle's shape — selected vs full — depends on the selector.
     const hasSelector = selector != null
     return useMemo(() => {
-        const handle = getSnapshot()
+        const handle = getHandle()
         if (hasSelector) {
             // Pure selected handle: `data` is the slice; status is intentionally
             // absent (select it to react to it). Writers act on the full doc.
@@ -552,19 +597,19 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
                 ref: handle.ref,
             }
         }
-        const s = selection as DocumentState<TData>
+        // Default handle: sync-agnostic — data + isLoaded + error (no isSynced).
+        const s = selection as DefaultSelection<TData | undefined>
         return {
             data: s.data,
             update: handle.update,
             set: handle.set,
             delete: handle.delete,
-            isLoading: s.isLoading,
-            isSynced: s.isSynced,
+            isLoaded: s.isLoaded,
             sync: handle.sync,
             error: s.error,
             ref: handle.ref,
         }
-    }, [selection, getSnapshot, hasSelector])
+    }, [selection, getHandle, hasSelector])
 }
 
 /**
@@ -583,7 +628,7 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
     undoable?: boolean
     /**
      * If false, no subscription is created and a no-op handle is returned
-     * (`{ data: {}, isLoading: false, isActive: false }`). Use this to gate on
+     * (`{ data: {}, isLoaded: false, isActive: false }`). Use this to gate on
      * route params that aren't ready yet. Default: true.
      */
     enabled?: boolean
@@ -623,8 +668,13 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * route params aren't ready yet).
  *
  * **SSR.** On the server there is no Firestore listener, so this hook returns
- * the initial handle (`{ data: {}, isLoading: true }` for non-lazy, or
- * `isActive: false` for lazy). Avoid calling mutations server-side.
+ * the initial handle (`{ data: {}, isLoaded: false }`, `isActive: false` for
+ * lazy). Avoid calling mutations server-side.
+ *
+ * Like {@link useDocument}, the default handle is **sync-agnostic** — `data`,
+ * `isLoaded`, `isActive`, `error`, but not `isSynced`. `isActive` stays so a
+ * lazy collection can gate a "Load" button; `isLoaded` is `isActive &&
+ * !isLoading`. Render save state via `use{Name}SyncStatus`.
  *
  * @example
  * ```tsx
@@ -634,7 +684,7 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  * })
  *
  * function SpacesList({ projectId }: { projectId: string }) {
- *   const { data, update, load, isActive, isLoading } = useCollection({
+ *   const { data, update, load, isActive, isLoaded } = useCollection({
  *     definition: spacesCollection,
  *     params: { projectId },
  *   })
@@ -643,7 +693,7 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
  *   useEffect(() => { load() }, [load])
  *
  *   if (!isActive) return <Button onClick={load}>Load Spaces</Button>
- *   if (isLoading) return <Spinner />
+ *   if (!isLoaded) return <Spinner />
  *
  *   return (
  *     <ul>
@@ -819,7 +869,17 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
         [shared, isLazy]
     )
 
-    const getSnapshot = useCallback(
+    // Snapshot is the full collection STATE; the live handle is read separately
+    // for writers/`load`/`ref`. See useDocument for the full rationale.
+    const getStateSnapshot = useCallback(
+        () =>
+            shared
+                ? shared.getState()
+                : (DISABLED_COLLECTION_STATE as CollectionState<TData>),
+        [shared]
+    )
+
+    const getHandle = useCallback(
         () =>
             shared
                 ? shared.getHandle()
@@ -827,34 +887,34 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
         [shared]
     )
 
-    // See useDocument for the rationale. With a `selector` (pure mode): project
-    // to the selector's output over the full collection state and gate purely on
-    // it. Without one: project the full state and gate on `data` + every status
-    // field. Methods/`ref` are read live in the final merge either way.
+    // See useDocument. With a `selector`: project the full state. Without one:
+    // the sync-agnostic default — data + isLoaded + isActive + error (no
+    // isSynced). `isActive` stays so lazy collections can gate a "Load" button.
     const select = useCallback(
-        (handle: CollectionHandle<TData>): TSelected | CollectionState<TData> => {
-            const state: CollectionState<TData> = {
-                data: handle.data,
-                isLoading: handle.isLoading,
-                isSynced: handle.isSynced,
-                isActive: handle.isActive,
-                error: handle.error,
-            }
-            return selector ? selector(state) : state
-        },
+        (
+            state: CollectionState<TData>
+        ): TSelected | DefaultSelection<Record<string, TData>> =>
+            selector
+                ? selector(state)
+                : {
+                      data: state.data,
+                      isLoaded: state.isLoaded,
+                      isActive: state.isActive,
+                      error: state.error,
+                  },
         [selector]
     )
 
     const equal = useCallback(
         (
-            a: TSelected | CollectionState<TData>,
-            b: TSelected | CollectionState<TData>
+            a: TSelected | DefaultSelection<Record<string, TData>>,
+            b: TSelected | DefaultSelection<Record<string, TData>>
         ): boolean =>
             selector
                 ? (isEqual ?? defaultDataEqual)(a as TSelected, b as TSelected)
-                : selectionEqual(
-                      a as CollectionState<TData>,
-                      b as CollectionState<TData>,
+                : defaultSelectionEqual(
+                      a as DefaultSelection<Record<string, TData>>,
+                      b as DefaultSelection<Record<string, TData>>,
                       defaultDataEqual
                   ),
         [selector, isEqual]
@@ -862,18 +922,18 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
 
     const selection = useSyncExternalStoreWithSelector(
         subscribe,
-        getSnapshot,
-        getSnapshot,
+        getStateSnapshot,
+        getStateSnapshot,
         select,
         equal
     )
 
     // See useDocument: keyed on selector *presence*, not identity, so an inline
     // selector still yields a stable handle. Methods/`ref` read live from
-    // getSnapshot; only the handle's shape depends on the selector.
+    // getHandle; only the handle's shape depends on the selector.
     const hasSelector = selector != null
     return useMemo(() => {
-        const handle = getSnapshot()
+        const handle = getHandle()
         if (hasSelector) {
             // Pure selected handle: status is absent (select it to react to it);
             // writers and `load` act on the full collection.
@@ -887,21 +947,148 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
                 ref: handle.ref,
             }
         }
-        const s = selection as CollectionState<TData>
+        // Default handle: sync-agnostic — data + isLoaded + isActive + error.
+        const s = selection as DefaultSelection<Record<string, TData>>
         return {
             data: s.data,
             update: handle.update,
             add: handle.add,
             remove: handle.remove,
-            isLoading: s.isLoading,
-            isSynced: s.isSynced,
+            isLoaded: s.isLoaded,
             isActive: s.isActive ?? false,
             load: handle.load,
             sync: handle.sync,
             error: s.error,
             ref: handle.ref,
         }
-    }, [selection, getSnapshot, hasSelector])
+    }, [selection, getHandle, hasSelector])
+}
+
+// ---------------------------------------------------------------------------
+// Per-resource status hooks (sync / loading)
+//
+// Thin readers over useDocument / useCollection with a fixed selector. Because
+// sharing is keyed by (definition, path, query) — not readOnly, not the selector
+// — these resolve the SAME shared entry as the data hook, so opting into status
+// adds NO listener and reads the same optimistic state. They return the projected
+// slice directly (no handle wrapper).
+// ---------------------------------------------------------------------------
+
+// Module-level selectors: stable identity keeps the underlying hook's `select`
+// callback stable. Each returns a fresh object, but the default value compare
+// (two booleans) collapses it, so a status hook re-renders only on a real flip.
+// Typed structurally on just the field read, so one selector serves both the
+// DocumentState and CollectionState selector slots.
+const syncStatusSelector = (state: { isSynced: boolean }): SyncStatus => ({
+    isSynced: state.isSynced,
+    isSaving: !state.isSynced,
+})
+
+const loadingStatusSelector = (state: {
+    isLoading: boolean
+    isLoaded: boolean
+}): LoadingStatus => ({
+    isLoading: state.isLoading,
+    isLoaded: state.isLoaded,
+})
+
+/** Options for the document status hooks (a subset of {@link UseDocumentOptions}). */
+export interface UseDocumentStatusOptions<TData extends FirestoreObject> {
+    /** Document definition from defineDocument(). */
+    definition: DocumentDefinition<TData>
+    /** Route/path parameters for dynamic paths. */
+    params?: Record<string, string>
+    /**
+     * If false, no subscription is created and the idle status is returned
+     * (`{ isSynced: true, isSaving: false }` / `{ isLoading: false, isLoaded:
+     * false }`). Default: true.
+     */
+    enabled?: boolean
+}
+
+/** Options for the collection status hooks. Adds `queryConstraints`. */
+export interface UseCollectionStatusOptions<TData extends FirestoreObject> {
+    /** Collection definition from defineCollection(). */
+    definition: CollectionDefinition<TData>
+    /** Route/path parameters for dynamic paths. */
+    params?: Record<string, string>
+    /**
+     * Query constraints. Must produce the same query the data hook uses, or the
+     * status hook resolves a *different* shared entry (a second listener) —
+     * sharing is keyed by semantic query identity.
+     */
+    queryConstraints?: QueryConstraint[]
+    /** See {@link UseDocumentStatusOptions.enabled}. */
+    enabled?: boolean
+}
+
+/**
+ * Subscribe to a document's **sync status only** — `{ isSynced, isSaving }`.
+ *
+ * The opt-in counterpart to the sync-agnostic default handle (see
+ * {@link DocumentHandle}): it re-renders when sync state flips but never on data
+ * changes, and shares the resource's one `onSnapshot` listener with
+ * `useDocument` and any slice hooks, so opting in adds no listener. While
+ * disabled it reports `{ isSynced: true, isSaving: false }`.
+ */
+export function useDocumentSyncStatus<TData extends FirestoreObject>(
+    options: UseDocumentStatusOptions<TData>
+): SyncStatus {
+    return useDocument({
+        definition: options.definition,
+        params: options.params,
+        enabled: options.enabled,
+        readOnly: true,
+        selector: syncStatusSelector,
+    }).data
+}
+
+/**
+ * Subscribe to a document's **loading status only** — `{ isLoading, isLoaded }`.
+ *
+ * A spinner channel that shares the resource's listener and does NOT re-render
+ * on data changes — for a progress indicator rendered apart from the data. The
+ * data handle keeps `isLoaded` for the common render path; this is an extra
+ * channel, not a replacement.
+ */
+export function useDocumentLoadingStatus<TData extends FirestoreObject>(
+    options: UseDocumentStatusOptions<TData>
+): LoadingStatus {
+    return useDocument({
+        definition: options.definition,
+        params: options.params,
+        enabled: options.enabled,
+        readOnly: true,
+        selector: loadingStatusSelector,
+    }).data
+}
+
+/** Collection counterpart of {@link useDocumentSyncStatus}. */
+export function useCollectionSyncStatus<TData extends FirestoreObject>(
+    options: UseCollectionStatusOptions<TData>
+): SyncStatus {
+    return useCollection({
+        definition: options.definition,
+        params: options.params,
+        queryConstraints: options.queryConstraints,
+        enabled: options.enabled,
+        readOnly: true,
+        selector: syncStatusSelector,
+    }).data
+}
+
+/** Collection counterpart of {@link useDocumentLoadingStatus}. */
+export function useCollectionLoadingStatus<TData extends FirestoreObject>(
+    options: UseCollectionStatusOptions<TData>
+): LoadingStatus {
+    return useCollection({
+        definition: options.definition,
+        params: options.params,
+        queryConstraints: options.queryConstraints,
+        enabled: options.enabled,
+        readOnly: true,
+        selector: loadingStatusSelector,
+    }).data
 }
 
 /**

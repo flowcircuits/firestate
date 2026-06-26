@@ -21,9 +21,9 @@ import { createFirestate, col } from '@hvakr/firestate'
 const TaskSchema = z.object({ title: z.string(), completed: z.boolean() })
 const tasks = col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema })
 
-export const { useTasks, useTaskById } = createFirestate({
-    tasks,                                                  // → useTasks (full handle)
-    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+export const { useTasks, useTasksSyncStatus, useTaskById } = createFirestate({
+    tasks,            // → useTasks (sync-agnostic handle) + useTasksSyncStatus + useTasksLoadingStatus
+    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]), // → useTaskById (slice; no status hooks)
 })
 ```
 
@@ -113,17 +113,35 @@ Preserve these unless the task explicitly changes them.
 - `useSyncExternalStore` snapshots and handles must have stable identity between
   changes. Do not rebuild snapshots on every `getSnapshot()` call.
 - A hook `selector` receives the resource's full observable state
-  (`DocumentState`/`CollectionState`) and returns the slice that drives
-  re-renders; the hook gates purely on that slice (default value-based
+  (`DocumentState`/`CollectionState` — `data`, `isLoading`, `isLoaded`,
+  `isSynced`, `error`, and a collection's `isActive`) and returns the slice that
+  drives re-renders; the hook gates purely on that slice (default value-based
   `valuesEqualForNoOp`, or a supplied `isEqual`). A selected handle exposes ONLY
   that slice as `data` plus the writer surface
   (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — status
   fields are absent unless the selector folds them in, so a status flip the
-  selector ignores (e.g. `isSynced` churning on a save) cannot re-render it. A
-  hook called WITHOUT a selector is unchanged: it returns the full handle and
-  re-renders on any field or status change. Writers/`ref` are read live from the
-  subscription, not from the memoized selection, so a rebuilt subscription always
-  surfaces its own methods even when the selected slice is value-equal.
+  selector ignores (e.g. `isSynced` churning on a save) cannot re-render it.
+  Writers/`ref` are read live from the subscription (the snapshot is the state;
+  the handle is read separately), not from the memoized selection, so a rebuilt
+  subscription always surfaces its own methods even when the selected slice is
+  value-equal.
+- A hook called WITHOUT a selector returns the **sync-agnostic default handle**:
+  `{ data, isLoaded, error, ...writers, ref }` for a document, plus `isActive`
+  for a collection. It deliberately drops `isSynced` (and `isLoading`, folded
+  into `isLoaded` = `!isLoading` for docs, `isActive && !isLoading` for cols), so
+  the autosave `isSynced` flip cannot re-render a plain data reader — the common
+  "just render the record" path is the cheap default. `DocumentState`/
+  `CollectionState` still carry every raw flag for selectors. Save/load state is
+  opt-in via the per-resource status hooks below.
+- `createFirestate` generates, for each **base** doc/col entry `K`,
+  `use{K}SyncStatus` (`{ isSynced, isSaving }`) and `use{K}LoadingStatus`
+  (`{ isLoading, isLoaded }`) beside the data hook. `.select` (derived) entries
+  do NOT get status hooks — a slice's status is the resource's. The status hooks
+  are thin readers over `useDocument`/`useCollection` with a fixed read-only
+  selector, so they resolve the SAME shared entry (no extra listener) and read
+  the same optimistic state; collection status hooks take `queryConstraints` and
+  must match the data hook's query to share its listener. The provider-scoped
+  aggregate `useIsSynced()` is unchanged and orthogonal (all resources at once).
 - A registry entry's `.select(selector, { isEqual? })` derives a **named
   slice-hook** that shares the entry's schema/path (declared once) and becomes a
   flat sibling in the generated API, named by its registry key. The selector is
@@ -204,6 +222,11 @@ Add or update focused tests near the behavior being changed:
 - Diff behavior: `src/utils/diff.test.ts`.
 - Undo behavior: `src/utils/undo.test.ts`.
 - Store/global sync behavior: `src/core/store.test.ts`.
+- React hook surface — selectors, shared subscriptions, `queryConstraints`
+  identity: `src/react/selectors.test.ts`, `src/react/shared-subscription.test.ts`,
+  `src/react/hooks.test.ts`.
+- Sync-agnostic default handle + per-resource status hooks
+  (`use{Name}SyncStatus`/`use{Name}LoadingStatus`): `src/react/status-hooks.test.ts`.
 
 Before finishing code changes, run at least:
 

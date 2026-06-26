@@ -9,8 +9,10 @@
  * can neither re-render the component nor appear on its handle. The returned
  * handle therefore exposes ONLY `data` (the slice) plus the writer surface
  * (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref`. Calling a
- * hook WITHOUT a selector is unchanged: it returns the full handle and
- * re-renders on any field or status change.
+ * hook WITHOUT a selector returns the *sync-agnostic default* handle: `data`,
+ * `isLoaded`, `error` (and a collection's `isActive`) — never `isSynced`, so a
+ * write settling does not re-render it. Sync state lives on the opt-in
+ * `use{Name}SyncStatus` hook (see status-hooks.test.ts).
  *
  * These tests drive real React renders (react-test-renderer) over the
  * deterministic Firestore harness, counting renders to prove a change to an
@@ -297,15 +299,17 @@ describe('useDocument selector', () => {
         expect(latest.data).toEqual({ name: 'a', age: 1 })
     })
 
-    it('keeps status reactive on a handle with no selector', () => {
-        // The no-selector path is unchanged: a status flip with constant data
-        // still re-renders, and the full handle exposes the status fields.
+    it('keeps load state reactive on a handle with no selector', () => {
+        // The no-selector (default) handle re-renders on the load transition:
+        // isLoaded flips false → true when the first snapshot arrives. Sync
+        // state is deliberately absent from this handle (see the sync-agnostic
+        // tests in status-hooks.test.ts).
         mount({})
         const base = renders
-        expect((latest as DocumentHandle<Doc>).isLoading).toBe(true)
+        expect((latest as DocumentHandle<Doc>).isLoaded).toBe(false)
 
         fire({ name: 'a' })
-        expect((latest as DocumentHandle<Doc>).isLoading).toBe(false)
+        expect((latest as DocumentHandle<Doc>).isLoaded).toBe(true)
         expect(renders).toBe(base + 1)
     })
 
@@ -832,9 +836,15 @@ export function _typeChecks(): void {
 
     const full = useDocument({ definition: fullDef })
     const fullData: Doc | undefined = full.data
-    const fullLoading: boolean = full.isLoading
+    // The default handle is sync-agnostic: it carries isLoaded, not isLoading
+    // or isSynced.
+    const fullLoaded: boolean = full.isLoaded
     void fullData
-    void fullLoading
+    void fullLoaded
+    // @ts-expect-error isLoading is not on the (sync-agnostic) default handle
+    void full.isLoading
+    // @ts-expect-error isSynced is not on the (sync-agnostic) default handle
+    void full.isSynced
 
     const sliced = useDocument({
         definition: fullDef,

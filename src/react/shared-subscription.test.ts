@@ -136,10 +136,10 @@ describe('shared document subscriptions', () => {
         })
 
         // The optimistic edit is shared state — the other handle sees it
-        // immediately, and both reflect the unsynced status.
+        // immediately, and the one shared subscription reports unsynced (sync
+        // state lives on the store / sync-status hook, not the default handle).
         expect(handles.b!.data).toEqual({ name: 'y', age: 1 })
-        expect(handles.a!.isSynced).toBe(false)
-        expect(handles.b!.isSynced).toBe(false)
+        expect(store.isSynced).toBe(false)
     })
 
     it('drives a selector reader from the shared state', () => {
@@ -207,10 +207,10 @@ describe('shared document subscriptions', () => {
         act(() => {
             handles.writer!.update({ name: 'y' })
         })
-        // The read-only leaf sees the optimistic edit immediately, including the
-        // unsynced status — same shared state.
+        // The read-only leaf sees the optimistic edit immediately, and the
+        // shared state reports unsynced.
         expect(handles.reader!.data).toEqual({ name: 'y', age: 1 })
-        expect(handles.reader!.isSynced).toBe(false)
+        expect(store.isSynced).toBe(false)
     })
 
     it('neuters writers on a read-only handle without forking state', () => {
@@ -227,7 +227,7 @@ describe('shared document subscriptions', () => {
         })
         expect(handles.writer!.data).toEqual({ name: 'x', age: 1 })
         expect(handles.reader!.data).toEqual({ name: 'x', age: 1 })
-        expect(handles.writer!.isSynced).toBe(true)
+        expect(store.isSynced).toBe(true)
     })
 
     it('re-registers an evicted entry on re-acquire so siblings still share it', () => {
@@ -278,16 +278,16 @@ describe('shared document subscriptions', () => {
         fire({ name: 'x', age: 1 })
 
         // First lifecycle is fully loaded.
-        expect(shared.getHandle().isLoading).toBe(false)
+        expect(shared.getHandle().isLoaded).toBe(true)
         expect(shared.getHandle().data).toEqual({ name: 'x', age: 1 })
 
         release() // ref count hits zero → stopped + evicted
 
         // Revive on the same facade: the handle must read as a brand-new
-        // subscription — loading, no data — not the stale stopped one.
+        // subscription — not loaded, no data — not the stale stopped one.
         const release2 = shared.acquire(() => {})
         const revived = shared.getHandle()
-        expect(revived.isLoading).toBe(true)
+        expect(revived.isLoaded).toBe(false)
         expect(revived.data).toBeUndefined()
         release2()
     })
@@ -303,7 +303,7 @@ describe('shared document subscriptions', () => {
         // attached and the new hook begins loading from scratch.
         mountProbe({ tag: 'b' })
         expect(h.listeners()).toHaveLength(2)
-        expect(handles.b!.isLoading).toBe(true)
+        expect(handles.b!.isLoaded).toBe(false)
         expect(handles.b!.data).toBeUndefined()
 
         fire({ name: 'z' })
