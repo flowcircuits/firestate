@@ -1,6 +1,6 @@
 {
     "name": "@hvakr/firestate",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "description": "Firestore state management for React with real-time sync, undo/redo, optimistic updates, and Zod schema validation",
     "author": "HVAKR",
     "license": "MIT",
