@@ -263,6 +263,20 @@ Memoizing `queryConstraints` is still a fine micro-optimization — a stable
 reference takes a fast path and skips the per-render query build + compare —
 but it is no longer required to keep the listener stable.
 
+**The value driving the query must reach this component reactively.** Read it
+from a Firestate hook (`useProject(...)` above) or from props/state derived from
+one, so that when another client changes it the component *re-renders* and
+`useCollection` is re-invoked with the new query. `useCollection` only re-points
+its listener when it is called again with a different query — it cannot observe a
+value the component never re-rendered on. The common failure mode in a
+collaborative pane is reading the selection once into local `useState` (or from
+any source the component isn't subscribed to): a remote change then updates the
+underlying document but never re-renders the pane, so the query is stale until
+the component remounts (a route change, tab switch, or reload), at which point
+render-time resolution reads the now-current value and it "fixes itself." If a
+remote selection change only takes effect on remount, this is the cause — make
+the selection a live subscription, not a snapshot captured at mount.
+
 ## Render Slicing with Selectors
 
 By default a component re-renders on data, load (`isLoaded`), or `error` changes

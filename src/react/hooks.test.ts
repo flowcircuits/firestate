@@ -43,8 +43,8 @@ import {
     type Firestore,
     type QueryConstraint,
 } from 'firebase/firestore'
-import { useCollection, FirestateContext } from './hooks'
-import { defineCollection } from '../registry/schema'
+import { useCollection, useDocument, FirestateContext } from './hooks'
+import { defineCollection, defineDocument } from '../registry/schema'
 import { createFirestate, col } from '../registry/firestate'
 import { z } from 'zod'
 import { createStore, type FirestateStore } from '../core/store'
@@ -56,6 +56,19 @@ interface Station extends FirestoreObject {
 
 const stationsCollection = defineCollection<Station>({
     path: 'weatherStations',
+})
+
+// A "selected location" document whose value drives the stations query below.
+// Standing in for the collaborative weather-pane selection: User B writes a new
+// station id here, User A's listener receives it.
+interface Selection extends FirestoreObject {
+    stationId: string
+}
+
+const selectionDoc = defineDocument<Selection>({
+    collection: 'view',
+    id: 'selection',
+    minLoadTime: 0,
 })
 
 const lazyStationsCollection = defineCollection<Station>({
@@ -320,6 +333,159 @@ describe('useCollection queryConstraints identity', () => {
         expect(
             queryEqual(queryArg, query(ref, ...constraintsFor(ids)))
         ).toBe(true)
+    })
+})
+
+/**
+ * Cross-client live sync: a remote change to a *query-driving* document must
+ * re-point an already-mounted collection while it stays open.
+ *
+ * Reproduces the collaborative weather-pane report: User A has the pane open;
+ * User B selects a different station, writing a new id to the shared selection
+ * document; User A's listener delivers that remote snapshot. The pane derives
+ * its stations `in`-query from the selection (the documented recipe), so A's
+ * collection listener must tear down and re-attach on the new query and surface
+ * the new location's data — without a reload or remount. The key is that the
+ * selection reaches the query through a *reactive* `useDocument` subscription,
+ * so the remote change re-renders the component and re-invokes `useCollection`.
+ * (Real `query`/`queryEqual`; only `onSnapshot` is mocked.)
+ */
+describe('cross-client: remote change to a query-driving document', () => {
+    let store: FirestateStore
+    let renderer: ReactTestRenderer | undefined
+    // Capture each listener's ref so a doc listener and the stations query
+    // listeners can be told apart and matched by semantic query identity.
+    let listeners: Array<{
+        ref: unknown
+        deliver: (snapshot: unknown) => void
+        unsubscribe: ReturnType<typeof vi.fn>
+    }>
+
+    const onSnapshotMock = onSnapshot as unknown as ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        store = createStore({ firestore, autosave: 0 })
+        listeners = []
+        onSnapshotMock.mockImplementation(
+            (ref: unknown, onNext: (snapshot: unknown) => void) => {
+                const unsubscribe = vi.fn()
+                listeners.push({ ref, deliver: onNext, unsubscribe })
+                return unsubscribe
+            }
+        )
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderer?.unmount()
+        })
+        renderer = undefined
+        vi.useRealTimers()
+    })
+
+    let stationsHandle: CollectionHandle<Station>
+
+    // The weather pane: read the selected station id reactively, then derive the
+    // stations `in`-query from it. Mirrors docs/api-recipes.md.
+    const Pane = (): null => {
+        const { data: selection } = useDocument({ definition: selectionDoc })
+        const stationId = selection?.stationId
+        stationsHandle = useCollection({
+            definition: stationsCollection,
+            enabled: stationId !== undefined,
+            queryConstraints: stationId
+                ? [where(documentId(), 'in', [stationId])]
+                : [],
+        })
+        return null
+    }
+
+    const mount = (): void => {
+        act(() => {
+            renderer = create(
+                createElement(
+                    FirestateContext.Provider,
+                    { value: store },
+                    createElement(Pane)
+                )
+            )
+        })
+    }
+
+    const docSnapshot = (data: object) => ({
+        exists: () => true,
+        data: () => data,
+        metadata: { fromCache: false, hasPendingWrites: false },
+    })
+    const collSnapshot = (docs: Record<string, object>) => ({
+        docs: Object.entries(docs).map(([id, data]) => ({
+            id,
+            data: () => data,
+            metadata: { fromCache: false, hasPendingWrites: false },
+        })),
+        metadata: { fromCache: false, hasPendingWrites: false },
+    })
+
+    const selectionListener = () => {
+        const ref = collection(firestore, 'view')
+        // The doc listener's ref carries id 'selection'.
+        const l = listeners.find(
+            (x) => (x.ref as { id?: string }).id === 'selection'
+        )
+        if (!l) throw new Error('no selection-doc listener attached')
+        void ref
+        return l
+    }
+    // Most-recently attached listener whose query matches stations `in [id]`.
+    const stationsListenerFor = (id: string) => {
+        const ref = collection(firestore, 'weatherStations')
+        const want = query(ref, where(documentId(), 'in', [id]))
+        for (let i = listeners.length - 1; i >= 0; i--) {
+            try {
+                if (queryEqual(listeners[i]!.ref as never, want)) return listeners[i]!
+            } catch {
+                /* doc ref, not a query */
+            }
+        }
+        return undefined
+    }
+
+    it('re-queries and shows the new station while the pane stays mounted', () => {
+        mount()
+
+        // Selection loads: station ws1.
+        act(() => {
+            selectionListener().deliver(docSnapshot({ stationId: 'ws1' }))
+            vi.runAllTimers()
+        })
+        // Stations listener attached for ws1; its data arrives.
+        const ws1 = stationsListenerFor('ws1')
+        expect(ws1).toBeTruthy()
+        act(() => {
+            ws1!.deliver(collSnapshot({ ws1: { name: 'Station 1' } }))
+            vi.runAllTimers()
+        })
+        expect(stationsHandle!.data.ws1?.name).toBe('Station 1')
+
+        // --- User B selects a different location (ws3): a REMOTE snapshot on
+        // the shared selection document, while User A's pane stays mounted. ---
+        act(() => {
+            selectionListener().deliver(docSnapshot({ stationId: 'ws3' }))
+            vi.runAllTimers()
+        })
+
+        // The stations listener must re-attach on the ws3 query (not stay on
+        // ws1), and the new location's data must surface live.
+        const ws3 = stationsListenerFor('ws3')
+        expect(ws3).toBeTruthy()
+        act(() => {
+            ws3!.deliver(collSnapshot({ ws3: { name: 'Station 3' } }))
+            vi.runAllTimers()
+        })
+        expect(stationsHandle!.data.ws3?.name).toBe('Station 3')
+        expect(stationsHandle!.data.ws1).toBeUndefined()
     })
 })
 
