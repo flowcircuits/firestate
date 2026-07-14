@@ -33,35 +33,35 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 Firestate exposes two layers. Pick one based on what you're building:
 
 - **`createFirestate` + `doc` / `col`** (recommended for app code) — declare a Firestore resource (a document or collection) with a `path` template and a Zod `schema`, and the library generates one typed React hook per entry. In return you get:
-  - the data type (`TaskList`) inferred from the schema via `z.infer`
-  - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
-  - runtime validation on `set` / `add` writes — bad data throws at the call site instead of after a Firestore round trip
+    - the data type (`TaskList`) inferred from the schema via `z.infer`
+    - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
+    - runtime validation on `set` / `add` writes — bad data throws at the call site instead of after a Firestore round trip
 
-  Partial `update(diff)` calls are intentionally NOT validated: diffs commonly include Firestore sentinels like `serverTimestamp()` that a strict schema would reject.
+    Partial `update(diff)` calls are intentionally NOT validated: diffs commonly include Firestore sentinels like `serverTimestamp()` that a strict schema would reject.
 
-  Treat `createFirestate` as a **per-resource hook factory**, not an app-wide registry: give each document/collection its own module (`firestore/taskList.ts`, `firestore/tasks.ts`, …) with one `createFirestate` call, and export the hooks flat. See [Organizing by resource](#organizing-by-resource).
+    Treat `createFirestate` as a **per-resource hook factory**, not an app-wide registry: give each document/collection its own module (`firestore/taskList.ts`, `firestore/tasks.ts`, …) with one `createFirestate` call, and export the hooks flat. See [Organizing by resource](#organizing-by-resource).
 
-  ```ts
-  // firestore/taskList.ts
-  import { z } from 'zod'
-  import { createFirestate, doc } from '@hvakr/firestate'
+    ```ts
+    // firestore/taskList.ts
+    import { z } from 'zod'
+    import { createFirestate, doc } from '@hvakr/firestate'
 
-  const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
+    const TaskListSchema = z.object({ name: z.string(), createdAt: z.number() })
 
-  const taskList = doc({ path: 'taskLists/{listId}', schema: TaskListSchema })
+    const taskList = doc({ path: 'taskLists/{listId}', schema: TaskListSchema })
 
-  export const { useTaskList } = createFirestate({ taskList })
+    export const { useTaskList } = createFirestate({ taskList })
 
-  // useTaskList({ listId })           — { listId: string } statically required
-  // useTaskList()                     — type error: missing listId
-  // useTaskList({ wrong: 'a' })       — type error: wrong key
-  ```
+    // useTaskList({ listId })           — { listId: string } statically required
+    // useTaskList()                     — type error: missing listId
+    // useTaskList({ wrong: 'a' })       — type error: wrong key
+    ```
 
 - **`defineDocument` / `defineCollection` + `useDocument` / `useCollection`** (lower-level escape hatch) — write the path-derivation function yourself, use the standalone hooks. Reach for these when:
-  - your path doesn't fit the `{name}` template (computed from non-string state, conditional segments)
-  - you need the definition outside React (Node scripts, server-side, tests)
-  - your control flow doesn't fit a module-level registry
-  - you want plain TypeScript types without a Zod schema (the schema field is optional here)
+    - your path doesn't fit the `{name}` template (computed from non-string state, conditional segments)
+    - you need the definition outside React (Node scripts, server-side, tests)
+    - your control flow doesn't fit a module-level registry
+    - you want plain TypeScript types without a Zod schema (the schema field is optional here)
 
 Both layers share the same store, undo manager, and sync semantics — the registry is a thin layer on top of the lower-level primitives.
 
@@ -74,12 +74,16 @@ Both layers share the same store, undo manager, and sync semantics — the regis
 import { z } from 'zod'
 import { createFirestate, col } from '@hvakr/firestate'
 
-const TaskSchema = z.object({ title: z.string(), completed: z.boolean(), createdAt: z.number() })
+const TaskSchema = z.object({
+    title: z.string(),
+    completed: z.boolean(),
+    createdAt: z.number(),
+})
 const tasks = col({ path: 'taskLists/{listId}/tasks', schema: TaskSchema })
 
 export const { useTasks, useTaskById } = createFirestate({
-  tasks,                                                  // → useTasks (full handle)
-  taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
+    tasks, // → useTasks (full handle)
+    taskById: tasks.select((s, p: { id: string }) => s.data[p.id]),
 })
 
 // firestore/taskList.ts is a sibling module with its own createFirestate call.
@@ -89,10 +93,10 @@ export const { useTasks, useTaskById } = createFirestate({
 Why per-resource rather than one central call:
 
 - **It scales.** A central registry becomes a chokepoint every feature edits; resource modules keep a resource's schema, hooks, and slices colocated and let you code-split.
-- **Sharing still works app-wide.** Subscriptions are keyed by *definition identity*, and a resource module's definition lives at module scope (one stable object), so every component using `useTasks`/`useTaskById` shares one `onSnapshot` listener and one optimistic state — no matter how many modules.
+- **Sharing still works app-wide.** Subscriptions are keyed by _definition identity_, and a resource module's definition lives at module scope (one stable object), so every component using `useTasks`/`useTaskById` shares one `onSnapshot` listener and one optimistic state — no matter how many modules.
 - **The store stays global.** All resource modules mount under one `FirestateProvider`, so undo/redo and sync tracking span every resource regardless of how you split the files.
 
-**The one rule:** keep a resource's base hook *and* all its `.select` slices in the **same** `createFirestate` call. Each call builds its own definitions, so splitting one resource across two calls would fork it into two listeners. Separate *resources* in separate calls is exactly what you want; separating *one* resource is the mistake.
+**The one rule:** keep a resource's base hook _and_ all its `.select` slices in the **same** `createFirestate` call. Each call builds its own definitions, so splitting one resource across two calls would fork it into two listeners. Separate _resources_ in separate calls is exactly what you want; separating _one_ resource is the mistake.
 
 ## Table of Contents
 
@@ -125,9 +129,9 @@ Firestate requires the following peer dependencies:
 
 ```json
 {
-  "firebase": "^10.0.0 || ^11.0.0",
-  "react": "^18.0.0 || ^19.0.0",
-  "zod": "^4.0.0"
+    "firebase": "^10.0.0 || ^11.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "zod": "^4.0.0"
 }
 ```
 
@@ -205,11 +209,7 @@ import { db } from './firebase'
 
 function App() {
     return (
-        <FirestateProvider
-            firestore={db}
-            autosave={1000}
-            maxUndoLength={20}
-        >
+        <FirestateProvider firestore={db} autosave={1000} maxUndoLength={20}>
             <YourApp />
         </FirestateProvider>
     )
@@ -241,7 +241,10 @@ function ProjectEditor({ projectId }: { projectId: string }) {
 
     // Opt into save state only where you render it — shares the project's one
     // listener, so it doesn't add a subscription.
-    const { isSaving } = useDocumentSyncStatus({ definition: projectDoc, params })
+    const { isSaving } = useDocumentSyncStatus({
+        definition: projectDoc,
+        params,
+    })
 
     // Access undo/redo
     const { undo, redo, canUndo, canRedo } = useUndoManager()
@@ -252,8 +255,12 @@ function ProjectEditor({ projectId }: { projectId: string }) {
     return (
         <div>
             {/* Undo/Redo buttons */}
-            <button onClick={undo} disabled={!canUndo}>Undo</button>
-            <button onClick={redo} disabled={!canRedo}>Redo</button>
+            <button onClick={undo} disabled={!canUndo}>
+                Undo
+            </button>
+            <button onClick={redo} disabled={!canRedo}>
+                Redo
+            </button>
 
             {/* Edit project name - changes auto-save */}
             <input
@@ -343,6 +350,9 @@ project.update({ name: 'New Name' }, { undoGroupId: groupId })
 spaces.update({ space1: { name: 'Updated' } }, { undoGroupId: groupId })
 ```
 
+Grouped actions undo newest-first and redo oldest-first, so one undo/redo
+always applies the complete group in write order.
+
 To skip undo tracking:
 
 ```tsx
@@ -365,6 +375,12 @@ function App() {
         <FirestateProvider
             firestore={db}
             onNavigate={(path) => navigate(path)}
+            onUndo={(action) =>
+                analytics.track('undo', { description: action.description })
+            }
+            onRedo={(action) =>
+                analytics.track('redo', { description: action.description })
+            }
         >
             {children}
         </FirestateProvider>
@@ -387,7 +403,7 @@ Actions record a path via the `path` field on `UndoAction`:
 undoManager.push({
     undo: () => restoreValue(),
     redo: () => applyValue(),
-    path: '/projects/123',  // navigate here on undo/redo
+    path: '/projects/123', // navigate here on undo/redo
 })
 ```
 
@@ -499,10 +515,7 @@ Use the second argument for hook options such as `enabled`, `readOnly`,
 ```tsx
 const spaces = useSpaces(
     { projectId },
-    {
-        enabled: Boolean(projectId),
-        queryConstraints,
-    }
+    { enabled: Boolean(projectId), queryConstraints }
 )
 ```
 
@@ -594,14 +607,14 @@ type parameter, or let it be inferred from a Zod schema.
 
 ```typescript
 const projectDoc = defineDocument<Project>({
-    collection: 'projects',     // Collection path
-    id: (params) => params.id,  // Document ID (string or function)
-    autosave: 1000,             // Optional: debounce interval (ms)
-    minLoadTime: 0,             // Optional: minimum loading time (ms)
-    readOnly: false,            // Optional: prevent updates
-    retryOnError: false,        // Optional: retry on listener errors
-    retryInterval: 5000,        // Optional: retry interval (ms)
-    schema: ProjectSchema,      // Optional: Zod schema (validates set/add)
+    collection: 'projects', // Collection path
+    id: (params) => params.id, // Document ID (string or function)
+    autosave: 1000, // Optional: debounce interval (ms)
+    minLoadTime: 0, // Optional: minimum loading time (ms)
+    readOnly: false, // Optional: prevent updates
+    retryOnError: false, // Optional: retry on listener errors
+    retryInterval: 5000, // Optional: retry interval (ms)
+    schema: ProjectSchema, // Optional: Zod schema (validates set/add)
 })
 ```
 
@@ -612,12 +625,12 @@ Creates a collection definition.
 ```typescript
 const spacesCollection = defineCollection<Space>({
     path: (params) => `projects/${params.id}/spaces`, // Collection path
-    autosave: 1000,                                   // Optional: debounce interval
-    minLoadTime: 0,                                   // Optional: minimum loading time
-    readOnly: false,                                  // Optional: prevent updates
-    lazy: false,                                      // Optional: defer subscription
-    queryConstraints: [],                             // Optional: Firestore constraints
-    schema: SpaceSchema,                              // Optional: Zod schema (validates add)
+    autosave: 1000, // Optional: debounce interval
+    minLoadTime: 0, // Optional: minimum loading time
+    readOnly: false, // Optional: prevent updates
+    lazy: false, // Optional: defer subscription
+    queryConstraints: [], // Optional: Firestore constraints
+    schema: SpaceSchema, // Optional: Zod schema (validates add)
 })
 ```
 
@@ -629,20 +642,20 @@ Subscribe to a document.
 
 ```typescript
 const {
-    data,           // Current document data (T | undefined)
-    update,         // Update with partial diff
-    set,            // Replace entire document
-    delete: del,    // Delete the document
-    isLoaded,       // Whether the initial snapshot has arrived (ready to render)
-    sync,           // Force sync immediately
-    error,          // Error from listener, if any
-    ref,            // Firestore DocumentReference
+    data, // Current document data (T | undefined)
+    update, // Update with partial diff
+    set, // Replace entire document
+    delete: del, // Delete the document
+    isLoaded, // Whether the initial snapshot has arrived (ready to render)
+    sync, // Force sync immediately
+    error, // Error from listener, if any
+    ref, // Firestore DocumentReference
 } = useDocument({
     definition: projectDoc,
     params: { projectId: '123' },
-    readOnly: false,     // Optional: override read-only
-    undoable: true,      // Optional: enable undo (default: true)
-    enabled: true,       // Optional: set false until required params exist
+    readOnly: false, // Optional: override read-only
+    undoable: true, // Optional: enable undo (default: true)
+    enabled: true, // Optional: set false until required params exist
 })
 
 // The default handle is SYNC-AGNOSTIC: no `isSynced`, so a save settling does
@@ -658,22 +671,22 @@ Subscribe to a collection.
 
 ```typescript
 const {
-    data,           // Record<string, T> of documents
-    update,         // Update one or more documents
-    add,            // Add a new document (explicit or auto-generated id)
-    remove,         // Remove a document
-    isLoaded,       // Active AND past the initial load (isActive && !isLoading)
-    isActive,       // Whether subscription is active (for lazy collections)
-    load,           // Activate a lazy subscription
-    sync,           // Force sync immediately
-    error,          // Error from listener, if any
-    ref,            // Firestore CollectionReference
+    data, // Record<string, T> of documents
+    update, // Update one or more documents
+    add, // Add a new document (explicit or auto-generated id)
+    remove, // Remove a document
+    isLoaded, // Active AND past the initial load (isActive && !isLoading)
+    isActive, // Whether subscription is active (for lazy collections)
+    load, // Activate a lazy subscription
+    sync, // Force sync immediately
+    error, // Error from listener, if any
+    ref, // Firestore CollectionReference
 } = useCollection({
     definition: spacesCollection,
     params: { projectId: '123' },
     queryConstraints: [where('floor', '==', 1)],
     undoable: true,
-    enabled: true,       // Optional: set false until required params exist
+    enabled: true, // Optional: set false until required params exist
 })
 
 // queryConstraints are keyed by query identity, not array reference: the
@@ -708,7 +721,7 @@ By default a component re-renders when the data, the load state (`isLoaded`), or
 **sync-agnostic default handle** (`data`, `isLoaded`, `error`, the writers, and
 `ref` — plus a collection's `isActive`). It deliberately omits `isSynced`, so a
 save settling does not re-render it (see [Sync status and loading status](#sync-status-and-loading-status)).
-Pass a `selector` to take further control: it receives the resource's *full*
+Pass a `selector` to take further control: it receives the resource's _full_
 observable state — including `isLoading`/`isSynced` — and returns the slice the
 component reacts to, so the component re-renders **only** when that slice changes.
 
@@ -716,7 +729,7 @@ A selected handle exposes exactly your slice as `data`, plus the writer surface
 (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — the status
 flags are **not** on it. You react to precisely what you select; status is not a
 freebie, so read it from the state inside the selector when you need it. A
-selector changes what you *read*, never what you *write*.
+selector changes what you _read_, never what you _write_.
 
 ```typescript
 // Re-renders only when the title changes — not on any other field, and not on a
@@ -746,7 +759,7 @@ const { data: space } = useCollection({
 `s.data` is `undefined` while a document is loading (and the collection record is
 `{}`), so selectors should handle the empty case.
 
-When writing from a narrowed handle, use `update` — it takes a *partial* and
+When writing from a narrowed handle, use `update` — it takes a _partial_ and
 merges, so a selected field is just `update({ field: next })`. `set` still
 **replaces the entire document**, not the slice: never pass the selected value
 to `set` (e.g. `set(title)`) or you will overwrite every other field. Reach for
@@ -784,7 +797,7 @@ optimistic edits live. Only the read-only handle's own writers are disabled.
 #### Sync status and loading status
 
 The default data handle is **sync-agnostic**: it carries `data`/`isLoaded`/
-`error` but never `isSynced`. That matters because `isSynced` flips on *every*
+`error` but never `isSynced`. That matters because `isSynced` flips on _every_
 autosave settle — so if the data handle carried it, every component that merely
 reads a record would re-render an extra time after each save. Most readers only
 want the data; the few that render save state (a "Saving…" indicator, a
@@ -818,7 +831,7 @@ on the load transition, never on data. Collection status hooks take the same
 `queryConstraints` as the data hook (pass the same query to share the listener).
 
 On a **lazy** collection, a status hook does not call `load()` itself — so as
-the *only* subscriber it stays idle (`{ isSynced: true, isSaving: false }` /
+the _only_ subscriber it stays idle (`{ isSynced: true, isSaving: false }` /
 `{ isLoading: false, isLoaded: false }`) and attaches no listener. Pair it with
 the data hook, whose `load()` activates the one shared listener the status hook
 then rides. Non-lazy collections activate on mount, so this is lazy-only.
@@ -832,7 +845,7 @@ With the lower-level API there are standalone equivalents —
 `{ definition, params, enabled }` (collections also `queryConstraints`).
 
 This is the per-resource counterpart to [`useIsSynced()`](#useissynced), which
-reports a single provider-wide aggregate across *all* tracked resources.
+reports a single provider-wide aggregate across _all_ tracked resources.
 
 #### `useUndoManager()`
 
@@ -840,13 +853,13 @@ Access the undo manager.
 
 ```typescript
 const {
-    canUndo,        // Whether undo is available
-    canRedo,        // Whether redo is available
-    undo,           // Undo the last action
-    redo,           // Redo the last undone action
-    clear,          // Clear undo/redo history
-    undoStack,      // Array of undo actions
-    redoStack,      // Array of redo actions
+    canUndo, // Whether undo is available
+    canRedo, // Whether redo is available
+    undo, // Undo the last action
+    redo, // Redo the last undone action
+    clear, // Clear undo/redo history
+    undoStack, // Array of undo actions
+    redoStack, // Array of redo actions
 } = useUndoManager()
 ```
 
@@ -874,11 +887,17 @@ Main provider component.
 
 ```tsx
 <FirestateProvider
-    firestore={db}              // Required: Firestore instance
-    autosave={1000}             // Optional: default debounce (ms)
-    minLoadTime={0}             // Optional: minimum loading time (ms)
-    maxUndoLength={20}          // Optional: max undo stack size
-    onNavigate={(path) => navigate(path)}  // Optional: router navigate for path-aware undo/redo
+    firestore={db} // Required: Firestore instance
+    autosave={1000} // Optional: default debounce (ms)
+    minLoadTime={0} // Optional: minimum loading time (ms)
+    maxUndoLength={20} // Optional: max undo stack size
+    onNavigate={(path) => navigate(path)} // Optional: router navigate for path-aware undo/redo
+    onUndo={(action) =>
+        analytics.track('undo', { description: action.description })
+    }
+    onRedo={(action) =>
+        analytics.track('redo', { description: action.description })
+    }
     onError={(error, context) => {
         // Optional: custom error handler
         console.error(context.path, error)
@@ -948,7 +967,11 @@ const restored = unflattenDiff(flat)
 ### Path-Based Utilities
 
 ```typescript
-import { diffContainsPath, extractDiffValue, createDiffAtPath } from '@hvakr/firestate'
+import {
+    diffContainsPath,
+    extractDiffValue,
+    createDiffAtPath,
+} from '@hvakr/firestate'
 
 const diff = { building: { floors: 5 }, name: 'Test' }
 
@@ -967,7 +990,12 @@ createDiffAtPath('building.config.enabled', true)
 ### General Utilities
 
 ```typescript
-import { isDeepEqual, deepClone, isDiffEmpty, mergeDiffs } from '@hvakr/firestate'
+import {
+    isDeepEqual,
+    deepClone,
+    isDiffEmpty,
+    mergeDiffs,
+} from '@hvakr/firestate'
 
 // Deep equality check (handles Timestamps, arrays, nested objects)
 isDeepEqual(obj1, obj2)
@@ -1005,8 +1033,15 @@ const store = createStore({
     maxUndoLength: 50,
     onError: (error, context) => {
         // Send to error tracking service
+        if (context.type === 'undo') {
+            analytics.track('undo_error', { operation: context.operation })
+        }
         Sentry.captureException(error, { extra: context })
-    }
+    },
+    onUndo: (action) =>
+        analytics.track('undo', { description: action.description }),
+    onRedo: (action) =>
+        analytics.track('redo', { description: action.description }),
 })
 
 const subscription = createDocumentSubscription({
@@ -1035,13 +1070,17 @@ import { createUndoManager } from '@hvakr/firestate'
 const undoManager = createUndoManager({
     maxLength: 50,
     onNavigate: (path) => router.push(path),
+    onUndo: (action) =>
+        analytics.track('undo', { description: action.description }),
+    onRedo: (action) =>
+        analytics.track('redo', { description: action.description }),
 })
 
 undoManager.push({
     undo: () => restoreOldValue(),
     redo: () => applyNewValue(),
     groupId: 'myGroup',
-    path: '/projects/123',  // Navigate here on undo/redo
+    path: '/projects/123', // Navigate here on undo/redo
     description: 'Update project name',
 })
 
@@ -1210,8 +1249,14 @@ export const spacesCollection = defineCollection<Space>({
 
 // Component.tsx
 function ProjectEditor({ projectId }) {
-    const project = useDocument({ definition: projectDoc, params: { projectId } })
-    const spaces = useCollection({ definition: spacesCollection, params: { projectId } })
+    const project = useDocument({
+        definition: projectDoc,
+        params: { projectId },
+    })
+    const spaces = useCollection({
+        definition: spacesCollection,
+        params: { projectId },
+    })
     const isSynced = useIsSynced() // Automatic!
 
     // That's it. Undo/redo is automatic.

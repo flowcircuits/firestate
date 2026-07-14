@@ -1,5 +1,11 @@
 import type { Firestore } from 'firebase/firestore'
-import type { ErrorContext, FirestateConfig, Subscriber, Unsubscribe } from '../types'
+import type {
+    ErrorContext,
+    FirestateConfig,
+    Subscriber,
+    UndoAction,
+    Unsubscribe,
+} from '../types'
 import { createUndoManager, type UndoManagerWithSubscribe } from '../utils/undo'
 
 /**
@@ -21,13 +27,19 @@ export interface FirestateStore {
      * the store identity stable when consumers pass an inline `onError`
      * callback that changes reference on every render.
      */
-    setOnError: (handler?: (error: Error, context: ErrorContext) => void) => void
+    setOnError: (
+        handler?: (error: Error, context: ErrorContext) => void
+    ) => void
     /**
      * Replace the navigation handler at runtime. Used by FirestateProvider to
      * keep the store identity stable when consumers pass an inline `onNavigate`
      * callback that changes reference on every render.
      */
     setOnNavigate: (handler?: (path: string) => void) => void
+    /** Replace the successful-undo handler without recreating the store. */
+    setOnUndo: (handler?: (action: UndoAction) => void) => void
+    /** Replace the successful-redo handler without recreating the store. */
+    setOnRedo: (handler?: (action: UndoAction) => void) => void
     /** Subscribe to sync state changes */
     subscribeToSyncState: (fn: Subscriber<boolean>) => Unsubscribe
     /** Report a document/collection sync state change */
@@ -71,12 +83,36 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
     // Mutable so the provider can update them without re-creating the store.
     let onError = config.onError
     let onNavigate = config.onNavigate
+    let onUndo = config.onUndo
+    let onRedo = config.onRedo
 
     const undoManager = createUndoManager({
         maxLength: maxUndoLength,
         // Stable wrapper — delegates to the mutable onNavigate ref so the
         // undo manager doesn't need to be recreated when the callback changes.
         onNavigate: (path) => onNavigate?.(path),
+        // Like onNavigate, these wrappers keep the undo manager and store
+        // stable while FirestateProvider replaces inline callback identities.
+        onUndo: (action) => onUndo?.(action),
+        onRedo: (action) => onRedo?.(action),
+        // UndoManager owns action execution; delegate failures through the
+        // store's established onError channel rather than adding undo-specific
+        // error callbacks to FirestateConfig.
+        onError: (error, action, operation) => {
+            const context: ErrorContext = {
+                type: 'undo',
+                path: action.path ?? 'undo',
+                operation,
+            }
+            if (onError) {
+                onError(error, context)
+            } else {
+                console.error(
+                    `Firestate error in ${context.type} ${context.path} during ${context.operation}:`,
+                    error
+                )
+            }
+        },
     })
 
     // Track sync state of all documents/collections
@@ -118,6 +154,14 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
 
         setOnNavigate: (handler) => {
             onNavigate = handler
+        },
+
+        setOnUndo: (handler) => {
+            onUndo = handler
+        },
+
+        setOnRedo: (handler) => {
+            onRedo = handler
         },
 
         subscribeToSyncState: (fn) => {
