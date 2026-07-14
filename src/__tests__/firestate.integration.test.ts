@@ -39,6 +39,7 @@ import {
     buildCollectionDefinition,
 } from '../registry/firestate'
 import { createDocumentSubscription } from '../core/document'
+import { getDocumentShared } from '../core/shared-subscription'
 import { createStore, type FirestateStore } from '../core/store'
 
 const revisionSchema = z.object({ title: z.string() })
@@ -325,5 +326,97 @@ describe('Document subscription: serverTimestamp display overrides', () => {
         expect(sub.getState().data!.updatedAt).not.toEqual(Timestamp.fromMillis(9999))
         // It IS a Timestamp (display override fired for the restored sentinel).
         expect(sub.getState().data!.updatedAt).toBeInstanceOf(Timestamp)
+    })
+})
+
+// The contract: an undo pushed by a normal handle write carries the router path
+// supplied by the store's getUndoPath, so onNavigate fires on undo/redo. Before
+// this, handle-pushed actions had no path and navigation-aware undo was dead for
+// every write except a manual undoManager.push({ path }).
+describe('handle-driven undo stamps the router path via getUndoPath', () => {
+    let store: FirestateStore
+    let snapshotCallback: ((snap: unknown) => void) | undefined
+    let onNavigate: ReturnType<typeof vi.fn>
+
+    const schema = z.object({ title: z.string() })
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        onNavigate = vi.fn()
+        store = createStore({
+            firestore: {} as any,
+            autosave: 0,
+            onNavigate,
+            getUndoPath: () => '/projects/p1/revisions/r1',
+        })
+
+        snapshotCallback = undefined
+        vi.mocked(firestore.onSnapshot).mockImplementation(
+            ((_ref: unknown, onNext: (snap: unknown) => void) => {
+                snapshotCallback = onNext
+                return () => {
+                    snapshotCallback = undefined
+                }
+            }) as never
+        )
+    })
+
+    const fireSnapshot = (data: Record<string, unknown> | null) => {
+        snapshotCallback!({
+            exists: () => data !== null,
+            data: () => data,
+            metadata: { fromCache: false, hasPendingWrites: false },
+        })
+    }
+
+    it('navigates to the write-time path on undo of a handle update', async () => {
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema })
+        )
+        const shared = getDocumentShared({
+            store,
+            definition,
+            docId: 't1',
+            collectionPath: 'tasks',
+        })
+        // acquire() attaches the listener and registers the shared entry, wiring
+        // the real makeOnPushUndo(store, entry) as the write path's onPushUndo.
+        const release = shared.acquire(() => {})
+        shared.load()
+        fireSnapshot({ title: 'first' })
+
+        shared.getHandle().update({ title: 'second' })
+
+        // The action reached the stack with the path stamped from getUndoPath.
+        expect(store.undoManager.canUndo).toBe(true)
+        await store.undoManager.undo()
+
+        expect(onNavigate).toHaveBeenCalledWith('/projects/p1/revisions/r1')
+
+        release()
+    })
+
+    it('leaves the action pathless when getUndoPath returns undefined', async () => {
+        store.setGetUndoPath(() => undefined)
+
+        const definition = buildDocumentDefinition(
+            doc({ path: 'tasks/{taskId}', schema })
+        )
+        const shared = getDocumentShared({
+            store,
+            definition,
+            docId: 't2',
+            collectionPath: 'tasks',
+        })
+        const release = shared.acquire(() => {})
+        shared.load()
+        fireSnapshot({ title: 'first' })
+
+        shared.getHandle().update({ title: 'second' })
+        await store.undoManager.undo()
+
+        expect(onNavigate).not.toHaveBeenCalled()
+
+        release()
     })
 })

@@ -288,6 +288,45 @@ describe('createStore', () => {
         })
     })
 
+    describe('getUndoPath', () => {
+        it('resolves the configured getUndoPath', () => {
+            const store = createStore({
+                firestore: mockFirestore,
+                getUndoPath: () => '/route/abc',
+            })
+
+            expect(store.getUndoPath()).toBe('/route/abc')
+        })
+
+        it('returns undefined when no getUndoPath is configured', () => {
+            const store = createStore({ firestore: mockFirestore })
+
+            expect(store.getUndoPath()).toBeUndefined()
+        })
+
+        it('setGetUndoPath replaces the resolver without recreating the store', () => {
+            const store = createStore({
+                firestore: mockFirestore,
+                getUndoPath: () => '/first',
+            })
+
+            store.setGetUndoPath(() => '/second')
+
+            expect(store.getUndoPath()).toBe('/second')
+        })
+
+        it('setGetUndoPath with undefined clears the resolver', () => {
+            const store = createStore({
+                firestore: mockFirestore,
+                getUndoPath: () => '/route/xyz',
+            })
+
+            store.setGetUndoPath(undefined)
+
+            expect(store.getUndoPath()).toBeUndefined()
+        })
+    })
+
     describe('undo and redo callbacks', () => {
         it('calls onUndo and onRedo after the matching action applies', async () => {
             const onUndo = vi.fn()

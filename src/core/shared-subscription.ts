@@ -167,6 +167,10 @@ const makeOnPushUndo =
             undo: undoAction,
             redo: redoAction,
             groupId: opts?.undoGroupId,
+            // Stamp the current router path so onNavigate can return the user
+            // to where this write happened before reverting it. Merged groups
+            // keep the newest action's path (see mergeGroupedActions).
+            path: store.getUndoPath(),
         })
     }
 
