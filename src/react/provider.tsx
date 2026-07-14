@@ -1,50 +1,54 @@
 import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useSyncExternalStore,
-} from "react";
-import type { Firestore } from "firebase/firestore";
-import { createStore, type FirestateStore } from "../core/store";
-import { FirestateContext } from "./hooks";
-import type { ErrorContext } from "../types";
+    useCallback,
+    useEffect,
+    useMemo,
+    useSyncExternalStore,
+} from 'react'
+import type { Firestore } from 'firebase/firestore'
+import { createStore, type FirestateStore } from '../core/store'
+import { FirestateContext } from './hooks'
+import type { ErrorContext, UndoAction } from '../types'
 
 /**
  * Props for FirestateProvider
  */
 export interface FirestateProviderProps {
-  /** Firestore instance */
-  firestore: Firestore;
-  /** Default autosave interval (ms), default 1000 */
-  autosave?: number;
-  /** Default minimum load time (ms), default 0 */
-  minLoadTime?: number;
-  /** Maximum undo stack length, default 20 */
-  maxUndoLength?: number;
-  /**
-   * Called before undo/redo when the action carries a `path`. Wire your
-   * router's `navigate` here to return users to where a change occurred
-   * before reverting it.
-   *
-   * @example
-   * ```tsx
-   * import { useNavigate } from 'react-router-dom'
-   *
-   * function App() {
-   *   const navigate = useNavigate()
-   *   return (
-   *     <FirestateProvider onNavigate={(path) => navigate(path)}>
-   *       {children}
-   *     </FirestateProvider>
-   *   )
-   * }
-   * ```
-   */
-  onNavigate?: (path: string) => void;
-  /** Custom error handler */
-  onError?: (error: Error, context: ErrorContext) => void;
-  /** React children */
-  children: React.ReactNode;
+    /** Firestore instance */
+    firestore: Firestore
+    /** Default autosave interval (ms), default 1000 */
+    autosave?: number
+    /** Default minimum load time (ms), default 0 */
+    minLoadTime?: number
+    /** Maximum undo stack length, default 20 */
+    maxUndoLength?: number
+    /**
+     * Called before undo/redo when the action carries a `path`. Wire your
+     * router's `navigate` here to return users to where a change occurred
+     * before reverting it.
+     *
+     * @example
+     * ```tsx
+     * import { useNavigate } from 'react-router-dom'
+     *
+     * function App() {
+     *   const navigate = useNavigate()
+     *   return (
+     *     <FirestateProvider onNavigate={(path) => navigate(path)}>
+     *       {children}
+     *     </FirestateProvider>
+     *   )
+     * }
+     * ```
+     */
+    onNavigate?: (path: string) => void
+    /** Custom error handler */
+    onError?: (error: Error, context: ErrorContext) => void
+    /** Called after an undo action has been successfully applied */
+    onUndo?: (action: UndoAction) => void
+    /** Called after a redo action has been successfully applied */
+    onRedo?: (action: UndoAction) => void
+    /** React children */
+    children: React.ReactNode
 }
 
 /**
@@ -70,55 +74,65 @@ export interface FirestateProviderProps {
  * ```
  */
 export const FirestateProvider: React.FC<FirestateProviderProps> = ({
-  firestore,
-  autosave = 1000,
-  minLoadTime = 0,
-  maxUndoLength = 20,
-  onError,
-  onNavigate,
-  children,
+    firestore,
+    autosave = 1000,
+    minLoadTime = 0,
+    maxUndoLength = 20,
+    onError,
+    onNavigate,
+    onUndo,
+    onRedo,
+    children,
 }) => {
-  // onError and onNavigate are intentionally excluded from the deps so that
-  // inline callbacks (new reference per render) do not re-create the store and
-  // drop every existing subscription. The store exposes setOnError /
-  // setOnNavigate so the latest handlers can be applied without store
-  // re-creation.
-  const store = useMemo(
-    () =>
-      createStore({
-        firestore,
-        autosave,
-        minLoadTime,
-        maxUndoLength,
-        onError,
-        onNavigate,
-      }),
-    [firestore, autosave, minLoadTime, maxUndoLength]
-  );
+    // Callback props are intentionally excluded from the deps so inline
+    // callbacks (new reference per render) do not re-create the store and drop
+    // every existing subscription. The store replaces the latest handlers below.
+    const store = useMemo(
+        () =>
+            createStore({
+                firestore,
+                autosave,
+                minLoadTime,
+                maxUndoLength,
+                onError,
+                onNavigate,
+                onUndo,
+                onRedo,
+            }),
+        [firestore, autosave, minLoadTime, maxUndoLength]
+    )
 
-  useEffect(() => {
-    store.setOnError(onError);
-  }, [store, onError]);
+    useEffect(() => {
+        store.setOnError(onError)
+    }, [store, onError])
 
-  useEffect(() => {
-    store.setOnNavigate(onNavigate);
-  }, [store, onNavigate]);
+    useEffect(() => {
+        store.setOnNavigate(onNavigate)
+    }, [store, onNavigate])
 
-  return (
-    <FirestateContext.Provider value={store}>
-      {children}
-    </FirestateContext.Provider>
-  );
-};
+    useEffect(() => {
+        store.setOnUndo(onUndo)
+    }, [store, onUndo])
+
+    useEffect(() => {
+        store.setOnRedo(onRedo)
+    }, [store, onRedo])
+
+    return (
+        <FirestateContext.Provider value={store}>
+            {children}
+        </FirestateContext.Provider>
+    )
+}
 
 /**
  * Props for using an existing store
  */
 export interface FirestateStoreProviderProps {
-  /** Pre-created store instance */
-  store: FirestateStore;
-  /** React children */
-  children: React.ReactNode;
+    /** Pre-created store instance */
+    store: FirestateStore
+    /** React children */
+    children: React.ReactNode
 }
 
 /**
@@ -139,13 +153,13 @@ export interface FirestateStoreProviderProps {
  * ```
  */
 export const FirestateStoreProvider: React.FC<FirestateStoreProviderProps> = ({
-  store,
-  children,
+    store,
+    children,
 }) => (
-  <FirestateContext.Provider value={store}>
-    {children}
-  </FirestateContext.Provider>
-);
+    <FirestateContext.Provider value={store}>
+        {children}
+    </FirestateContext.Provider>
+)
 
 /**
  * Hook to use navigation blocker when there are unsaved changes.
@@ -174,18 +188,18 @@ export const FirestateStoreProvider: React.FC<FirestateStoreProviderProps> = ({
  * ```
  */
 export const useUnsavedChangesBlocker = (): boolean => {
-  const store = React.useContext(FirestateContext);
+    const store = React.useContext(FirestateContext)
 
-  const subscribe = useCallback(
-    (onChange: () => void) =>
-      store ? store.subscribeToSyncState(() => onChange()) : () => {},
-    [store]
-  );
+    const subscribe = useCallback(
+        (onChange: () => void) =>
+            store ? store.subscribeToSyncState(() => onChange()) : () => {},
+        [store]
+    )
 
-  const getSnapshot = useCallback(
-    () => (store ? !store.isSynced : false),
-    [store]
-  );
+    const getSnapshot = useCallback(
+        () => (store ? !store.isSynced : false),
+        [store]
+    )
 
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-};
+    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}

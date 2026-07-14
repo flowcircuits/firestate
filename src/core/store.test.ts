@@ -7,9 +7,7 @@ const mockFirestore = {} as any
 describe('createStore', () => {
     describe('initialization', () => {
         it('creates store with required config', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             expect(store.firestore).toBe(mockFirestore)
             expect(store.undoManager).toBeDefined()
@@ -43,10 +41,7 @@ describe('createStore', () => {
 
             // Push more than maxUndoLength actions
             for (let i = 0; i < 15; i++) {
-                store.undoManager.push({
-                    undo: vi.fn(),
-                    redo: vi.fn(),
-                })
+                store.undoManager.push({ undo: vi.fn(), redo: vi.fn() })
             }
 
             expect(store.undoManager.undoStack.length).toBe(10)
@@ -56,10 +51,7 @@ describe('createStore', () => {
     describe('error reporting', () => {
         it('calls custom onError handler', () => {
             const onError = vi.fn()
-            const store = createStore({
-                firestore: mockFirestore,
-                onError,
-            })
+            const store = createStore({ firestore: mockFirestore, onError })
 
             const error = new Error('Test error')
             const context = {
@@ -74,10 +66,10 @@ describe('createStore', () => {
         })
 
         it('logs to console if no onError handler', () => {
-            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const consoleSpy = vi
+                .spyOn(console, 'error')
+                .mockImplementation(() => {})
+            const store = createStore({ firestore: mockFirestore })
 
             const error = new Error('Test error')
             store.reportError(error, {
@@ -89,21 +81,38 @@ describe('createStore', () => {
             expect(consoleSpy).toHaveBeenCalled()
             consoleSpy.mockRestore()
         })
+
+        it('routes failed undo actions through onError', async () => {
+            const onError = vi.fn()
+            const error = new Error('Undo failed')
+            const store = createStore({ firestore: mockFirestore, onError })
+
+            store.undoManager.push({
+                undo: vi.fn().mockRejectedValue(error),
+                redo: vi.fn(),
+                path: '/projects/123',
+            })
+
+            await expect(store.undoManager.undo()).rejects.toThrow(
+                'Undo failed'
+            )
+            expect(onError).toHaveBeenCalledWith(error, {
+                type: 'undo',
+                path: '/projects/123',
+                operation: 'undo',
+            })
+        })
     })
 
     describe('sync state tracking', () => {
         it('starts with isSynced true', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             expect(store.isSynced).toBe(true)
         })
 
         it('reports sync state changes', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             store.reportSyncState('doc:projects/123', false)
 
@@ -111,9 +120,7 @@ describe('createStore', () => {
         })
 
         it('returns true when all resources are synced', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             store.reportSyncState('doc:a', false)
             store.reportSyncState('doc:b', false)
@@ -127,9 +134,7 @@ describe('createStore', () => {
         })
 
         it('notifies subscribers of sync state changes', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
             const subscriber = vi.fn()
 
             store.subscribeToSyncState(subscriber)
@@ -146,9 +151,7 @@ describe('createStore', () => {
         })
 
         it('allows unsubscribing from sync state', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
             const subscriber = vi.fn()
 
             const unsubscribe = store.subscribeToSyncState(subscriber)
@@ -163,9 +166,7 @@ describe('createStore', () => {
             // Sync state is keyed per-instance, not per-resource-path: two
             // subscriptions to the same path must track independently, so
             // unmounting one does not erase tracking for the other.
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             // Two instances of `doc:users/123`, distinguished by suffix.
             const instanceA = 'doc:users/123#1'
@@ -185,9 +186,7 @@ describe('createStore', () => {
         })
 
         it('only notifies when sync state actually changes', () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
             const subscriber = vi.fn()
 
             // First set a known state
@@ -215,7 +214,11 @@ describe('createStore', () => {
             const onNavigate = vi.fn()
             const store = createStore({ firestore: mockFirestore, onNavigate })
 
-            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/123' })
+            store.undoManager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/route/123',
+            })
             await store.undoManager.undo()
 
             expect(onNavigate).toHaveBeenCalledWith('/route/123')
@@ -225,7 +228,11 @@ describe('createStore', () => {
             const onNavigate = vi.fn()
             const store = createStore({ firestore: mockFirestore, onNavigate })
 
-            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/123' })
+            store.undoManager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/route/123',
+            })
             await store.undoManager.undo()
             await store.undoManager.redo()
 
@@ -246,11 +253,18 @@ describe('createStore', () => {
         it('setOnNavigate replaces the handler without recreating the store', async () => {
             const first = vi.fn()
             const second = vi.fn()
-            const store = createStore({ firestore: mockFirestore, onNavigate: first })
+            const store = createStore({
+                firestore: mockFirestore,
+                onNavigate: first,
+            })
 
             store.setOnNavigate(second)
 
-            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/456' })
+            store.undoManager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/route/456',
+            })
             await store.undoManager.undo()
 
             expect(first).not.toHaveBeenCalled()
@@ -263,18 +277,87 @@ describe('createStore', () => {
 
             store.setOnNavigate(undefined)
 
-            store.undoManager.push({ undo: vi.fn(), redo: vi.fn(), path: '/route/789' })
+            store.undoManager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/route/789',
+            })
             await store.undoManager.undo()
 
             expect(onNavigate).not.toHaveBeenCalled()
         })
     })
 
-    describe('undo manager integration', () => {
-        it('provides access to undo manager', () => {
+    describe('undo and redo callbacks', () => {
+        it('calls onUndo and onRedo after the matching action applies', async () => {
+            const onUndo = vi.fn()
+            const onRedo = vi.fn()
+            const action = {
+                undo: vi.fn(),
+                redo: vi.fn(),
+                description: 'Resize duct',
+            }
             const store = createStore({
                 firestore: mockFirestore,
+                onUndo,
+                onRedo,
             })
+
+            store.undoManager.push(action)
+            await store.undoManager.undo()
+            await store.undoManager.redo()
+
+            expect(onUndo).toHaveBeenCalledWith(action)
+            expect(onRedo).toHaveBeenCalledWith(action)
+        })
+
+        it('replaces undo and redo handlers without recreating the store', async () => {
+            const firstUndo = vi.fn()
+            const secondUndo = vi.fn()
+            const firstRedo = vi.fn()
+            const secondRedo = vi.fn()
+            const store = createStore({
+                firestore: mockFirestore,
+                onUndo: firstUndo,
+                onRedo: firstRedo,
+            })
+
+            store.setOnUndo(secondUndo)
+            store.setOnRedo(secondRedo)
+
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn() })
+            await store.undoManager.undo()
+            await store.undoManager.redo()
+
+            expect(firstUndo).not.toHaveBeenCalled()
+            expect(firstRedo).not.toHaveBeenCalled()
+            expect(secondUndo).toHaveBeenCalledTimes(1)
+            expect(secondRedo).toHaveBeenCalledTimes(1)
+        })
+
+        it('disables undo and redo callbacks when handlers are cleared', async () => {
+            const onUndo = vi.fn()
+            const onRedo = vi.fn()
+            const store = createStore({
+                firestore: mockFirestore,
+                onUndo,
+                onRedo,
+            })
+
+            store.setOnUndo(undefined)
+            store.setOnRedo(undefined)
+            store.undoManager.push({ undo: vi.fn(), redo: vi.fn() })
+            await store.undoManager.undo()
+            await store.undoManager.redo()
+
+            expect(onUndo).not.toHaveBeenCalled()
+            expect(onRedo).not.toHaveBeenCalled()
+        })
+    })
+
+    describe('undo manager integration', () => {
+        it('provides access to undo manager', () => {
+            const store = createStore({ firestore: mockFirestore })
 
             expect(store.undoManager.push).toBeDefined()
             expect(store.undoManager.undo).toBeDefined()
@@ -285,9 +368,7 @@ describe('createStore', () => {
         })
 
         it('undo manager is functional', async () => {
-            const store = createStore({
-                firestore: mockFirestore,
-            })
+            const store = createStore({ firestore: mockFirestore })
 
             let value = 'old'
             store.undoManager.push({

@@ -98,7 +98,11 @@ describe('createUndoManager', () => {
             const manager = createUndoManager({ maxLength: 3 })
 
             for (let i = 0; i < 5; i++) {
-                manager.push({ undo: vi.fn(), redo: vi.fn(), description: `Action ${i}` })
+                manager.push({
+                    undo: vi.fn(),
+                    redo: vi.fn(),
+                    description: `Action ${i}`,
+                })
             }
 
             expect(manager.undoStack.length).toBe(3)
@@ -110,8 +114,16 @@ describe('createUndoManager', () => {
         it('enforces maxLength after redo', async () => {
             const manager = createUndoManager({ maxLength: 2 })
 
-            manager.push({ undo: vi.fn(), redo: vi.fn(), description: 'Action 1' })
-            manager.push({ undo: vi.fn(), redo: vi.fn(), description: 'Action 2' })
+            manager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                description: 'Action 1',
+            })
+            manager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                description: 'Action 2',
+            })
 
             await manager.undo()
             expect(manager.undoStack.length).toBe(1)
@@ -226,6 +238,150 @@ describe('createUndoManager', () => {
             await manager.redo()
             expect(value).toBe(15)
         })
+
+        it('undoes newest-first and redoes oldest-first as one atomic group', async () => {
+            const manager = createUndoManager()
+            const calls: string[] = []
+            const groupId = 'duct-sizer'
+
+            for (const name of ['first', 'second', 'third']) {
+                manager.push({
+                    groupId,
+                    undo: () => {
+                        calls.push(`undo:${name}`)
+                    },
+                    redo: () => {
+                        calls.push(`redo:${name}`)
+                    },
+                })
+            }
+
+            expect(manager.undoStack).toHaveLength(1)
+
+            await manager.undo()
+            expect(calls).toEqual(['undo:third', 'undo:second', 'undo:first'])
+            expect(manager.undoStack).toHaveLength(0)
+            expect(manager.redoStack).toHaveLength(1)
+
+            await manager.redo()
+            expect(calls).toEqual([
+                'undo:third',
+                'undo:second',
+                'undo:first',
+                'redo:first',
+                'redo:second',
+                'redo:third',
+            ])
+            expect(manager.undoStack).toHaveLength(1)
+            expect(manager.redoStack).toHaveLength(0)
+        })
+
+        it('rolls back members already applied when a group member fails', async () => {
+            const manager = createUndoManager()
+            const calls: string[] = []
+            const groupId = 'atomic-group'
+
+            manager.push({
+                groupId,
+                undo: () => {
+                    calls.push('undo:first')
+                    throw new Error('undo failed')
+                },
+                redo: () => {
+                    calls.push('redo:first')
+                },
+            })
+            manager.push({
+                groupId,
+                undo: () => {
+                    calls.push('undo:second')
+                },
+                redo: () => {
+                    calls.push('redo:second')
+                },
+            })
+
+            await expect(manager.undo()).rejects.toThrow('undo failed')
+            expect(calls).toEqual(['undo:second', 'undo:first', 'redo:second'])
+            expect(manager.undoStack).toHaveLength(1)
+            expect(manager.redoStack).toHaveLength(0)
+        })
+    })
+
+    describe('successful action callbacks', () => {
+        it('calls onUndo with the action after it applies', async () => {
+            const calls: string[] = []
+            const onUndo = vi.fn(() => {
+                calls.push('callback')
+            })
+            const action = {
+                undo: () => {
+                    calls.push('undo')
+                },
+                redo: vi.fn(),
+                description: 'Resize duct',
+            }
+            const manager = createUndoManager({ onUndo })
+
+            manager.push(action)
+            await manager.undo()
+
+            expect(calls).toEqual(['undo', 'callback'])
+            expect(onUndo).toHaveBeenCalledWith(action)
+        })
+
+        it('calls onRedo with the action after it applies', async () => {
+            const calls: string[] = []
+            const onRedo = vi.fn(() => {
+                calls.push('callback')
+            })
+            const action = {
+                undo: vi.fn(),
+                redo: () => {
+                    calls.push('redo')
+                },
+                description: 'Resize duct',
+            }
+            const manager = createUndoManager({ onRedo })
+
+            manager.push(action)
+            await manager.undo()
+            await manager.redo()
+
+            expect(calls).toEqual(['redo', 'callback'])
+            expect(onRedo).toHaveBeenCalledWith(action)
+        })
+
+        it('does not call successful action callbacks when applying an action fails', async () => {
+            const onUndo = vi.fn()
+            const onRedo = vi.fn()
+            const manager = createUndoManager({ onUndo, onRedo })
+
+            manager.push({
+                undo: () => {
+                    throw new Error('undo failed')
+                },
+                redo: () => {
+                    throw new Error('redo failed')
+                },
+            })
+
+            await expect(manager.undo()).rejects.toThrow('undo failed')
+            expect(onUndo).not.toHaveBeenCalled()
+
+            // Use a separate manager because the failed undo never creates a
+            // redo entry.
+            const redoManager = createUndoManager({ onRedo })
+            redoManager.push({
+                undo: vi.fn(),
+                redo: () => {
+                    throw new Error('redo failed')
+                },
+            })
+            await redoManager.undo()
+            await expect(redoManager.redo()).rejects.toThrow('redo failed')
+            expect(onRedo).not.toHaveBeenCalled()
+        })
     })
 
     describe('path navigation', () => {
@@ -233,7 +389,11 @@ describe('createUndoManager', () => {
             const onNavigate = vi.fn()
             const manager = createUndoManager({ onNavigate })
 
-            manager.push({ undo: vi.fn(), redo: vi.fn(), path: '/projects/123' })
+            manager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/projects/123',
+            })
             await manager.undo()
 
             expect(onNavigate).toHaveBeenCalledWith('/projects/123')
@@ -243,7 +403,11 @@ describe('createUndoManager', () => {
             const onNavigate = vi.fn()
             const manager = createUndoManager({ onNavigate })
 
-            manager.push({ undo: vi.fn(), redo: vi.fn(), path: '/projects/123' })
+            manager.push({
+                undo: vi.fn(),
+                redo: vi.fn(),
+                path: '/projects/123',
+            })
             await manager.undo()
             await manager.redo()
 
@@ -361,6 +525,21 @@ describe('createUndoManager', () => {
     })
 
     describe('error handling', () => {
+        it('reports failed actions through onError', async () => {
+            const onError = vi.fn()
+            const error = new Error('Undo failed')
+            const action = {
+                undo: vi.fn().mockRejectedValue(error),
+                redo: vi.fn(),
+            }
+            const manager = createUndoManager({ onError })
+
+            manager.push(action)
+
+            await expect(manager.undo()).rejects.toThrow('Undo failed')
+            expect(onError).toHaveBeenCalledWith(error, action, 'undo')
+        })
+
         it('restores action to undo stack if undo fails', async () => {
             const manager = createUndoManager()
             const error = new Error('Undo failed')
