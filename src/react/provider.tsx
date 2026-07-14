@@ -41,6 +41,27 @@ export interface FirestateProviderProps {
      * ```
      */
     onNavigate?: (path: string) => void
+    /**
+     * Called when a handle write (`update`/`add`/`remove`) pushes an undo
+     * action, to stamp the current router path onto it. That path is what
+     * `onNavigate` later receives, so handle-driven undo can return users to
+     * where a change occurred. Read the path from your router here.
+     *
+     * @example
+     * ```tsx
+     * import { useLocation } from 'react-router-dom'
+     *
+     * function App() {
+     *   const location = useLocation()
+     *   return (
+     *     <FirestateProvider getUndoPath={() => location.pathname}>
+     *       {children}
+     *     </FirestateProvider>
+     *   )
+     * }
+     * ```
+     */
+    getUndoPath?: () => string | undefined
     /** Custom error handler */
     onError?: (error: Error, context: ErrorContext) => void
     /** Called after an undo action has been successfully applied */
@@ -80,6 +101,7 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
     maxUndoLength = 20,
     onError,
     onNavigate,
+    getUndoPath,
     onUndo,
     onRedo,
     children,
@@ -96,6 +118,7 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
                 maxUndoLength,
                 onError,
                 onNavigate,
+                getUndoPath,
                 onUndo,
                 onRedo,
             }),
@@ -109,6 +132,10 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
     useEffect(() => {
         store.setOnNavigate(onNavigate)
     }, [store, onNavigate])
+
+    useEffect(() => {
+        store.setGetUndoPath(getUndoPath)
+    }, [store, getUndoPath])
 
     useEffect(() => {
         store.setOnUndo(onUndo)

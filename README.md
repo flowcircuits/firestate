@@ -407,6 +407,35 @@ undoManager.push({
 })
 ```
 
+Undo actions pushed by a normal handle write (`update`/`add`/`remove`) can't set
+`path` at the call site, so on their own they never trigger `onNavigate`. Give
+the store a `getUndoPath` callback and it stamps the current router path onto
+every handle-pushed action, so navigation-aware undo works for ordinary writes —
+not just manual `undoManager.push({ path })`. Read the path from your router:
+
+```tsx
+import { useLocation, useNavigate } from 'react-router-dom'
+
+function App() {
+    const location = useLocation()
+    const navigate = useNavigate()
+
+    return (
+        <FirestateProvider
+            firestore={db}
+            getUndoPath={() => location.pathname}
+            onNavigate={(path) => navigate(path)}
+        >
+            {children}
+        </FirestateProvider>
+    )
+}
+```
+
+`getUndoPath` also works on `createStore({ firestore: db, getUndoPath: () => router.currentPath })`.
+Return `undefined` to leave an action pathless. When actions merge into one undo
+group, the merged group keeps the newest action's path.
+
 ### Lazy Collections
 
 For large applications, you may not want to subscribe to every collection immediately:
@@ -891,6 +920,7 @@ Main provider component.
     autosave={1000} // Optional: default debounce (ms)
     minLoadTime={0} // Optional: minimum loading time (ms)
     maxUndoLength={20} // Optional: max undo stack size
+    getUndoPath={() => location.pathname} // Optional: stamp router path onto handle-pushed undo actions
     onNavigate={(path) => navigate(path)} // Optional: router navigate for path-aware undo/redo
     onUndo={(action) =>
         analytics.track('undo', { description: action.description })

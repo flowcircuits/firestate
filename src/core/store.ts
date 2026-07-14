@@ -36,6 +36,18 @@ export interface FirestateStore {
      * callback that changes reference on every render.
      */
     setOnNavigate: (handler?: (path: string) => void) => void
+    /**
+     * Resolve the router path to stamp onto a handle-pushed undo action.
+     * Delegates to the config's `getUndoPath`; returns `undefined` when none
+     * is configured. Called by handle writers as they push undo actions.
+     */
+    getUndoPath: () => string | undefined
+    /**
+     * Replace the undo-path resolver at runtime. Used by FirestateProvider to
+     * keep the store identity stable when consumers pass an inline
+     * `getUndoPath` callback that changes reference on every render.
+     */
+    setGetUndoPath: (handler?: () => string | undefined) => void
     /** Replace the successful-undo handler without recreating the store. */
     setOnUndo: (handler?: (action: UndoAction) => void) => void
     /** Replace the successful-redo handler without recreating the store. */
@@ -83,6 +95,7 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
     // Mutable so the provider can update them without re-creating the store.
     let onError = config.onError
     let onNavigate = config.onNavigate
+    let getUndoPath = config.getUndoPath
     let onUndo = config.onUndo
     let onRedo = config.onRedo
 
@@ -154,6 +167,12 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
 
         setOnNavigate: (handler) => {
             onNavigate = handler
+        },
+
+        getUndoPath: () => getUndoPath?.(),
+
+        setGetUndoPath: (handler) => {
+            getUndoPath = handler
         },
 
         setOnUndo: (handler) => {

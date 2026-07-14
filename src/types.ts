@@ -385,6 +385,15 @@ export interface FirestateConfig {
      * where a change occurred before reverting it.
      */
     onNavigate?: (path: string) => void
+    /**
+     * Called when a handle write (`update`/`add`/`remove`) pushes an undo
+     * action, to stamp the current router path onto that action. The stamped
+     * `path` is what {@link FirestateConfig.onNavigate} later receives, so
+     * handle-driven undo can return the user to where the change happened
+     * before reverting it. Return `undefined` to leave the action pathless.
+     * Firestate can't know the router path itself — wire this to your router.
+     */
+    getUndoPath?: () => string | undefined
     /** Called after an undo action has been successfully applied. */
     onUndo?: (action: UndoAction) => void
     /** Called after a redo action has been successfully applied. */
