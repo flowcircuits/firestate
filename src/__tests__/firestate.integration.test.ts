@@ -379,6 +379,7 @@ describe('handle-driven undo stamps the router path via getUndoPath', () => {
             docId: 't1',
             collectionPath: 'tasks',
         })
+        shared.setUndoable(true)
         // acquire() attaches the listener and registers the shared entry, wiring
         // the real makeOnPushUndo(store, entry) as the write path's onPushUndo.
         const release = shared.acquire(() => {})
@@ -408,6 +409,7 @@ describe('handle-driven undo stamps the router path via getUndoPath', () => {
             docId: 't2',
             collectionPath: 'tasks',
         })
+        shared.setUndoable(true)
         const release = shared.acquire(() => {})
         shared.load()
         fireSnapshot({ title: 'first' })

@@ -39,7 +39,7 @@ const PARAMS = { listId: LIST_ID }
 
 /** List title. Subscribes to just `name` — re-renders only when the name changes. */
 function TitleEditor() {
-    const list = useListName(PARAMS)
+    const list = useListName(PARAMS, { undoable: true })
     return (
         <input
             type='text'
@@ -98,7 +98,10 @@ function UndoRedo() {
  */
 function AddTaskForm() {
     const [title, setTitle] = useState('')
-    const tasks = useTasks(PARAMS, { selector: () => null })
+    const tasks = useTasks(PARAMS, {
+        selector: () => null,
+        undoable: true,
+    })
 
     const addTask = () => {
         const trimmed = title.trim()
@@ -137,7 +140,7 @@ function AddTaskForm() {
  * one collection listener — the slice differs per row, the subscription doesn't.
  */
 const TaskRow = memo(function TaskRow({ id }: { id: string }) {
-    const task = useTaskById({ ...PARAMS, id })
+    const task = useTaskById({ ...PARAMS, id }, { undoable: true })
     const data = task.data
     if (!data) return null
 
@@ -191,7 +194,7 @@ const TaskRow = memo(function TaskRow({ id }: { id: string }) {
  * free under the pure selector API, so `loading` is part of the slice.
  */
 function TaskListBody() {
-    const tasks = useTaskListView(PARAMS)
+    const tasks = useTaskListView(PARAMS, { readOnly: true })
 
     if (tasks.data.loading) {
         return <div style={styles.loading}>Loading tasks...</div>
@@ -255,7 +258,7 @@ function EditorShell() {
  * EXISTENCE, so editing the name or tasks never re-renders this gate.
  */
 function TaskListGate() {
-    const list = useListGate(PARAMS)
+    const list = useListGate(PARAMS, { undoable: true })
 
     if (list.data.loading) {
         return <div style={styles.loading}>Loading...</div>

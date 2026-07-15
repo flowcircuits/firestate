@@ -432,13 +432,18 @@ the data, not a replacement.
 
 ## Undo and Redo
 
-Undo is enabled by default.
+Undo is disabled by default. Enable it for each resource that should record
+writes in the undo stack:
+
+```ts
+const project = useProject({ projectId }, { undoable: true })
+```
 
 ```tsx
 const { undo, redo, canUndo, canRedo } = useUndoManager()
 ```
 
-Skip undo for non-user-facing writes:
+After opting in, skip undo for individual non-user-facing writes:
 
 ```ts
 project.update({ lastViewedAt: Date.now() }, { undoable: false })

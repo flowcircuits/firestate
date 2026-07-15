@@ -186,7 +186,9 @@ Preserve these unless the task explicitly changes them.
   definition without forking the shared state.
 - Undo recording is a property of the shared subscription, not the individual
   hook: its `onPushUndo` pushes to the store-global undo manager gated by a
-  shared `undoable` flag that co-mounted hooks keep in sync (last writer wins).
+  shared `undoable` flag that defaults to `false` and that co-mounted hooks keep
+  in sync (last writer wins). Resources opt in with the hook's
+  `undoable: true` option.
   Per-call `update(diff, { undoable: false })` still suppresses a single entry.
 - Unmounting the last subscriber clears the shared autosave timer and
   unregisters its sync state. Pending debounced edits are not automatically

@@ -72,6 +72,7 @@ describe('shared document subscriptions', () => {
         tag: string
         id?: string
         readOnly?: boolean
+        undoable?: boolean
         selector?: (s: DocumentState<Doc>) => unknown
     }): null => {
         renders[props.tag] = (renders[props.tag] ?? 0) + 1
@@ -79,6 +80,7 @@ describe('shared document subscriptions', () => {
             definition: docDef,
             params: { id: props.id ?? 'd1' },
             readOnly: props.readOnly,
+            undoable: props.undoable,
             // The render-counting probes pass a possibly-undefined selector,
             // which matches neither overload cleanly — cast through.
             selector: props.selector,
@@ -140,6 +142,28 @@ describe('shared document subscriptions', () => {
         // state lives on the store / sync-status hook, not the default handle).
         expect(handles.b!.data).toEqual({ name: 'y', age: 1 })
         expect(store.isSynced).toBe(false)
+    })
+
+    it('does not record undo actions by default', () => {
+        mountProbe({ tag: 'a' })
+        fire({ name: 'x', age: 1 })
+
+        act(() => {
+            handles.a!.update({ name: 'y' })
+        })
+
+        expect(store.undoManager.canUndo).toBe(false)
+    })
+
+    it('records undo actions when the resource opts in', () => {
+        mountProbe({ tag: 'a', undoable: true })
+        fire({ name: 'x', age: 1 })
+
+        act(() => {
+            handles.a!.update({ name: 'y' })
+        })
+
+        expect(store.undoManager.canUndo).toBe(true)
     })
 
     it('drives a selector reader from the shared state', () => {

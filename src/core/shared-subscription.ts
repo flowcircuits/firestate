@@ -296,7 +296,7 @@ export const getDocumentShared = <T extends FirestoreObject>({
         const entry: DocumentEntry = {
             sub: null as unknown as AnyDocumentSubscription,
             refCount: 0,
-            undoableEnabled: true,
+            undoableEnabled: false,
             live: true,
         }
         entry.sub = buildSub(entry)
@@ -309,7 +309,7 @@ export const getDocumentShared = <T extends FirestoreObject>({
     // effect, and therefore acquire()/release(), never runs — leaves no
     // refCount-0 entry stranded. getHandle()/load() operate on `ent` regardless.
     let ent: DocumentEntry = map.get(key) ?? buildEntry()
-    let desiredUndoable = true
+    let desiredUndoable = false
     // Memoize the neutered read-only handle on the underlying handle's identity,
     // so getHandle() stays referentially stable between notifies (a
     // useSyncExternalStore requirement) and rebuilds the wrapper only when the
@@ -437,7 +437,7 @@ export const getCollectionShared = <T extends FirestoreObject>({
         const entry: CollectionEntry = {
             sub: null as unknown as AnyCollectionSubscription,
             refCount: 0,
-            undoableEnabled: true,
+            undoableEnabled: false,
             live: true,
             query,
         }
@@ -452,7 +452,7 @@ export const getCollectionShared = <T extends FirestoreObject>({
     // lookup (see getDocumentShared for the full rationale).
     let ent: CollectionEntry =
         bucket.find((e) => sameQuery(e.query, query)) ?? buildEntry()
-    let desiredUndoable = true
+    let desiredUndoable = false
     // Memoize the neutered read-only handle on the underlying handle's identity.
     // See getDocumentShared.
     let readOnlySource: CollectionHandle<T> | null = null
