@@ -340,9 +340,14 @@ This distinction is important for collaborative applications where multiple user
 
 ### Undo/Redo
 
-Every undoable update automatically creates an undo action. Actions with the same `undoGroupId` are merged:
+Undo tracking is opt-in per resource. Enable it on the hook, then each update
+automatically creates an undo action. Actions with the same `undoGroupId` are
+merged:
 
 ```tsx
+const project = useProject({ projectId }, { undoable: true })
+const spaces = useSpaces({ projectId }, { undoable: true })
+
 const groupId = crypto.randomUUID()
 
 // These two updates become a single undo action
@@ -353,7 +358,7 @@ spaces.update({ space1: { name: 'Updated' } }, { undoGroupId: groupId })
 Grouped actions undo newest-first and redo oldest-first, so one undo/redo
 always applies the complete group in write order.
 
-To skip undo tracking:
+After opting in, exclude an individual write from undo tracking with:
 
 ```tsx
 project.update({ lastViewed: Date.now() }, { undoable: false })
@@ -683,7 +688,7 @@ const {
     definition: projectDoc,
     params: { projectId: '123' },
     readOnly: false, // Optional: override read-only
-    undoable: true, // Optional: enable undo (default: true)
+    undoable: true, // Optional: enable undo (default: false)
     enabled: true, // Optional: set false until required params exist
 })
 

@@ -123,6 +123,9 @@ tasks.remove(taskId)
 ### Undo/Redo
 
 ```typescript
+// Undo is resource-level opt-in.
+const tasks = useTasks({ listId }, { undoable: true })
+
 const { undo, redo, canUndo, canRedo } = useUndoManager()
 
 // Enable keyboard shortcuts

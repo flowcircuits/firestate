@@ -95,6 +95,8 @@ reconciled state rather than maintaining a private one, and a write through any
 handle is observed by every reader on the resource. Undo recording belongs to
 the shared subscription: its `onPushUndo` pushes to the store-global undo
 manager, gated by a shared `undoable` flag that co-mounted hooks keep in sync.
+The flag defaults to `false`; a resource must explicitly opt into undo
+recording with the hook's `undoable: true` option.
 
 The lower-level `createDocumentSubscription` / `createCollectionSubscription`
 are unaffected — they return unshared single instances for direct, non-React

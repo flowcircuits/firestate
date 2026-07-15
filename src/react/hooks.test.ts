@@ -372,13 +372,20 @@ describe('shared collection subscriptions', () => {
         queryConstraints,
         definition = stationsCollection,
         readOnly,
+        undoable,
     }: {
         tag: string
         queryConstraints?: QueryConstraint[]
         definition?: typeof stationsCollection
         readOnly?: boolean
+        undoable?: boolean
     }) => {
-        handles[tag] = useCollection({ definition, queryConstraints, readOnly })
+        handles[tag] = useCollection({
+            definition,
+            queryConstraints,
+            readOnly,
+            undoable,
+        })
         return null
     }
 
@@ -450,6 +457,28 @@ describe('shared collection subscriptions', () => {
         // off the store / sync-status hook, not the default handle).
         expect(handles.b!.data.ws9?.name).toBe('Added')
         expect(store.isSynced).toBe(false)
+    })
+
+    it('does not record undo actions by default', () => {
+        mountProbe({ tag: 'a' })
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+            handles.a!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
+        })
+
+        expect(store.undoManager.canUndo).toBe(false)
+    })
+
+    it('records undo actions when the resource opts in', () => {
+        mountProbe({ tag: 'a', undoable: true })
+        act(() => {
+            listeners[0]!.deliver(snapshot)
+            vi.runAllTimers()
+            handles.a!.add('ws9', { name: 'Added' } as Omit<Station, 'id'>)
+        })
+
+        expect(store.undoManager.canUndo).toBe(true)
     })
 
     it('shares one listener and state across a writable and a read-only hook', () => {

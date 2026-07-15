@@ -333,7 +333,7 @@ export interface UseDocumentOptions<TData extends FirestoreObject> {
     params?: Record<string, string>
     /** Override read-only setting */
     readOnly?: boolean
-    /** Enable undo/redo for this document (default: true) */
+    /** Enable undo/redo for this document (default: false) */
     undoable?: boolean
     /**
      * If false, no subscription is created and a no-op handle is returned
@@ -427,7 +427,7 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
         definition,
         params = {},
         readOnly,
-        undoable = true,
+        undoable = false,
         enabled = true,
         selector,
         isEqual,
@@ -624,7 +624,7 @@ export interface UseCollectionOptions<TData extends FirestoreObject> {
     readOnly?: boolean
     /** Additional query constraints */
     queryConstraints?: QueryConstraint[]
-    /** Enable undo/redo for this collection (default: true) */
+    /** Enable undo/redo for this collection (default: false) */
     undoable?: boolean
     /**
      * If false, no subscription is created and a no-op handle is returned
@@ -739,7 +739,7 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
         params = {},
         readOnly,
         queryConstraints,
-        undoable = true,
+        undoable = false,
         enabled = true,
         selector,
         isEqual,
