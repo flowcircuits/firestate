@@ -25,6 +25,8 @@ Firestate provides a declarative, schema-first approach that eliminates boilerpl
 - **Optimistic updates**: Changes reflect immediately, sync in background
 - **Conflict resolution**: Automatic rebasing when concurrent changes occur
 - **Undo/redo**: Built-in command pattern with action grouping
+- **Coordinated persistence**: Flush and await every debounced or in-flight write before controlled navigation
+- **Atomic multi-resource updates**: Optimistically update several handles and commit one Firestore batch with one undo action
 - **Lazy loading**: Collections can defer subscription until needed
 - **Diff-based updates**: Only changed fields are sent to Firestore
 
@@ -462,11 +464,23 @@ spaces.load() // Start subscription
 The library tracks whether all documents/collections are synced:
 
 ```tsx
-import { useIsSynced, useUnsavedChangesBlocker } from '@hvakr/firestate'
+import {
+    useFirestateBeforeUnloadWarning,
+    useIsSynced,
+    useStore,
+    useUnsavedChangesBlocker,
+} from '@hvakr/firestate'
 
 function App() {
     const isSynced = useIsSynced()
     const shouldBlock = useUnsavedChangesBlocker()
+    const store = useStore()
+    useFirestateBeforeUnloadWarning()
+
+    const saveAndNavigate = async () => {
+        await store.flush()
+        navigate('/next')
+    }
 
     // Use with react-router's useBlocker
     const blocker = useBlocker(
@@ -487,21 +501,42 @@ function App() {
 
 ### Pending edits on unmount
 
-Writes are debounced by `autosave` (default 1000 ms). The subscription is
-shared and ref-counted, so its state and autosave timer survive as long as any
-hook is still reading the resource. Only when the **last** reader unmounts with
-unflushed local edits are those edits dropped silently — the shared subscription
-is torn down and its autosave timer cleared. To handle this:
+Writes are debounced by `autosave` (default 1000 ms). When the **last** reader
+unmounts, Firestate cancels the timer and immediately starts the pending write;
+the store continues tracking it after the listener is released. Use
+`await store.flush()` before controlled navigation to start and await every
+debounced or in-flight resource write. Concurrent flush calls share the same
+work, and edits queued during a flush remain tracked until committed.
 
-- **Block navigation** with `useUnsavedChangesBlocker` (shown above) so users
-  can't navigate away while writes are pending.
-- **Force a flush** by calling `handle.sync()` before triggering the unmount
-  (e.g., in a custom save-and-close button).
-- **Lower `autosave`** if the debounce window is the source of risk.
+`useFirestateBeforeUnloadWarning()` installs the browser's native
+`beforeunload` warning only while a write is pending or in flight. Browsers
+cannot await asynchronous work during unload, so the hook warns—it does not
+replace `store.flush()` for navigation your app controls.
 
-There is no automatic flush in the subscription's `stop()` because `stop()`
-is synchronous and consumers may unmount during route transitions where
-awaiting writes is not feasible.
+### Atomic multi-resource updates
+
+Use `store.atomic()` when updates to active document or collection handles must
+be one Firestore commit and one undo action:
+
+```ts
+await store.atomic(
+    ({ update }) => {
+        update(spaces, { [spaceId]: { name: 'Main room' } })
+        update(equipment, { [equipmentId]: { spaceId } })
+    },
+    { description: 'Move equipment' }
+)
+```
+
+Optimistic state is applied to every handle before the batch commits. Each
+participating handle must be writable, loaded/available, and free of pending or
+in-flight changes. One handle may appear only once per operation. Atomic
+operations are limited to 500 document writes and reject before changing state
+when that limit is exceeded. Ordinary collection autosave is not atomic across
+chunks and splits larger writes into batches of at most 500. A failed atomic
+commit rejects and remains tracked for an explicit `store.flush()` retry; it is
+also reported through the participating resources' normal error APIs. Firestate
+does not retry automatically.
 
 ## API Reference
 
@@ -905,6 +940,15 @@ Check if all tracked resources are synced.
 const isSynced = useIsSynced()
 ```
 
+#### `useFirestateBeforeUnloadWarning()`
+
+Install the native browser-unload warning while the store has pending or
+in-flight writes. Call it once under a Firestate provider.
+
+```tsx
+useFirestateBeforeUnloadWarning()
+```
+
 #### `useUndoKeyboardShortcuts()`
 
 Add Ctrl/Cmd+Z and Ctrl/Cmd+Y keyboard shortcuts.
@@ -950,6 +994,8 @@ Use with a pre-created store for more control.
 import { createStore, FirestateStoreProvider } from '@hvakr/firestate'
 
 const store = createStore({ firestore: db })
+
+await store.flush() // start and await all pending/in-flight writes
 
 <FirestateStoreProvider store={store}>
     {children}
@@ -1049,7 +1095,7 @@ const combined = mergeDiffs(diff1, diff2)
 
 - **`enabled` flag** — pass `enabled: false` to generated hooks or to `useDocument`/`useCollection` when route params or auth-derived ids are not ready yet. Disabled hooks do not resolve paths or attach listeners, which avoids building invalid Firestore paths like `projects//spaces`.
 - **Navigation flicker** — changing `params` rebuilds the listener and briefly shows the loading state (`isLoaded: false`). To keep the previous data visible across the transition, wrap your param in `useDeferredValue`.
-- **No cross-doc transactions** — writes are atomic per document and per collection (via `writeBatch`), but not across them. For now, use Firestore's `runTransaction` directly via `handle.ref`.
+- **Atomic limit** — `store.atomic()` supports update-only operations across active handles and rejects more than 500 writes. Use Firestore transactions directly when reads and writes must be conditionally coupled.
 - **Per-client undo** — `useUndoManager` is local; one user's undo doesn't propagate to others.
 - **Multi-tab sync** — handled automatically by Firestore's listeners; no extra setup.
 

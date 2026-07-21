@@ -128,6 +128,35 @@ describe('shared document subscriptions', () => {
         expect(handles.c!.data).toEqual({ name: 'x', age: 1 })
     })
 
+    it('flushes a debounced write when the final subscriber releases', async () => {
+        const debouncedDefinition = defineDocument<Doc>({
+            collection: 'docs',
+            id: 'd1',
+            autosave: 1000,
+            minLoadTime: 0,
+        })
+        const shared = getDocumentShared({
+            store,
+            definition: debouncedDefinition,
+            collectionPath: 'docs',
+            docId: 'd1',
+        })
+        const release = shared.acquire(() => {})
+
+        shared.load()
+        fire({ name: 'before' })
+        shared.getHandle().update({ name: 'after' })
+
+        release()
+        vi.advanceTimersByTime(1000)
+
+        expect(h.pendingCommits()).toHaveLength(1)
+        expect(store.hasPendingWrites).toBe(true)
+        h.resolveNextCommit()
+        await h.flushMicrotasks()
+        expect(store.hasPendingWrites).toBe(false)
+    })
+
     it('makes a write through one handle instantly visible to every reader', () => {
         mountProbe({ tag: 'a' })
         mountProbe({ tag: 'b' })

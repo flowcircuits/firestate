@@ -87,7 +87,12 @@ export { shallow } from './utils/shallow'
 
 // Store
 export { createStore } from './core/store'
-export type { FirestateStore, Store } from './core/store'
+export type {
+    AtomicOptions,
+    AtomicWriter,
+    FirestateStore,
+    Store,
+} from './core/store'
 
 // Undo manager
 export { createUndoManager } from './utils/undo'
@@ -129,6 +134,7 @@ export {
     FirestateProvider,
     FirestateStoreProvider,
     useUnsavedChangesBlocker,
+    useFirestateBeforeUnloadWarning,
 } from './react/provider'
 
 export type {

@@ -21,6 +21,11 @@ import type {
 } from '../types'
 import type { FirestateStore } from './store'
 import {
+    registerAtomicUpdateAdapter,
+    type AtomicUpdateAdapter,
+    type AtomicWriteOwner,
+} from './atomic'
+import {
     applyDiff,
     applyDiffMutable,
     applyOverridesAtPaths,
@@ -140,8 +145,19 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     /** Force sync now */
     sync: () => Promise<void>
 } => {
-    const { store, definition, docId, collectionPath: resolvedCollectionPath, readOnly, onPushUndo } = options
-    const { firestore, autosave: defaultAutosave, minLoadTime: defaultMinLoadTime } = store
+    const {
+        store,
+        definition,
+        docId,
+        collectionPath: resolvedCollectionPath,
+        readOnly,
+        onPushUndo,
+    } = options
+    const {
+        firestore,
+        autosave: defaultAutosave,
+        minLoadTime: defaultMinLoadTime,
+    } = store
 
     const {
         collection: collectionConfig,
@@ -167,7 +183,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     // Same shape as docId: prefer a caller-resolved path, fall back to a
     // string `definition.collection` for direct use. Function definitions
     // must come pre-resolved from the hook layer.
-    const collectionPath = resolvedCollectionPath ?? (typeof collectionConfig === 'string' ? collectionConfig : undefined)
+    const collectionPath =
+        resolvedCollectionPath ??
+        (typeof collectionConfig === 'string' ? collectionConfig : undefined)
     if (collectionPath === undefined) {
         throw new Error(
             `createDocumentSubscription: definition.collection is a function; pass a resolved collectionPath in options.`
@@ -200,6 +218,14 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     let minLoadTimeout: ReturnType<typeof setTimeout> | null = null
     let minLoadTimeElapsed = false
     let loaded = false
+    let mutationVersion = 0
+    let committedMutationVersion = 0
+    let pendingWriteVersion = 0
+    let syncPromise: Promise<void> | null = null
+    let atomicWriteOwner: AtomicWriteOwner | null = null
+    let atomicOwnedMutationVersion = 0
+    let writeBaselineInitialized = false
+    let writeBaseline: TData | undefined
     // Cached handle — returns the same reference until notify() invalidates
     // it. Lets useSyncExternalStore consumers rely on handle identity.
     let cachedHandle: DocumentHandle<TData> | null = null
@@ -254,7 +280,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // Snapshot-side no-op collapse: nothing a consumer can observe
         // changed → publish nothing. Keeps the cached handle identity stable
         // so useSyncExternalStore does not re-render.
-        if (lastPublished !== null && !publicStateChanged(lastPublished, publicState)) {
+        if (
+            lastPublished !== null &&
+            !publicStateChanged(lastPublished, publicState)
+        ) {
             return
         }
         lastPublished = publicState
@@ -316,14 +345,26 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                () =>
+                    updateState(
+                        undoDiff as WithFieldValue<DeepPartial<TData>>,
+                        { undoable: false }
+                    ),
+                () =>
+                    updateState(
+                        redoDiff as WithFieldValue<DeepPartial<TData>>,
+                        { undoable: false }
+                    ),
                 undoOptions
             )
         }
 
         state.localState = newLocalState
         state.isSetOperation = false
+        mutationVersion++
+        pendingWriteVersion = store.registerPendingWrite(syncKey, () =>
+            drainPendingWrites()
+        )
 
         notify()
         scheduleAutosave()
@@ -373,7 +414,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 // Snapshot raw localState so the restore payload contains
                 // serverTimestamp() sentinels, not the frozen Timestamps that
                 // getMergedData() substitutes for display purposes.
-                const dataToRestore = deepClone((state.localState ?? state.syncState) as TData)
+                const dataToRestore = deepClone(
+                    (state.localState ?? state.syncState) as TData
+                )
                 onPushUndo(
                     () => setData(dataToRestore, { undoable: false }),
                     () => setData(dataForRedo, { undoable: false }),
@@ -384,6 +427,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
         state.localState = deepClone(data)
         state.isSetOperation = true
+        mutationVersion++
+        pendingWriteVersion = store.registerPendingWrite(syncKey, () =>
+            drainPendingWrites()
+        )
 
         notify()
         scheduleAutosave()
@@ -402,7 +449,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // local edits at this moment).
         if (undoOptions?.undoable !== false && onPushUndo) {
             // Snapshot raw localState — same reason as in setData above.
-            const dataToRestore = deepClone((state.localState ?? state.syncState) as TData)
+            const dataToRestore = deepClone(
+                (state.localState ?? state.syncState) as TData
+            )
             onPushUndo(
                 () => setData(dataToRestore, { undoable: false }),
                 () => deleteDocument({ undoable: false }),
@@ -414,6 +463,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // the actual deleteDoc call — same flow as set/update.
         state.localState = null
         state.isSetOperation = false
+        mutationVersion++
+        pendingWriteVersion = store.registerPendingWrite(syncKey, () =>
+            drainPendingWrites()
+        )
 
         notify()
         scheduleAutosave()
@@ -425,24 +478,37 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         }
         if (autosave > 0) {
             autosaveTimeout = setTimeout(() => {
-                sync()
+                autosaveTimeout = null
+                void drainPendingWrites().catch(() => {})
             }, autosave)
         }
     }
 
-    const sync = async () => {
+    const runSync = async () => {
+        if (committedMutationVersion >= mutationVersion) return
         if (state.localState === undefined) {
+            committedMutationVersion = mutationVersion
             return
         }
 
+        const versionBeingCommitted = mutationVersion
+        const committing = deepClone(state.localState)
+        const baseline = writeBaselineInitialized
+            ? writeBaseline
+            : state.syncState
+
         // Pending delete — issue deleteDoc and let the listener confirm via
         // handleMissingDocument. Undo was already pushed at mutation time.
-        if (state.localState === null) {
+        if (committing === null) {
             state.inflightLocalState = null
             state.waitingForUpdate = true
 
             try {
                 await deleteDoc(docRef)
+                state.committedWrite = null
+                writeBaseline = undefined
+                writeBaselineInitialized = true
+                committedMutationVersion = versionBeingCommitted
             } catch (error) {
                 console.error('Sync failed:', error)
                 state.waitingForUpdate = false
@@ -454,16 +520,16 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                     operation: 'write',
                 })
                 notify()
+                throw error
             }
             return
         }
 
-        // No-op if local state already matches what the server holds. This is
-        // the path that an undo-of-pending-local takes: the inverse update
-        // brings localState back to syncState, and we exit without a write.
-        if (state.syncState && isDeepEqual(state.localState, state.syncState)) {
+        // No-op if local state already matches the latest durable baseline.
+        if (baseline && isDeepEqual(committing, baseline)) {
             state.localState = undefined
             state.inflightLocalState = undefined
+            committedMutationVersion = versionBeingCommitted
             notify()
             return
         }
@@ -475,12 +541,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // either the user explicitly called set() to create the document, or
         // the listener has reported the doc as missing. In both cases we use
         // setDoc.
-        const isCreation = !state.syncState
+        const isCreation = !baseline
         const useSetDoc = wasSetOperation || isCreation
 
-        const diff = state.syncState
-            ? computeDiff(state.syncState, state.localState)
-            : undefined
+        const diff = baseline ? computeDiff(baseline, committing) : undefined
 
         // Snapshot exactly what we're committing so the next snapshot's rebase
         // can recognize committed FieldValue sentinels and drop them. Captured
@@ -490,7 +554,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // state.inflightLocalState. Reading it back at line `committedWrite = …`
         // would then capture `undefined`, losing the sentinel record and making
         // serverTimestamp churn / increment double-apply. Mirrors collection.ts.
-        const committing = deepClone(state.localState)
         state.inflightLocalState = committing
 
         state.waitingForUpdate = true
@@ -499,7 +562,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             if (useSetDoc) {
                 // Full set / creation — use setDoc to create or completely
                 // replace the document.
-                await setDoc(docRef, state.localState as TData)
+                await setDoc(docRef, committing)
             } else {
                 // Partial update — use updateDoc with the variadic FieldPath
                 // form (not a flattened dotted-key object) so that a "." inside
@@ -513,11 +576,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 if (args.length) {
                     await updateDoc(
                         docRef,
-                        ...(args as [
-                            string | FieldPath,
-                            unknown,
-                            ...unknown[]
-                        ])
+                        ...(args as [string | FieldPath, unknown, ...unknown[]])
                     )
                 }
             }
@@ -526,6 +585,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             // (serverTimestamp, increment, …) and drop them instead of
             // re-deriving and re-writing them forever.
             state.committedWrite = committing
+            writeBaseline = committing
+            writeBaselineInitialized = true
+            committedMutationVersion = versionBeingCommitted
         } catch (error) {
             console.error('Sync failed:', error)
             state.waitingForUpdate = false
@@ -542,7 +604,64 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 operation: 'write',
             })
             notify()
+            throw error
         }
+    }
+
+    const sync = (): Promise<void> => {
+        if (autosaveTimeout) {
+            clearTimeout(autosaveTimeout)
+            autosaveTimeout = null
+        }
+        if (
+            atomicWriteOwner &&
+            committedMutationVersion < atomicOwnedMutationVersion
+        ) {
+            const owner = atomicWriteOwner
+            return (async () => {
+                while (atomicWriteOwner === owner) {
+                    const attempt = owner.attempt
+                    if (!attempt) {
+                        await Promise.resolve()
+                        continue
+                    }
+                    await attempt
+                }
+                return sync()
+            })()
+        }
+        if (syncPromise) return syncPromise
+
+        syncPromise = runSync().finally(() => {
+            syncPromise = null
+            if (committedMutationVersion === mutationVersion) {
+                store.resolvePendingWrite(syncKey, pendingWriteVersion)
+            }
+        })
+        return syncPromise
+    }
+
+    const drainPendingWrites = async (): Promise<void> => {
+        while (committedMutationVersion < mutationVersion) {
+            await sync()
+        }
+    }
+
+    const resolveAbsorbedWrite = () => {
+        if (
+            state.localState !== undefined ||
+            syncPromise ||
+            atomicWriteOwner ||
+            committedMutationVersion >= mutationVersion
+        ) {
+            return
+        }
+        committedMutationVersion = mutationVersion
+        if (autosaveTimeout) {
+            clearTimeout(autosaveTimeout)
+            autosaveTimeout = null
+        }
+        store.resolvePendingWrite(syncKey, pendingWriteVersion)
     }
 
     const handleSnapshot = (newSyncData: TData) => {
@@ -551,6 +670,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // after using it to re-derive the user's own edits.
         const prevSync = state.syncState
         state.syncState = newSyncData
+        if (!syncPromise) {
+            writeBaseline = newSyncData
+            writeBaselineInitialized = true
+        }
         // A successful snapshot supersedes any previous read or write error.
         state.error = undefined
 
@@ -607,6 +730,8 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // arrived and the initial sync attempt bailed early.
         if (state.localState !== undefined) {
             scheduleAutosave()
+        } else {
+            resolveAbsorbedWrite()
         }
 
         notify()
@@ -617,6 +742,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     // leave error undefined; data will be undefined via getMergedData().
     const handleMissingDocument = () => {
         state.syncState = undefined
+        if (!syncPromise) {
+            writeBaseline = undefined
+            writeBaselineInitialized = true
+        }
         state.error = undefined
         // Drop any committed-write record: it described a now-deleted doc and
         // must not be matched against a future recreation snapshot.
@@ -644,6 +773,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             state.isLoading = false
         }
         loaded = true
+        resolveAbsorbedWrite()
         notify()
     }
 
@@ -720,6 +850,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // Drop this subscription's entry from the global sync-state map so
         // an unmounted hook does not leave useIsSynced stuck at false.
         store.unregisterSyncState(syncKey)
+        if (committedMutationVersion < mutationVersion || syncPromise) {
+            void drainPendingWrites().catch(() => {})
+        }
     }
 
     const subscribe = (fn: Subscriber<DocumentState<TData>>): Unsubscribe => {
@@ -727,16 +860,116 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         return () => subscribers.delete(fn)
     }
 
-    const buildHandle = (): DocumentHandle<TData> => ({
-        data: getMergedData(),
-        update: updateState,
-        set: setData,
-        delete: deleteDocument,
-        isLoaded: !state.isLoading,
-        sync,
-        error: state.error,
-        ref: docRef,
-    })
+    const atomicAdapter: AtomicUpdateAdapter = {
+        path: `${collectionPath}/${documentId}`,
+        prepareUpdate: (input) => {
+            if (isReadOnly) {
+                throw new Error(
+                    `Firestate atomic update rejected: ${collectionPath}/${documentId} is read-only.`
+                )
+            }
+            if (
+                committedMutationVersion < mutationVersion ||
+                syncPromise !== null ||
+                atomicWriteOwner !== null
+            ) {
+                throw new Error(
+                    `Firestate atomic update rejected: ${collectionPath}/${documentId} already has pending or in-flight changes.`
+                )
+            }
+            const current = getMergedData()
+            if (!current) {
+                throw new Error(
+                    `Firestate atomic update rejected: ${collectionPath}/${documentId} is unavailable.`
+                )
+            }
+
+            const rawBase = deepClone(
+                (state.localState ?? state.syncState) as TData
+            )
+            const next = deepClone(rawBase)
+            applyDiffMutable(next, input as Record<string, unknown>)
+            if (valuesEqualForNoOp(rawBase, next)) {
+                return {
+                    writeCount: 0,
+                    forwardDiff: {},
+                    reverseDiff: {},
+                    apply: () => {},
+                    addToBatch: () => {},
+                    committed: () => {},
+                    failed: () => {},
+                }
+            }
+
+            const forwardDiff = computeDiff(rawBase, next)
+            const reverseDiff = computeDiff(next, rawBase)
+            const fieldArgs = diffToFieldPathArgs(
+                forwardDiff as Record<string, unknown>
+            )
+            let appliedVersion = 0
+
+            return {
+                writeCount: fieldArgs.length > 0 ? 1 : 0,
+                forwardDiff,
+                reverseDiff,
+                apply: (owner) => {
+                    state.localState = next
+                    state.isSetOperation = false
+                    appliedVersion = ++mutationVersion
+                    atomicOwnedMutationVersion = appliedVersion
+                    atomicWriteOwner = owner
+                    notify()
+                },
+                addToBatch: (batch) => {
+                    if (fieldArgs.length === 0) return
+                    batch.update(
+                        docRef,
+                        ...(fieldArgs as [
+                            string | FieldPath,
+                            unknown,
+                            ...unknown[],
+                        ])
+                    )
+                },
+                committed: () => {
+                    state.committedWrite = deepClone(next)
+                    writeBaseline = deepClone(next)
+                    writeBaselineInitialized = true
+                    committedMutationVersion = Math.max(
+                        committedMutationVersion,
+                        appliedVersion
+                    )
+                    if (atomicOwnedMutationVersion === appliedVersion) {
+                        atomicWriteOwner = null
+                    }
+                },
+                failed: (error) => {
+                    state.error = error
+                    store.reportError(error, {
+                        type: 'document',
+                        path: `${collectionPath}/${documentId}`,
+                        operation: 'write',
+                    })
+                    notify()
+                },
+            }
+        },
+    }
+
+    const buildHandle = (): DocumentHandle<TData> => {
+        const handle: DocumentHandle<TData> = {
+            data: getMergedData(),
+            update: updateState,
+            set: setData,
+            delete: deleteDocument,
+            isLoaded: !state.isLoading,
+            sync,
+            error: state.error,
+            ref: docRef,
+        }
+        registerAtomicUpdateAdapter(handle.update, atomicAdapter)
+        return handle
+    }
 
     const getHandle = (): DocumentHandle<TData> => {
         if (cachedHandle === null) {
@@ -754,12 +987,5 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         return cachedState
     }
 
-    return {
-        load,
-        stop,
-        subscribe,
-        getState,
-        getHandle,
-        sync,
-    }
+    return { load, stop, subscribe, getState, getHandle, sync }
 }

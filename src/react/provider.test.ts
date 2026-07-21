@@ -3,8 +3,13 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { describe, expect, it, vi } from 'vitest'
 import type { Firestore } from 'firebase/firestore'
 import type { FirestateStore } from '../core/store'
-import { FirestateProvider } from './provider'
+import {
+    FirestateProvider,
+    FirestateStoreProvider,
+    useFirestateBeforeUnloadWarning,
+} from './provider'
 import { useStore } from './hooks'
+import { createStore } from '../core/store'
 
 const firestore = {} as Firestore
 
@@ -57,5 +62,95 @@ describe('FirestateProvider undo callbacks', () => {
         expect(secondRedo).toHaveBeenCalledTimes(1)
 
         renderer!.unmount()
+    })
+})
+
+describe('useFirestateBeforeUnloadWarning', () => {
+    it('registers only while a write is pending or in flight', async () => {
+        const addEventListener = vi.fn()
+        const removeEventListener = vi.fn()
+        vi.stubGlobal('window', { addEventListener, removeEventListener })
+        const store = createStore({ firestore })
+        const Probe = () => {
+            useFirestateBeforeUnloadWarning()
+            return null
+        }
+        let renderer: ReactTestRenderer
+
+        await act(async () => {
+            renderer = create(
+                createElement(FirestateStoreProvider, {
+                    store,
+                    children: createElement(Probe),
+                })
+            )
+        })
+        expect(addEventListener).not.toHaveBeenCalled()
+
+        let version = 0
+        await act(async () => {
+            version = store.registerPendingWrite('doc:a', async () => {})
+        })
+        expect(addEventListener).toHaveBeenCalledWith(
+            'beforeunload',
+            expect.any(Function)
+        )
+
+        await act(async () => {
+            store.resolvePendingWrite('doc:a', version)
+        })
+        expect(removeEventListener).toHaveBeenCalledWith(
+            'beforeunload',
+            addEventListener.mock.calls[0]![1]
+        )
+
+        renderer!.unmount()
+        vi.unstubAllGlobals()
+    })
+
+    it('tracks pending writes while another resource is already unsynced', async () => {
+        // A resource reporting unsynced keeps aggregate isSynced false, which
+        // used to mask pending-write notifications and leave the warning
+        // listener out of sync with hasPendingWrites.
+        const addEventListener = vi.fn()
+        const removeEventListener = vi.fn()
+        vi.stubGlobal('window', { addEventListener, removeEventListener })
+        const store = createStore({ firestore })
+        store.reportSyncState('doc:other', false)
+        const Probe = () => {
+            useFirestateBeforeUnloadWarning()
+            return null
+        }
+        let renderer: ReactTestRenderer
+
+        await act(async () => {
+            renderer = create(
+                createElement(FirestateStoreProvider, {
+                    store,
+                    children: createElement(Probe),
+                })
+            )
+        })
+        expect(addEventListener).not.toHaveBeenCalled()
+
+        let version = 0
+        await act(async () => {
+            version = store.registerPendingWrite('doc:a', async () => {})
+        })
+        expect(addEventListener).toHaveBeenCalledWith(
+            'beforeunload',
+            expect.any(Function)
+        )
+
+        await act(async () => {
+            store.resolvePendingWrite('doc:a', version)
+        })
+        expect(removeEventListener).toHaveBeenCalledWith(
+            'beforeunload',
+            addEventListener.mock.calls[0]![1]
+        )
+
+        renderer!.unmount()
+        vi.unstubAllGlobals()
     })
 })

@@ -474,6 +474,19 @@ project.update({ name: 'Draft name' })
 await project.sync()
 ```
 
+To flush every resource before controlled navigation, use the store-level
+coordinator. It starts debounced work immediately and also awaits commits that
+are already in flight:
+
+```tsx
+const store = useStore()
+
+async function saveAndClose() {
+    await store.flush()
+    navigate('/projects')
+}
+```
+
 ## Unsaved Changes
 
 Use global sync state for save indicators and route blockers. `useIsSynced()` is
@@ -483,11 +496,39 @@ status, use its [`use{Name}SyncStatus`](#sync-and-loading-status) hook.
 ```tsx
 const isSynced = useIsSynced()
 const shouldBlock = useUnsavedChangesBlocker()
+useFirestateBeforeUnloadWarning()
 ```
 
-Debounced local edits are not flushed automatically when a subscription
-unmounts. Call `handle.sync()` before a save-and-close action if the UI can
-await the write.
+The unload hook installs `beforeunload` only while writes are pending or in
+flight. It cannot await a write during browser shutdown; use `store.flush()`
+for navigation the app controls. Releasing a resource's final subscriber starts
+its pending debounced write and leaves it tracked by the store until it settles.
+
+## Atomic Multi-Resource Updates
+
+Use `store.atomic()` for one update-only operation spanning several loaded,
+writable handles:
+
+```ts
+await store.atomic(
+    ({ update }) => {
+        update(spaces, { [spaceId]: { occupied: true } })
+        update(assignments, { [assignmentId]: { spaceId } })
+    },
+    { description: 'Assign space' }
+)
+```
+
+The updates become visible optimistically together, persist in one
+`writeBatch`, and produce one undo action whose undo/redo covers every handle.
+Participating resources must not already have pending or in-flight changes;
+read-only, disabled, unloaded, or missing resources are rejected. A handle may
+be updated once per operation. More than 500 writes rejects before any state
+change or commit. Normal collection sync instead chunks large dirty sets into
+batches of 500 and preserves uncommitted documents if a later chunk fails.
+Commit failures reject, stay visible through the existing resource error state,
+and remain tracked for a later explicit `store.flush()`; there is no automatic
+retry scheduler.
 
 ## Read-Only Handles
 
