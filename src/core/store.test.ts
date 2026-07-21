@@ -207,6 +207,26 @@ describe('createStore', () => {
             store.reportSyncState('doc:test', false)
             expect(subscriber).toHaveBeenCalledTimes(1)
         })
+
+        it('notifies on pending-write changes even while another resource is unsynced', () => {
+            // Aggregate isSynced is already false here, so dedup keyed on
+            // isSynced alone would swallow these — leaving hasPendingWrites
+            // snapshots (e.g. useFirestateBeforeUnloadWarning) stale.
+            const store = createStore({ firestore: mockFirestore })
+            const subscriber = vi.fn()
+
+            store.reportSyncState('doc:other', false)
+            store.subscribeToSyncState(subscriber)
+            subscriber.mockClear()
+
+            const version = store.registerPendingWrite('doc:a', async () => {})
+            expect(store.hasPendingWrites).toBe(true)
+            expect(subscriber).toHaveBeenCalledTimes(1)
+
+            store.resolvePendingWrite('doc:a', version)
+            expect(store.hasPendingWrites).toBe(false)
+            expect(subscriber).toHaveBeenCalledTimes(2)
+        })
     })
 
     describe('onNavigate integration', () => {

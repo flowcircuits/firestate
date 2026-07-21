@@ -190,9 +190,16 @@ Preserve these unless the task explicitly changes them.
   in sync (last writer wins). Resources opt in with the hook's
   `undoable: true` option.
   Per-call `update(diff, { undoable: false })` still suppresses a single entry.
-- Unmounting the last subscriber clears the shared autosave timer and
-  unregisters its sync state. Pending debounced edits are not automatically
-  flushed on `stop()`.
+- Unmounting the last subscriber clears the shared autosave timer, immediately
+  starts pending dirty work, and unregisters listener sync state. The store
+  coordinator retains pending/in-flight work after teardown until it settles.
+- Ordinary collection sync commits sequential chunks of at most 500 writes and
+  advances its durable baseline after each chunk so later failures leave only
+  uncommitted documents dirty. Explicit atomic operations reject above 500;
+  they are never silently chunked.
+- An atomic operation owns each participant's optimistic mutation generation
+  until its batch commits. Autosave, `sync()`, and final-subscriber teardown
+  must wait for that ownership rather than leaking per-resource writes.
 - Undo actions are client-local. Grouped undo actions undo newest to oldest and
   redo oldest to newest.
 - Firestore updates use flattened diffs for `updateDoc`; full document

@@ -16,6 +16,7 @@ import type {
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
+import { markAtomicUpdateReadOnly } from './atomic'
 import { createDocumentSubscription } from './document'
 import {
     buildCollectionQuery,
@@ -185,23 +186,31 @@ const noopAdd = (): undefined => undefined
 
 const readOnlyDocumentHandle = <T extends FirestoreObject>(
     handle: DocumentHandle<T>
-): DocumentHandle<T> => ({
-    ...handle,
-    update: noop,
-    set: noop,
-    delete: noop,
-    sync: asyncNoop,
-})
+): DocumentHandle<T> => {
+    const readOnlyHandle = {
+        ...handle,
+        update: noop,
+        set: noop,
+        delete: noop,
+        sync: asyncNoop,
+    }
+    markAtomicUpdateReadOnly(readOnlyHandle.update)
+    return readOnlyHandle
+}
 
 const readOnlyCollectionHandle = <T extends FirestoreObject>(
     handle: CollectionHandle<T>
-): CollectionHandle<T> => ({
-    ...handle,
-    update: noop,
-    add: noopAdd,
-    remove: noop,
-    sync: asyncNoop,
-})
+): CollectionHandle<T> => {
+    const readOnlyHandle = {
+        ...handle,
+        update: noop,
+        add: noopAdd,
+        remove: noop,
+        sync: asyncNoop,
+    }
+    markAtomicUpdateReadOnly(readOnlyHandle.update)
+    return readOnlyHandle
+}
 
 /**
  * A per-hook facade over a shared registry entry. Multiple hooks on the same

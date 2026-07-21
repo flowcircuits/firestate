@@ -230,3 +230,37 @@ export const useUnsavedChangesBlocker = (): boolean => {
 
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
+
+/**
+ * Install the browser's native unload warning while Firestate has a debounced
+ * or in-flight write. This cannot await a flush during unload; call
+ * `await store.flush()` before controlled navigation instead.
+ */
+export const useFirestateBeforeUnloadWarning = (): void => {
+    const store = React.useContext(FirestateContext)
+    const subscribe = useCallback(
+        (onChange: () => void) =>
+            store ? store.subscribeToSyncState(() => onChange()) : () => {},
+        [store]
+    )
+    const getSnapshot = useCallback(
+        () => store?.hasPendingWrites ?? false,
+        [store]
+    )
+    const hasPendingWrites = useSyncExternalStore(
+        subscribe,
+        getSnapshot,
+        getSnapshot
+    )
+
+    useEffect(() => {
+        if (!hasPendingWrites || typeof window === 'undefined') return
+
+        const warn = (event: BeforeUnloadEvent) => {
+            event.preventDefault()
+            event.returnValue = ''
+        }
+        window.addEventListener('beforeunload', warn)
+        return () => window.removeEventListener('beforeunload', warn)
+    }, [hasPendingWrites])
+}

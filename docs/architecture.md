@@ -193,11 +193,15 @@ The store owns:
 - default autosave and min-load-time config
 - the undo manager
 - global sync-state tracking
+- the pending/in-flight write coordinator and `flush()` lifecycle
+- atomic multi-resource update orchestration
 - error reporting
 
-Each subscription registers a unique sync key. On stop, the subscription must
-unregister that key so `useIsSynced()` cannot get stuck on stale unsynced
-state.
+Each mutation registers a versioned write source. `flush()` shares concurrent
+calls, awaits in-flight promises, and keeps draining when a newer mutation is
+registered during the flush. A final subscription release starts dirty work
+before unregistering its listener state; the coordinator retains the write
+source until it commits or fails.
 
 ## React Hooks
 
@@ -319,6 +323,15 @@ Collection sync uses a Firestore write batch:
 - existing docs use `batch.update` with flattened diffs — `updateDoc` fails if
   the doc was deleted in a race, so a remotely-deleted doc is not resurrected
 - removed docs use `batch.delete`
+
+Ordinary collection sync splits more than 500 document writes into sequential
+batches. Its durable baseline advances after each successful chunk, so a later
+failure leaves only uncommitted documents dirty. `store.atomic()` is a separate,
+explicit path: it prepares updates across active handles, validates the total is
+at most 500, applies all optimistic changes, and commits exactly one batch and
+one composite undo action. Each participant marks its optimistic generation as
+atomic-owned until the batch succeeds, so autosave and teardown cannot persist
+that generation through a separate resource-level commit.
 
 ## Diff Utilities
 
