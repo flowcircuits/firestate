@@ -22,6 +22,7 @@ import type {
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
+import { isTerminalListenerError } from './errors'
 import {
     applyDiff,
     applyDiffMutable,
@@ -633,25 +634,30 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const handleError = (error: Error) => {
-        if (retryOnError) {
+        // A terminal code (permission-denied, unauthenticated) never clears on
+        // retry. Re-attaching the listener every retryInterval would spin
+        // forever behind a loading spinner and never report, so treat it as
+        // terminal even when retryOnError is set and fall through to reporting.
+        if (retryOnError && !isTerminalListenerError(error)) {
             console.warn('Collection listener error, retrying:', error)
             retryTimeout = setTimeout(() => {
                 stop()
                 startListener()
             }, retryInterval)
-        } else {
-            state.error = error
-            // Don't leave consumers stuck on a loading spinner — the listener
-            // has reported a terminal error, so loading is done.
-            state.isLoading = false
-            loaded = true
-            store.reportError(error, {
-                type: 'collection',
-                path: collectionPath,
-                operation: 'read',
-            })
-            notify()
+            return
         }
+
+        state.error = error
+        // Don't leave consumers stuck on a loading spinner — the listener
+        // has reported a terminal error, so loading is done.
+        state.isLoading = false
+        loaded = true
+        store.reportError(error, {
+            type: 'collection',
+            path: collectionPath,
+            operation: 'read',
+        })
+        notify()
     }
 
     const startListener = () => {

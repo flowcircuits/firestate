@@ -1095,6 +1095,39 @@ subscription.load()
 subscription.stop()
 ```
 
+### Error Handling
+
+Firestate reports every error through `onError`. The first argument is always a
+`FirestateError` that carries its own context, so a consumer that forwards only
+the error to a tracker keeps a usable path and a distinct fingerprint per
+resource:
+
+```typescript
+import { FirestateError } from '@hvakr/firestate'
+
+const store = createStore({
+    firestore: db,
+    onError: (error) => {
+        // error is a FirestateError with own fields:
+        //   error.path      → 'projects/123/tasks/t1'
+        //   error.type      → 'document' | 'collection' | 'undo'
+        //   error.operation → 'read' | 'write' | 'undo' | 'redo'
+        //   error.code      → Firestore code, e.g. 'permission-denied'
+        //   error.cause     → the original FirebaseError
+        Sentry.captureException(error)
+    },
+})
+```
+
+The `context` object still arrives as the second argument for consumers that
+prefer it.
+
+`retryOnError: true` re-attaches a listener after a transient error (e.g.
+`unavailable`). A non-transient code — `permission-denied` or
+`unauthenticated` — is treated as terminal even so: Firestate reports it, sets
+`state.error`, and clears the loading flag instead of retrying forever behind a
+spinner.
+
 ### Custom Undo Manager
 
 Create a standalone undo manager with navigation support:

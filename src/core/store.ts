@@ -7,6 +7,7 @@ import type {
     Unsubscribe,
 } from '../types'
 import { createUndoManager, type UndoManagerWithSubscribe } from '../utils/undo'
+import { FirestateError } from './errors'
 
 /**
  * Firestate store that holds configuration and shared state
@@ -99,6 +100,25 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
     let onUndo = config.onUndo
     let onRedo = config.onRedo
 
+    // Wrap every reported error in a FirestateError so a consumer that forwards
+    // only the first argument to an error tracker keeps the path, type, and
+    // operation — and gets a distinct fingerprint per resource. The context
+    // still travels as the second argument for consumers that read it.
+    const dispatchError = (error: Error, context: ErrorContext) => {
+        const enriched =
+            error instanceof FirestateError
+                ? error
+                : new FirestateError(error, context)
+        if (onError) {
+            onError(enriched, context)
+        } else {
+            console.error(
+                `Firestate error in ${context.type} ${context.path} during ${context.operation}:`,
+                enriched
+            )
+        }
+    }
+
     const undoManager = createUndoManager({
         maxLength: maxUndoLength,
         // Stable wrapper — delegates to the mutable onNavigate ref so the
@@ -112,19 +132,11 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
         // store's established onError channel rather than adding undo-specific
         // error callbacks to FirestateConfig.
         onError: (error, action, operation) => {
-            const context: ErrorContext = {
+            dispatchError(error, {
                 type: 'undo',
                 path: action.path ?? 'undo',
                 operation,
-            }
-            if (onError) {
-                onError(error, context)
-            } else {
-                console.error(
-                    `Firestate error in ${context.type} ${context.path} during ${context.operation}:`,
-                    error
-                )
-            }
+            })
         },
     })
 
@@ -150,16 +162,7 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
         autosave,
         minLoadTime,
 
-        reportError: (error, context) => {
-            if (onError) {
-                onError(error, context)
-            } else {
-                console.error(
-                    `Firestate error in ${context.type} ${context.path} during ${context.operation}:`,
-                    error
-                )
-            }
-        },
+        reportError: dispatchError,
 
         setOnError: (handler) => {
             onError = handler
