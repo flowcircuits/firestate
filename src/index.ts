@@ -89,6 +89,9 @@ export { shallow } from './utils/shallow'
 export { createStore } from './core/store'
 export type { FirestateStore, Store } from './core/store'
 
+// Error reporting
+export { FirestateError } from './core/errors'
+
 // Undo manager
 export { createUndoManager } from './utils/undo'
 export type { UndoManagerConfig, UndoManagerWithSubscribe } from './utils/undo'

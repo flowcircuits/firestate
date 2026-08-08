@@ -101,6 +101,16 @@ Preserve these unless the task explicitly changes them.
   replace a document.
 - Collection `add`, `update`, and `remove` require the first snapshot. They
   bail before the initial snapshot to avoid clobbering unknown server fields.
+- `store.reportError` wraps every error in a `FirestateError` before calling
+  `onError`. The wrapper carries `type`, `path`, `operation`, and (when present)
+  the Firestore `code` on own fields, puts the path in the message, and keeps
+  the original error on `cause`. This lets a consumer that forwards only the
+  first argument to a tracker keep the context and get a distinct fingerprint
+  per resource. Context still travels as the second `onError` argument.
+- A listener error with a terminal Firestore code (`permission-denied`,
+  `unauthenticated`) is never retried, even with `retryOnError: true` — a retry
+  can never clear it. The handler reports it, sets `state.error`, and clears
+  `isLoading`. Only transient codes re-attach the listener on `retryInterval`.
 - `enabled: false` on hooks must not resolve paths or create subscriptions. It
   returns stable no-op handles.
 - `queryConstraints` are keyed by *semantic query identity*, not by array

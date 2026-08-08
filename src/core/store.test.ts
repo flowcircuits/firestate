@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createStore } from './store'
+import { FirestateError } from './errors'
 
 // Mock Firestore instance
 const mockFirestore = {} as any
@@ -62,7 +63,59 @@ describe('createStore', () => {
 
             store.reportError(error, context)
 
-            expect(onError).toHaveBeenCalledWith(error, context)
+            // The reported error is wrapped so a consumer that forwards only
+            // the first argument still keeps the context. The original error
+            // stays reachable through `cause`, and context still travels as the
+            // second argument.
+            expect(onError).toHaveBeenCalledTimes(1)
+            const [reported, reportedContext] = onError.mock.calls[0]!
+            expect(reported).toBeInstanceOf(FirestateError)
+            expect(reported.type).toBe('document')
+            expect(reported.path).toBe('projects/123')
+            expect(reported.operation).toBe('read')
+            expect(reported.message).toContain('projects/123')
+            expect(reported.cause).toBe(error)
+            expect(reportedContext).toEqual(context)
+        })
+
+        it('copies a Firestore error code onto the wrapped error', () => {
+            const onError = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onError })
+
+            const error = Object.assign(new Error('Missing permissions'), {
+                code: 'permission-denied',
+            })
+            store.reportError(error, {
+                type: 'collection',
+                path: 'projects/123/tasks',
+                operation: 'read',
+            })
+
+            const [reported] = onError.mock.calls[0]!
+            expect(reported).toBeInstanceOf(FirestateError)
+            expect(reported.code).toBe('permission-denied')
+            expect(reported.path).toBe('projects/123/tasks')
+        })
+
+        it('does not double-wrap an already-wrapped error', () => {
+            const onError = vi.fn()
+            const store = createStore({ firestore: mockFirestore, onError })
+
+            const original = new Error('Test error')
+            const wrapped = new FirestateError(original, {
+                type: 'document',
+                path: 'projects/123',
+                operation: 'read',
+            })
+            store.reportError(wrapped, {
+                type: 'document',
+                path: 'projects/123',
+                operation: 'read',
+            })
+
+            const [reported] = onError.mock.calls[0]!
+            expect(reported).toBe(wrapped)
+            expect(reported.cause).toBe(original)
         })
 
         it('logs to console if no onError handler', () => {
@@ -96,7 +149,10 @@ describe('createStore', () => {
             await expect(store.undoManager.undo()).rejects.toThrow(
                 'Undo failed'
             )
-            expect(onError).toHaveBeenCalledWith(error, {
+            const [reported, reportedContext] = onError.mock.calls[0]!
+            expect(reported).toBeInstanceOf(FirestateError)
+            expect(reported.cause).toBe(error)
+            expect(reportedContext).toEqual({
                 type: 'undo',
                 path: '/projects/123',
                 operation: 'undo',
