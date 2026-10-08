@@ -24,21 +24,43 @@ import type {
 import type { FirestateStore } from './store'
 import {
     applyDiff,
-    applyDiffMutable,
     applyOverridesAtPaths,
     computeDiff,
     deepClone,
     diffToFieldPathArgs,
     dropCommittedSentinels,
+    freezeDeepInDevelopment,
     isDeepEqual,
     observableStateChanged,
     reconcileDisplayOverrides,
+    replaceEqualDeep,
     valuesEqualForNoOp,
 } from '../utils/diff'
 
 // Module-level counter so each subscription instance gets a unique sync key,
 // even when multiple instances target the same collection path.
 let syncKeyCounter = 0
+
+/**
+ * Ensure every document carries its own id. Copies only a document whose id
+ * is missing or wrong (and the record holding it), so state stays shared.
+ */
+const withDocIds = <TData extends FirestoreObject>(
+    data: Record<string, TData>
+): Record<string, TData> => {
+    let result = data
+    for (const [docId, docData] of Object.entries(data)) {
+        if (
+            docData &&
+            typeof docData === 'object' &&
+            (docData as Record<string, unknown>).id !== docId
+        ) {
+            if (result === data) result = { ...data }
+            result[docId] = { ...docData, id: docId }
+        }
+    }
+    return result
+}
 
 /**
  * Build the Firestore query a collection subscription runs: `definition`-level
@@ -236,6 +258,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         observableStateChanged(prev, next)
 
     const notify = () => {
+        // State is structurally shared between syncState, localState, and
+        // every published snapshot, so it must never be mutated in place.
+        freezeDeepInDevelopment(state.syncState)
+        freezeDeepInDevelopment(state.localState)
         // Reconcile display overrides against the current localState
         // before publishing — see document.ts for the full contract.
         reconcileDisplayOverrides(
@@ -283,16 +309,15 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // in localState survive into newLocalState. getMergedData() substitutes
         // display-override Timestamps at sentinel paths, which would erase the
         // sentinel from state.localState on the next update() call.
+        // applyDiff copies only the changed documents, so every untouched
+        // document keeps its identity for downstream memoization.
         const rawBase = state.localState ?? state.syncState ?? {}
-        const newLocalState = deepClone(rawBase)
-        applyDiffMutable(newLocalState, diff as Record<string, unknown>)
-
-        // Ensure each document has its id
-        for (const [docId, docData] of Object.entries(newLocalState)) {
-            if (docData && typeof docData === 'object') {
-                ;(docData as Record<string, unknown>).id = docId
-            }
-        }
+        const newLocalState = withDocIds(
+            applyDiff(
+                rawBase as FirestoreObject,
+                diff as WithFieldValue<DeepPartial<FirestoreObject>>
+            ) as Record<string, TData>
+        )
 
         // No-op collapse (§3): a write whose merged result equals the current
         // view produces NO new state identity, undo entry, notify, or
@@ -376,8 +401,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         if (schema) schema.parse(newDoc)
 
         const currentData = getMergedData()
-        const newLocalState = deepClone(currentData)
-        newLocalState[id] = newDoc
+        const newLocalState = { ...currentData, [id]: newDoc }
 
         // No-op collapse (§3): adding an id that already holds identical data
         // is a complete no-op. The returned id stays meaningful (the doc
@@ -419,7 +443,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const currentData = getMergedData()
         if (!(id in currentData)) return
 
-        const newLocalState = deepClone(currentData)
+        const newLocalState = { ...currentData }
         delete newLocalState[id]
 
         // Push undo eagerly. Inverse diff re-adds the removed doc.
@@ -544,15 +568,23 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const handleSnapshot = (docs: Array<{ id: string; data: TData }>) => {
-        const newSyncState: Record<string, TData> = {}
+        const snapshotState: Record<string, TData> = {}
         for (const { id, data } of docs) {
-            newSyncState[id] = { ...data, id } as TData
+            snapshotState[id] = { ...data, id } as TData
         }
 
         // `prevSync` is the BASELINE: the server snapshot our pending local
         // edits are measured against. Advanced to `newSyncState` here, after
         // capturing it for the rebase below.
         const prevSync = state.syncState
+        const currentLocal = state.localState
+        // Every snapshot delivers new objects for every document. Reuse each
+        // object that is equal to the current view, so a snapshot that changes
+        // one document (or confirms our own write) leaves the rest untouched.
+        const newSyncState = replaceEqualDeep(
+            currentLocal ?? prevSync,
+            snapshotState
+        )
         state.syncState = newSyncState
         // A successful snapshot supersedes any previous read or write error.
         state.error = undefined
@@ -568,8 +600,6 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // snapshot from another client left `localState` on a stale base, so
         // the next sync re-wrote untouched fields (collaborator clobber) and
         // recreated remotely-deleted docs (delete resurrection).
-        const currentLocal = state.localState
-
         if (currentLocal !== undefined && prevSync !== undefined) {
             // Field-level merge: re-derive the user's OWN edits relative to the
             // baseline and re-apply only those over the new server truth.
@@ -585,7 +615,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 userEdits as Record<string, unknown>,
                 committed as Record<string, unknown> | undefined
             )
-            const rebasedLocalState = applyDiff(
+            const rebased = applyDiff(
                 newSyncState as FirestoreObject,
                 userEdits
             ) as Record<string, TData>
@@ -595,19 +625,21 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             // any pending local edits to it, and never recreate it. This is
             // unconditional: classified against the baseline, not the rebased
             // result, so a stale local copy can't resurrect a deleted doc.
-            for (const docId of Object.keys(prevSync)) {
-                if (!(docId in newSyncState)) {
-                    delete rebasedLocalState[docId]
-                }
-            }
+            const remotelyDeleted = Object.keys(prevSync).filter(
+                (docId) => !(docId in newSyncState) && docId in rebased
+            )
+            const withoutDeleted = remotelyDeleted.length
+                ? { ...rebased }
+                : rebased
+            for (const docId of remotelyDeleted) delete withoutDeleted[docId]
 
             // Re-add ids (applyDiff may have introduced docs from the snapshot
-            // and merged edits onto them).
-            for (const [docId, docData] of Object.entries(rebasedLocalState)) {
-                if (docData && typeof docData === 'object') {
-                    ;(docData as Record<string, unknown>).id = docId
-                }
-            }
+            // and merged edits onto them), then keep the identity of every
+            // pending document the rebase left unchanged.
+            const rebasedLocalState = replaceEqualDeep(
+                currentLocal,
+                withDocIds(withoutDeleted)
+            )
 
             // If the rebase leaves nothing that differs from the server, the
             // edits are fully absorbed → drop localState so isSynced flips back

@@ -23,6 +23,8 @@ import {
     extractDiffValue,
     createDiffAtPath,
     computeUndoDiff,
+    freezeDeepInDevelopment,
+    replaceEqualDeep,
 } from './diff'
 
 describe('diff utilities', () => {
@@ -111,6 +113,130 @@ describe('diff utilities', () => {
             const diff = { building: { floors: 10 } }
             const result = applyDiff(original, diff)
             expect(result).toEqual({ building: { floors: 10, height: 100 } })
+        })
+
+        it('copies only the changed path', () => {
+            const original = {
+                a: { x: 1, deep: { y: 2 } },
+                b: { z: 3 },
+                list: [1, 2],
+            }
+            const result = applyDiff(original, { a: { x: 5 } })
+            expect(result).toEqual({
+                a: { x: 5, deep: { y: 2 } },
+                b: { z: 3 },
+                list: [1, 2],
+            })
+            expect(result).not.toBe(original)
+            expect(result.a).not.toBe(original.a)
+            expect(result.a.deep).toBe(original.a.deep)
+            expect(result.b).toBe(original.b)
+            expect(result.list).toBe(original.list)
+            expect(original.a.x).toBe(1)
+        })
+
+        it('returns the input when the diff changes nothing', () => {
+            const original: { a: { x: number }; name: string; missing?: number } =
+                { a: { x: 1 }, name: 'same' }
+            expect(applyDiff(original, { a: { x: 1 }, name: 'same' })).toBe(
+                original
+            )
+            expect(applyDiff(original, { missing: deleteField() })).toBe(
+                original
+            )
+        })
+
+        it('deletes fields without touching siblings', () => {
+            const original = { a: { x: 1, y: 2 }, b: { z: 3 } }
+            const result = applyDiff(original, { a: { y: deleteField() } })
+            expect(result).toEqual({ a: { x: 1 }, b: { z: 3 } })
+            expect(result.b).toBe(original.b)
+            expect(original.a).toEqual({ x: 1, y: 2 })
+        })
+
+        it('never stores the diff object itself', () => {
+            const nested = { x: 1 }
+            const result = applyDiff({} as { a?: { x: number } }, { a: nested })
+            expect(result.a).toEqual({ x: 1 })
+            expect(result.a).not.toBe(nested)
+        })
+
+        it('works on frozen input', () => {
+            const original = { a: { x: 1 }, b: { z: 3 } }
+            freezeDeepInDevelopment(original)
+            const result = applyDiff(original, { a: { x: 2 } })
+            expect(result).toEqual({ a: { x: 2 }, b: { z: 3 } })
+            expect(result.b).toBe(original.b)
+        })
+    })
+
+    describe('replaceEqualDeep', () => {
+        it('returns prev when the values are deeply equal', () => {
+            const prev = { a: { x: 1 }, list: [{ y: 2 }] }
+            expect(
+                replaceEqualDeep(prev, { a: { x: 1 }, list: [{ y: 2 }] })
+            ).toBe(prev)
+        })
+
+        it('reuses every equal subtree of a changed value', () => {
+            const prev = { a: { x: 1 }, b: { z: 3 }, list: [{ y: 2 }, { y: 3 }] }
+            const next = {
+                a: { x: 1 },
+                b: { z: 4 },
+                list: [{ y: 2 }, { y: 5 }],
+            }
+            const result = replaceEqualDeep(prev, next)
+            expect(result).toEqual(next)
+            expect(result).not.toBe(prev)
+            expect(result.a).toBe(prev.a)
+            expect(result.b).not.toBe(prev.b)
+            expect(result.list).not.toBe(prev.list)
+            expect(result.list[0]).toBe(prev.list[0])
+        })
+
+        it('treats added, removed, and explicit-undefined keys as changes', () => {
+            const prev: Record<string, unknown> = { a: 1 }
+            expect(replaceEqualDeep(prev, { a: 1, b: 2 })).not.toBe(prev)
+            const withB = { a: 1, b: 2 }
+            expect(replaceEqualDeep(withB, prev)).not.toBe(withB)
+            expect(replaceEqualDeep(withB, prev)).toEqual(prev)
+            expect(replaceEqualDeep(prev, { a: 1, b: undefined })).not.toBe(
+                prev
+            )
+            expect(replaceEqualDeep([1, 2], [1])).toEqual([1])
+            expect(replaceEqualDeep([1], [1, 2])).toEqual([1, 2])
+        })
+
+        it('reuses equal Firestore value types', () => {
+            const prev = { at: Timestamp.fromMillis(1000) }
+            const result = replaceEqualDeep(prev, {
+                at: Timestamp.fromMillis(1000),
+            })
+            expect(result).toBe(prev)
+            const changed = replaceEqualDeep(prev, {
+                at: Timestamp.fromMillis(2000),
+            })
+            expect(changed.at.toMillis()).toBe(2000)
+        })
+
+        it('returns next for values of a different shape', () => {
+            const next = { a: 1 }
+            expect(replaceEqualDeep(undefined, next)).toBe(next)
+            expect(replaceEqualDeep([1], next)).toBe(next)
+        })
+    })
+
+    describe('freezeDeepInDevelopment', () => {
+        it('freezes plain objects and arrays but not Firestore value types', () => {
+            const at = Timestamp.fromMillis(1000)
+            const value = { a: { list: [{ x: 1 }] }, at }
+            freezeDeepInDevelopment(value)
+            expect(Object.isFrozen(value)).toBe(true)
+            expect(Object.isFrozen(value.a.list[0])).toBe(true)
+            expect(Object.isFrozen(at)).toBe(false)
+            expect(() => {
+                ;(value.a.list[0] as { x: number }).x = 2
+            }).toThrow(TypeError)
         })
     })
 
@@ -692,6 +818,22 @@ describe('diff utilities', () => {
                 // The original still holds the sentinel — overrides are
                 // a render-time concern only.
                 expect(original.updatedAt).not.toBe(ts)
+            })
+
+            it('copies only the objects on an override path', () => {
+                const ts = Timestamp.fromMillis(5000)
+                const merged = {
+                    a: { meta: { updatedAt: serverTimestamp() }, x: { y: 1 } },
+                    b: { z: 2 },
+                }
+                const result = applyOverridesAtPaths(
+                    merged,
+                    new Map<string, unknown>([['a.meta.updatedAt', ts]])
+                )
+
+                expect(result.a.meta.updatedAt).toBe(ts)
+                expect(result.a.x).toBe(merged.a.x)
+                expect(result.b).toBe(merged.b)
             })
         })
     })

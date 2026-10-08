@@ -227,10 +227,10 @@ const spaces = useSpaces({ projectId }, { queryConstraints })
 ### Dynamic queries built from document data
 
 A subtlety with the `useMemo` recipe above: `useMemo` keys on its dependencies
-*by reference*. If a dependency is an array or object read out of another
-Firestate document, its reference changes on every optimistic update to that
-document — Firestate deep-clones local state on edit — even when the contents
-are identical. The memo then produces a new constraints array on each edit.
+*by reference*. Firestate keeps the identity of data an edit does not change,
+but an array derived from document data (for example with `.map` or `.filter`)
+is new on every render, even when its contents are identical. A memo keyed on
+it then produces a new constraints array each time.
 
 `useCollection` handles this for you. It keys the subscription on the
 *semantic identity* of the query, not the array reference: it builds the query
@@ -309,9 +309,10 @@ From a narrowed handle, prefer `update`; use `set` only when you hold the full
 document.
 
 The slice defaults to a deep value comparison, so returning a fresh object/array
-of the same shape does not over-render. This matters for collection
-sub-selection: an unchanged document may not keep object identity across an
-optimistic rebase, but the default comparison still treats it as equal. Pass
+of the same shape does not over-render. Unchanged documents also keep their
+object identity across edits and snapshots, so a selector that returns one
+document (`s.data[id]`) returns the same reference until that document changes.
+Pass
 `isEqual: shallow` for a cheaper one-level compare on flat projections, or a
 custom comparator:
 

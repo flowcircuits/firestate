@@ -543,22 +543,123 @@ export const mergeDiffs = <T extends FirestoreObject>(
  * Apply a diff to an object, returning a new object.
  * The original object is not modified.
  *
+ * Structurally shared: only the objects on a changed path are copied. Every
+ * subtree the diff does not change keeps its identity, and a diff that changes
+ * nothing returns `state` itself. Treat both the input and the result as
+ * immutable — they share those subtrees.
+ *
  * @example
  * ```ts
- * const original = { name: 'Project', count: 5 }
+ * const original = { name: 'Project', count: 5, building: { floors: 2 } }
  * const diff = { name: 'Updated', count: deleteField() }
  * const result = applyDiff(original, diff)
- * // result = { name: 'Updated' }
- * // original is unchanged
+ * // result = { name: 'Updated', building: { floors: 2 } }
+ * // result.building === original.building; original is unchanged
  * ```
  */
 export const applyDiff = <T extends FirestoreObject>(
     state: T,
     diff: WithFieldValue<DeepPartial<T>>
 ): T => {
-    const result = deepClone(state)
-    applyDiffMutable(result, diff as Record<string, unknown>)
-    return result
+    const source = state as Record<string, unknown>
+    let result: Record<string, unknown> | undefined
+
+    for (const key of Object.keys(diff)) {
+        const value = (diff as Record<string, unknown>)[key]
+        const current = source[key]
+
+        // `deleteField()` drops the key; see applyDiffMutable.
+        if (isDeleteField(value)) {
+            if (key in source) {
+                result ??= { ...source }
+                delete result[key]
+            }
+            continue
+        }
+
+        // Opaque values, arrays, and primitives replace by reference; plain
+        // objects merge recursively onto the current plain value (or a new one).
+        const next = isPlainObject(value)
+            ? applyDiff(
+                  (isPlainObject(current) ? current : {}) as FirestoreObject,
+                  value as WithFieldValue<DeepPartial<FirestoreObject>>
+              )
+            : value
+
+        if (!(key in source) || !Object.is(next, current)) {
+            result ??= { ...source }
+            result[key] = next
+        }
+    }
+
+    return (result ?? state) as T
+}
+
+/**
+ * Return `next`, but reuse every subtree of `prev` that is deeply equal to the
+ * matching subtree of `next`. When the whole value is equal, `prev` itself is
+ * returned. Lets a fresh snapshot keep the identity of everything that did not
+ * change, so reference-based memoization downstream holds.
+ *
+ * Plain objects and arrays are walked. Firestore opaque values reuse `prev`
+ * when `.isEqual` says they match. Equality is strict, like
+ * {@link isDeepEqual}: an explicit-`undefined` key differs from a missing key.
+ *
+ * @internal
+ */
+export const replaceEqualDeep = <T>(prev: unknown, next: T): T => {
+    if (Object.is(prev, next)) return next
+
+    if (isFirestoreOpaque(prev) && isFirestoreOpaque(next)) {
+        return (prev.isEqual(next) ? prev : next) as T
+    }
+
+    if (Array.isArray(prev) && Array.isArray(next)) {
+        let equal = prev.length === next.length
+        const result = next.map((item, index) => {
+            const shared = replaceEqualDeep(prev[index], item)
+            if (index >= prev.length || shared !== prev[index]) equal = false
+            return shared
+        })
+        return (equal ? prev : result) as T
+    }
+
+    if (isPlainObject(prev) && isPlainObject(next)) {
+        const nextRecord = next as Record<string, unknown>
+        const keys = Object.keys(nextRecord)
+        let equal = keys.length === Object.keys(prev).length
+        const result: Record<string, unknown> = {}
+        for (const key of keys) {
+            const shared = replaceEqualDeep(prev[key], nextRecord[key])
+            if (!(key in prev) || shared !== prev[key]) equal = false
+            result[key] = shared
+        }
+        return (equal ? prev : result) as T
+    }
+
+    return next
+}
+
+/**
+ * Freeze every plain object and array reachable from `value`, skipping
+ * subtrees that are already frozen. Non-production builds freeze published
+ * state, so code that mutates a structurally shared object throws at once
+ * instead of silently corrupting the baseline that diffs are computed from.
+ * Firestore opaque values are left alone.
+ *
+ * @internal
+ */
+export const freezeDeepInDevelopment = (value: unknown): void => {
+    if (process.env.NODE_ENV === 'production') return
+    freezeDeep(value)
+}
+
+const freezeDeep = (value: unknown): void => {
+    if (value === null || typeof value !== 'object') return
+    if (Object.isFrozen(value)) return
+    if (!Array.isArray(value) && !isPlainObject(value)) return
+    Object.freeze(value)
+    for (const child of Object.values(value)) freezeDeep(child)
 }
 
 /**
@@ -820,25 +921,28 @@ export const reconcileDisplayOverrides = (
     }
 }
 
+/** Return a copy of `obj` with `value` at `parts`, copying only that path. */
 const setAtPath = (
     obj: Record<string, unknown>,
-    path: string,
+    parts: string[],
     value: unknown
-): void => {
-    const parts = path.split('.')
-    let cur = obj
-    for (let i = 0; i < parts.length - 1; i++) {
-        const part = parts[i]!
-        if (!isPlainObject(cur[part])) cur[part] = {}
-        cur = cur[part] as Record<string, unknown>
+): Record<string, unknown> => {
+    const [part, ...rest] = parts
+    if (part === undefined) return obj
+    const child = obj[part]
+    return {
+        ...obj,
+        [part]: rest.length
+            ? setAtPath(isPlainObject(child) ? child : {}, rest, value)
+            : value,
     }
-    cur[parts[parts.length - 1]!] = value
 }
 
 /**
  * Apply a path → value override map to a merged view, returning a new
  * object. Used by document.ts / collection.ts to substitute display
- * values for sentinels still present in `localState`.
+ * values for sentinels still present in `localState`. Only the objects on an
+ * override path are copied; everything else keeps its identity.
  *
  * @internal
  */
@@ -846,10 +950,9 @@ export const applyOverridesAtPaths = <T extends FirestoreObject>(
     merged: T,
     overrides: ReadonlyMap<string, unknown>
 ): T => {
-    if (overrides.size === 0) return merged
-    const result = deepClone(merged) as Record<string, unknown>
+    let result = merged as Record<string, unknown>
     for (const [path, value] of overrides) {
-        setAtPath(result, path, value)
+        result = setAtPath(result, path.split('.'), value)
     }
     return result as T
 }
