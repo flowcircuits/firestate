@@ -161,6 +161,15 @@ describe('diff utilities', () => {
             expect(result.a).not.toBe(nested)
         })
 
+        it('copies a diff array, but keeps the current one when equal', () => {
+            const original = { tags: ['a'], list: [{ x: 1 }] }
+            const tags = ['b']
+            const result = applyDiff(original, { tags, list: [{ x: 1 }] })
+            expect(result.tags).toEqual(['b'])
+            expect(result.tags).not.toBe(tags)
+            expect(result.list).toBe(original.list)
+        })
+
         it('works on frozen input', () => {
             const original = { a: { x: 1 }, b: { z: 3 } }
             freezeDeepInDevelopment(original)

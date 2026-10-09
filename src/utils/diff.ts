@@ -546,7 +546,8 @@ export const mergeDiffs = <T extends FirestoreObject>(
  * Structurally shared: only the objects on a changed path are copied. Every
  * subtree the diff does not change keeps its identity, and a diff that changes
  * nothing returns `state` itself. Treat both the input and the result as
- * immutable — they share those subtrees.
+ * immutable — they share those subtrees. The diff itself is never stored: its
+ * plain objects and arrays are copied, so the caller keeps ownership of them.
  *
  * @example
  * ```ts
@@ -577,14 +578,20 @@ export const applyDiff = <T extends FirestoreObject>(
             continue
         }
 
-        // Opaque values, arrays, and primitives replace by reference; plain
-        // objects merge recursively onto the current plain value (or a new one).
+        // Opaque values and primitives replace by reference; plain objects
+        // merge recursively onto the current plain value (or a new one). An
+        // array keeps the current one when equal, otherwise it is copied so
+        // the caller's array never becomes (frozen) state.
         const next = isPlainObject(value)
             ? applyDiff(
                   (isPlainObject(current) ? current : {}) as FirestoreObject,
                   value as WithFieldValue<DeepPartial<FirestoreObject>>
               )
-            : value
+            : Array.isArray(value)
+              ? isDeepEqual(current, value)
+                  ? current
+                  : deepClone(value)
+              : value
 
         if (!(key in source) || !Object.is(next, current)) {
             result ??= { ...source }

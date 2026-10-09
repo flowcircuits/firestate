@@ -199,6 +199,21 @@ describe('structural sharing', () => {
                 space.edges!.a.x = 9
             }).toThrow(TypeError)
         })
+
+        it('never freezes the caller-owned objects passed to add() or update()', () => {
+            const sub = makeColl()
+            const draft = { name: 'New', tags: ['t'], edges: { a: { x: 9, y: 9 } } }
+            sub.getHandle().add('N', draft as Space)
+            expect(Object.isFrozen(draft.tags)).toBe(false)
+            expect(Object.isFrozen(draft.edges.a)).toBe(false)
+            expect(sub.getState().data.N?.edges).not.toBe(draft.edges)
+
+            const tags = ['u']
+            sub.getHandle().update({ A: { tags } as Space })
+            expect(Object.isFrozen(tags)).toBe(false)
+            expect(() => tags.push('v')).not.toThrow()
+            expect((sub.getState().data.A as Space & { tags: string[] }).tags).toEqual(['u'])
+        })
     })
 
     describe('document', () => {

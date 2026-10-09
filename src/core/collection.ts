@@ -397,7 +397,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // unknown keys via Zod's default `.strip()` and re-transform on
         // undo/redo replay. We feed `{ ...data, id }` to parse so the same
         // validation works whether the user's schema declares `id` or not.
-        const newDoc = { ...data, id } as unknown as TData
+        // Copy the caller's data (like set() does): state is frozen outside
+        // production, and the caller's object must stay theirs to edit.
+        const newDoc = { ...deepClone(data), id } as unknown as TData
         if (schema) schema.parse(newDoc)
 
         const currentData = getMergedData()
