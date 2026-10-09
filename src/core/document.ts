@@ -22,15 +22,16 @@ import type {
 import type { FirestateStore } from './store'
 import {
     applyDiff,
-    applyDiffMutable,
     applyOverridesAtPaths,
     computeDiff,
     deepClone,
     diffToFieldPathArgs,
     dropCommittedSentinels,
+    freezeDeepInDevelopment,
     isDeepEqual,
     observableStateChanged,
     reconcileDisplayOverrides,
+    replaceEqualDeep,
     valuesEqualForNoOp,
 } from '../utils/diff'
 
@@ -240,6 +241,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     const publicStateChanged = observableStateChanged
 
     const notify = () => {
+        // State is structurally shared between syncState, localState, and
+        // every published snapshot, so it must never be mutated in place.
+        freezeDeepInDevelopment(state.syncState)
+        freezeDeepInDevelopment(state.localState)
         // Reconcile display overrides against the current localState
         // before publishing — captures Timestamp.now() for any newly
         // arrived serverTimestamp() sentinel and drops entries whose
@@ -288,9 +293,10 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // in localState survive into newLocalState. getMergedData() substitutes
         // display-override Timestamps at sentinel paths, which would erase the
         // sentinel from state.localState on the next update() call.
+        // applyDiff copies only the changed path, so untouched nested
+        // objects keep their identity for downstream memoization.
         const rawBase = (state.localState ?? state.syncState) as TData
-        const newLocalState = deepClone(rawBase)
-        applyDiffMutable(newLocalState, diff as Record<string, unknown>)
+        const newLocalState = applyDiff(rawBase, diff)
 
         // No-op collapse (§3): a write whose merged result equals the current
         // view must produce NO new state identity, undo entry, notify, or
@@ -545,11 +551,18 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         }
     }
 
-    const handleSnapshot = (newSyncData: TData) => {
+    const handleSnapshot = (snapshotData: TData) => {
         // `prevSync` is the BASELINE: the server snapshot our pending local
         // edits are measured against. We advance it to `newSyncData` below,
         // after using it to re-derive the user's own edits.
         const prevSync = state.syncState
+        const currentLocal = state.localState
+        // Every snapshot delivers new objects. Reuse each nested object that
+        // is equal to the current view, so unchanged fields keep their identity.
+        const newSyncData = replaceEqualDeep(
+            currentLocal ?? prevSync,
+            snapshotData
+        )
         state.syncState = newSyncData
         // A successful snapshot supersedes any previous read or write error.
         state.error = undefined
@@ -567,7 +580,6 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // so the rebase must drop it rather than re-derive it (see below).
         const committed = state.committedWrite
         state.committedWrite = undefined
-        const currentLocal = state.localState
 
         if (currentLocal === null) {
             // Pending delete — our delete intent is the latest word. The doc
@@ -594,7 +606,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             // edit has been fully absorbed → drop localState so isSynced flips
             // back to true and no redundant write is queued.
             const absorbed = isDeepEqual(rebasedLocalState, newSyncData)
-            state.localState = absorbed ? undefined : rebasedLocalState
+            state.localState = absorbed
+                ? undefined
+                : replaceEqualDeep(currentLocal, rebasedLocalState)
         }
 
         if (minLoadTimeElapsed) {

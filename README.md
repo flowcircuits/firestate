@@ -320,6 +320,15 @@ When you call `update()`, the change is applied immediately to local state. The 
 3. Sends only changed fields to Firestore using dot-notation (flattened keys)
 4. Handles any conflicts from concurrent changes
 
+State is structurally shared. An edit copies only the objects on the changed
+path, and a snapshot reuses every document and nested object whose value did
+not change. Unchanged data keeps its identity, so `React.memo` and `useMemo`
+keyed on it hold across edits, write confirmations, and collaborator changes.
+
+Treat the data as immutable. Outside production builds, Firestate deep-freezes
+its state, so a mutation such as `space.name = 'x'` throws a `TypeError`.
+Change data through `update`, `set`, `add`, or `remove`.
+
 ### Update vs Set
 
 Firestate uses Firestore's `updateDoc` for partial updates and `setDoc` for full replacements:
@@ -726,9 +735,8 @@ const {
 // queryConstraints are keyed by query identity, not array reference: the
 // subscription rebuilds only when the query actually changes (compared via
 // Firestore's queryEqual). So a new array that produces the same query —
-// e.g. stationIds read from a document Firestate deep-clones on every
-// optimistic update — does NOT tear down the listener. You don't need to
-// memoize for correctness:
+// e.g. stationIds rebuilt from document data on every render — does NOT
+// tear down the listener. You don't need to memoize for correctness:
 const stations = useCollection({
     definition: weatherStations,
     enabled: stationIds.length > 0,
@@ -973,7 +981,8 @@ import {
 // Compute minimal diff between two objects
 const diff = computeDiff(oldState, newState)
 
-// Apply diff (returns new object, original unchanged)
+// Apply diff (returns new object, original unchanged; unchanged
+// subtrees are shared with the original, so treat both as immutable)
 const newState = applyDiff(currentState, diff)
 
 // Apply diff in place (mutates target object) - use for performance-critical paths

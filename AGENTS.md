@@ -203,6 +203,12 @@ Preserve these unless the task explicitly changes them.
   the baseline advances. Untouched fields follow the server; the client's own
   edits survive; same-field concurrent edits stay last-write-wins (local edit
   preserved and re-sent). Do not gate this rebase on `waitingForUpdate`.
+- State is structurally shared and immutable. Mutations copy only the changed
+  path (`applyDiff`), snapshots reuse every equal document and nested object of
+  the current view (`replaceEqualDeep`), and the rebase does the same against
+  the pending `localState`. Never mutate `syncState`, `localState`, or published
+  data in place; outside production `notify()` deep-freezes them so a mutation
+  throws.
 - Collections enforce deletes-win: a doc in the baseline but absent from the
   new snapshot was deleted remotely → drop it (and any local edits to it) and
   never recreate it. A doc absent from the baseline but present locally is a
@@ -222,6 +228,8 @@ Add or update focused tests near the behavior being changed:
   `src/__tests__/conflict-resolution.test.ts`,
   `src/__tests__/reconcile.test.ts`, and `src/__tests__/fieldpath.test.ts`.
 - Diff behavior: `src/utils/diff.test.ts`.
+- Structural sharing and dev-mode freezing (identity across edits, snapshots,
+  and rebases): `src/__tests__/structural-sharing.test.ts`.
 - Undo behavior: `src/utils/undo.test.ts`.
 - Store/global sync behavior: `src/core/store.test.ts`.
 - React hook surface — selectors, shared subscriptions, `queryConstraints`

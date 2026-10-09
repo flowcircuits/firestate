@@ -47,6 +47,15 @@ merged = localState ?? syncState
 For documents, `localState === null` represents a pending delete and surfaces
 as `data: undefined`.
 
+State is structurally shared and immutable. A mutation copies only the objects
+on the changed path (`applyDiff`). A snapshot runs through `replaceEqualDeep`
+against the current view (`localState ?? syncState`), so every document and
+nested object whose value did not change keeps its identity, including the
+document a confirmed write echoes back. The rebased `localState` is shared the
+same way. Outside production, `notify()` deep-freezes `syncState` and
+`localState` (`freezeDeepInDevelopment`), so any in-place mutation — internal or
+in app code — throws instead of corrupting the diff baseline.
+
 ## Shared subscriptions
 
 `src/core/shared-subscription.ts` is a registry that lets many hooks share one
@@ -243,8 +252,8 @@ Important details:
   reference. `QueryConstraint` objects are opaque, so Firestate never
   hand-rolls a deep compare; instead `useCollection` builds the query and
   compares it with Firestore's own `queryEqual`. When upstream state churns
-  array references without changing the query (e.g. ids read from a
-  deep-cloned document), the listener is preserved; a genuine query change
+  array references without changing the query (e.g. ids derived from
+  document data on each render), the listener is preserved; a genuine query change
   rebuilds it. Callers need not memoize the array for correctness.
 - Subscription state and handles are both cached until state changes (`getState()`
   and `getHandle()` return identity-stable references, rebuilt only on `notify()`),
@@ -328,6 +337,8 @@ Collection sync uses a Firestore write batch:
 - arrays are replaced as whole values
 - nested plain objects are recursively diffed
 - `Timestamp` values are compared and cloned specially
+- `applyDiff` and `applyOverridesAtPaths` copy only the changed path
+- `replaceEqualDeep` reuses every equal subtree of the previous value
 - Firestore sentinels are preserved while flattening
 
 These helpers are shared by document sync, collection sync, and undo.
