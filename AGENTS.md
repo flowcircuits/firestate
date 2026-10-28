@@ -196,7 +196,9 @@ Preserve these unless the task explicitly changes them.
 - Listener snapshots update state (`getState()`/`getHandle()`) at once, but
   the subscriber fan-out is batched per task (`src/core/snapshot-batcher.ts`):
   the first snapshot of a task notifies synchronously, and later snapshots in
-  the same task fold into one notify on the next task. A burst of server
+  the same task fold into one notify on the next task. The batching window is
+  shared by every subscription on a store, so one snapshot each across many
+  document subscriptions folds the same way. A burst of server
   writes otherwise drives one synchronous React commit per snapshot and throws
   React #185 (maximum update depth). Local writes still notify synchronously.
 - Undo actions are client-local. Grouped undo actions undo newest to oldest and

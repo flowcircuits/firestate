@@ -20,7 +20,7 @@ import type {
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
-import { createSnapshotBatcher } from './snapshot-batcher'
+import { getSnapshotBatcher } from './snapshot-batcher'
 import {
     applyDiff,
     applyOverridesAtPaths,
@@ -281,16 +281,17 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
     const notify = () => {
         if (!publishState()) return
-        snapshotBatcher.discardDeferred()
+        snapshotBatcher.discardDeferred(notifySubscribers)
         notifySubscribers()
     }
 
-    // Snapshots update state at once but batch the subscriber fan-out, so a
-    // burst of snapshots in one task re-renders consumers at most twice.
-    const snapshotBatcher = createSnapshotBatcher(notifySubscribers)
+    // Snapshots update state at once but batch the subscriber fan-out across
+    // the store, so a burst of snapshots in one task re-renders consumers at
+    // most twice.
+    const snapshotBatcher = getSnapshotBatcher(store)
 
     const notifySnapshot = () => {
-        if (publishState()) snapshotBatcher.publishSnapshot()
+        if (publishState()) snapshotBatcher.publishSnapshot(notifySubscribers)
     }
 
     const updateState = (
@@ -753,7 +754,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             clearTimeout(minLoadTimeout)
             minLoadTimeout = null
         }
-        snapshotBatcher.cancel()
+        snapshotBatcher.discardDeferred(notifySubscribers)
         // Drop this subscription's entry from the global sync-state map so
         // an unmounted hook does not leave useIsSynced stuck at false.
         store.unregisterSyncState(syncKey)

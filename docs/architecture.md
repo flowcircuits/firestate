@@ -260,7 +260,8 @@ Important details:
   so React sees stable snapshots between commits.
 - Listener snapshots publish state at once but batch the subscriber fan-out per
   task: the first snapshot of a task notifies, and later snapshots in the same
-  task fold into one notify on the next task. This keeps a burst of server
+  task fold into one notify on the next task. The window is shared per store,
+  across subscriptions. This keeps a burst of server
   writes from driving 50+ synchronous React commits (React #185).
 
 ## Document Subscriptions

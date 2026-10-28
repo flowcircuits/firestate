@@ -194,4 +194,81 @@ describe('snapshot batching', () => {
             expect(subscriber).toHaveBeenLastCalledWith(sub.getState())
         })
     })
+
+    describe('across subscriptions', () => {
+        const docSnap = (data: object) => ({
+            exists: () => true,
+            data: () => data,
+            metadata: { fromCache: false, hasPendingWrites: false },
+        })
+
+        // One snapshot per document subscription commits as often as a burst
+        // on one subscription, so the batching window is shared per store.
+        it('folds one snapshot each across many document subscriptions', async () => {
+            const subs = Array.from({ length: BURST_SIZE }, (_, index) =>
+                createDocumentSubscription({
+                    store,
+                    definition: projectDef,
+                    docId: `p${index}`,
+                    collectionPath: 'projects',
+                })
+            )
+            subs.forEach((sub) => sub.load())
+            const listeners = h.listeners()
+            listeners.forEach((l) => l.onNext(docSnap({ revision: 0 })))
+            await nextTask()
+
+            const subscribers = subs.map((sub) => {
+                const subscriber = vi.fn()
+                sub.subscribe(subscriber)
+                return subscriber
+            })
+            const totalCalls = () =>
+                subscribers.reduce((n, fn) => n + fn.mock.calls.length, 0)
+
+            for (const listener of listeners) {
+                await Promise.resolve()
+                listener.onNext(docSnap({ revision: 1 }))
+            }
+
+            expect(totalCalls()).toBe(1)
+            expect(
+                subs.every((sub) => sub.getState().data?.revision === 1)
+            ).toBe(true)
+
+            await nextTask()
+            subscribers.forEach((subscriber, index) => {
+                expect(subscriber).toHaveBeenCalledTimes(1)
+                expect(subscriber).toHaveBeenLastCalledWith(
+                    subs[index]!.getState()
+                )
+            })
+        })
+
+        it('drops a stopped subscription from the shared trailing notify', async () => {
+            const a = await makeDoc()
+            const b = createDocumentSubscription({
+                store,
+                definition: projectDef,
+                docId: 'p2',
+                collectionPath: 'projects',
+            })
+            b.load()
+            h.fireDocSnapshot({ revision: 0 })
+            await nextTask()
+
+            const aSubscriber = vi.fn()
+            const bSubscriber = vi.fn()
+            a.subscribe(aSubscriber)
+            b.subscribe(bSubscriber)
+
+            h.listeners()[0]!.onNext(docSnap({ revision: 1 }))
+            h.fireDocSnapshot({ revision: 1 })
+            b.stop()
+            await nextTask()
+
+            expect(aSubscriber).toHaveBeenCalledTimes(1)
+            expect(bSubscriber).not.toHaveBeenCalled()
+        })
+    })
 })
