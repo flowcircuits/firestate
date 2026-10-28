@@ -37,5 +37,11 @@ export const createSnapshotBatcher = (publish: () => void) => {
         hasDeferredSnapshot = false
     }
 
-    return { publishSnapshot, cancel }
+    // A synchronous notify already delivered the latest state, so a deferred
+    // snapshot has nothing new to publish.
+    const discardDeferred = () => {
+        hasDeferredSnapshot = false
+    }
+
+    return { publishSnapshot, discardDeferred, cancel }
 }

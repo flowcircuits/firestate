@@ -126,6 +126,24 @@ describe('snapshot batching', () => {
             expect(sub.getState().data.space99?.processed).toBe(true)
         })
 
+        it('folds a backlog of snapshots queued as separate tasks', async () => {
+            const sub = await makeColl()
+            const subscriber = vi.fn()
+            sub.subscribe(subscriber)
+
+            for (let count = 1; count <= BURST_SIZE; count++) {
+                setTimeout(() => {
+                    h.fireCollectionSnapshot(spacesProcessedUpTo(count))
+                }, 0)
+            }
+            await nextTask()
+            await nextTask()
+
+            expect(subscriber).toHaveBeenCalledTimes(2)
+            expect(subscriber).toHaveBeenLastCalledWith(sub.getState())
+            expect(sub.getState().data.space99?.processed).toBe(true)
+        })
+
         it('drops the trailing notify after stop()', async () => {
             const sub = await makeColl()
             const subscriber = vi.fn()
@@ -152,6 +170,9 @@ describe('snapshot batching', () => {
             expect(subscriber).toHaveBeenLastCalledWith(sub.getState())
             expect(sub.getState().data.space1?.processed).toBe(true)
             expect(sub.getState().data.space50?.processed).toBe(true)
+
+            await nextTask()
+            expect(subscriber).toHaveBeenCalledTimes(2)
         })
     })
 

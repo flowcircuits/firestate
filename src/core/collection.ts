@@ -291,7 +291,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const notify = () => {
-        if (publishState()) notifySubscribers()
+        if (!publishState()) return
+        snapshotBatcher.discardDeferred()
+        notifySubscribers()
     }
 
     // Snapshots update state at once but batch the subscriber fan-out, so a
