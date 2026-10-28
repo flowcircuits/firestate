@@ -144,6 +144,36 @@ describe('snapshot batching', () => {
             expect(sub.getState().data.space99?.processed).toBe(true)
         })
 
+        // React #185 is thrown from inside the first synchronous notify; the
+        // rest of the burst must still be batched, not notified one by one.
+        it('keeps batching when the first notify throws', async () => {
+            const sub = await makeColl()
+            const thrown = new Error('subscriber failed')
+            const subscriber = vi.fn(() => {
+                throw thrown
+            })
+            sub.subscribe(subscriber)
+
+            for (let count = 1; count <= BURST_SIZE; count++) {
+                try {
+                    h.fireCollectionSnapshot(spacesProcessedUpTo(count))
+                } catch (error) {
+                    expect(error).toBe(thrown)
+                }
+            }
+            expect(subscriber).toHaveBeenCalledTimes(1)
+
+            const onUncaught = () => {}
+            process.on('uncaughtException', onUncaught)
+            try {
+                await nextTask()
+                await nextTask()
+            } finally {
+                process.off('uncaughtException', onUncaught)
+            }
+            expect(subscriber).toHaveBeenCalledTimes(2)
+        })
+
         it('drops the trailing notify after stop()', async () => {
             const sub = await makeColl()
             const subscriber = vi.fn()

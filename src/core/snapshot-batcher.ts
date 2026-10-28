@@ -24,7 +24,8 @@ export const createSnapshotBatcher = () => {
             deferred.add(publish)
             return
         }
-        publish()
+        // Open the window before publishing: if publish throws (React #185),
+        // the rest of the burst must still be batched.
         windowTimeout = setTimeout(() => {
             windowTimeout = null
             const pending = [...deferred]
@@ -42,6 +43,7 @@ export const createSnapshotBatcher = () => {
             }
             if (firstError) throw firstError.error
         }, 0)
+        publish()
     }
 
     // Called when a synchronous notify already delivered the latest state, or
