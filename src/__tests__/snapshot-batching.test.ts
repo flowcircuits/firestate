@@ -245,6 +245,55 @@ describe('snapshot batching', () => {
             })
         })
 
+        // React throws #185 from inside the subscriber callback, so one
+        // subscription's throw must not strand the rest of the shared flush.
+        it('notifies every subscription when one subscriber throws', async () => {
+            const a = await makeDoc()
+            const b = createDocumentSubscription({
+                store,
+                definition: projectDef,
+                docId: 'p2',
+                collectionPath: 'projects',
+            })
+            b.load()
+            h.fireDocSnapshot({ revision: 0 })
+            await nextTask()
+
+            // Open the window with a third subscription so a and b both defer.
+            const c = createDocumentSubscription({
+                store,
+                definition: projectDef,
+                docId: 'p3',
+                collectionPath: 'projects',
+            })
+            c.load()
+            h.fireDocSnapshot({ revision: 0 })
+
+            const thrown = new Error('subscriber failed')
+            a.subscribe(() => {
+                throw thrown
+            })
+            const bSubscriber = vi.fn()
+            b.subscribe(bSubscriber)
+
+            h.listeners()[0]!.onNext(docSnap({ revision: 1 }))
+            h.listeners()[1]!.onNext(docSnap({ revision: 1 }))
+
+            const uncaught: unknown[] = []
+            const onUncaught = (error: unknown) => uncaught.push(error)
+            process.on('uncaughtException', onUncaught)
+            try {
+                await nextTask()
+                await nextTask()
+            } finally {
+                process.off('uncaughtException', onUncaught)
+            }
+
+            expect(bSubscriber).toHaveBeenCalledTimes(1)
+            expect(bSubscriber).toHaveBeenLastCalledWith(b.getState())
+            expect(uncaught).toEqual([thrown])
+        })
+
         it('drops a stopped subscription from the shared trailing notify', async () => {
             const a = await makeDoc()
             const b = createDocumentSubscription({

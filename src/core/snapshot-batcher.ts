@@ -30,8 +30,17 @@ export const createSnapshotBatcher = () => {
             const pending = [...deferred]
             deferred.clear()
             // Publishing in one synchronous loop lets React batch them into a
-            // single commit.
-            pending.forEach((fn) => fn())
+            // single commit. A throw (e.g. React #185 from inside a subscriber)
+            // must not strand the other subscriptions, so it is rethrown last.
+            let firstError: { error: unknown } | null = null
+            for (const fn of pending) {
+                try {
+                    fn()
+                } catch (error) {
+                    firstError ??= { error }
+                }
+            }
+            if (firstError) throw firstError.error
         }, 0)
     }
 
