@@ -22,6 +22,7 @@ import type {
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
+import { createSnapshotBatcher } from './snapshot-batcher'
 import {
     applyDiff,
     applyOverridesAtPaths,
@@ -257,7 +258,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         prev.isActive !== next.isActive ||
         observableStateChanged(prev, next)
 
-    const notify = () => {
+    // Makes the current state visible to getState()/getHandle(). Returns
+    // whether anything observable changed.
+    const publishState = (): boolean => {
         // State is structurally shared between syncState, localState, and
         // every published snapshot, so it must never be mutated in place.
         freezeDeepInDevelopment(state.syncState)
@@ -272,14 +275,31 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // Snapshot-side no-op collapse: nothing observable changed → publish
         // nothing, keeping the cached handle identity stable.
         if (lastPublished !== null && !publicStateChanged(lastPublished, publicState)) {
-            return
+            return false
         }
         lastPublished = publicState
         cachedHandle = null
         // Reuse the published state as the cached snapshot (see document.ts).
         cachedState = publicState
-        subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
+        return true
+    }
+
+    const notifySubscribers = () => {
+        const publicState = getState()
+        subscribers.forEach((fn) => fn(publicState))
+    }
+
+    const notify = () => {
+        if (publishState()) notifySubscribers()
+    }
+
+    // Snapshots update state at once but batch the subscriber fan-out, so a
+    // burst of snapshots in one task re-renders consumers at most twice.
+    const snapshotBatcher = createSnapshotBatcher(notifySubscribers)
+
+    const notifySnapshot = () => {
+        if (publishState()) snapshotBatcher.publishSnapshot()
     }
 
     // Pre-snapshot mutations are unsafe because computing a partial-update
@@ -663,7 +683,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             scheduleAutosave()
         }
 
-        notify()
+        notifySnapshot()
     }
 
     const handleError = (error: Error) => {
@@ -752,6 +772,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             clearTimeout(minLoadTimeout)
             minLoadTimeout = null
         }
+        snapshotBatcher.cancel()
         // Drop this subscription's entry from the global sync-state map so
         // an unmounted hook does not leave useIsSynced stuck at false.
         store.unregisterSyncState(syncKey)
