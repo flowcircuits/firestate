@@ -20,6 +20,7 @@ import type {
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
+import { getSnapshotBatcher } from './snapshot-batcher'
 import {
     applyDiff,
     applyOverridesAtPaths,
@@ -240,7 +241,9 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
 
     const publicStateChanged = observableStateChanged
 
-    const notify = () => {
+    // Makes the current state visible to getState()/getHandle(). Returns
+    // whether anything observable changed.
+    const publishState = (): boolean => {
         // State is structurally shared between syncState, localState, and
         // every published snapshot, so it must never be mutated in place.
         freezeDeepInDevelopment(state.syncState)
@@ -260,15 +263,35 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
         // changed → publish nothing. Keeps the cached handle identity stable
         // so useSyncExternalStore does not re-render.
         if (lastPublished !== null && !publicStateChanged(lastPublished, publicState)) {
-            return
+            return false
         }
         lastPublished = publicState
         cachedHandle = null
         // Reuse the just-built state as the cached snapshot so getState() and
         // the published value share one identity-stable reference.
         cachedState = publicState
-        subscribers.forEach((fn) => fn(publicState))
         store.reportSyncState(syncKey, publicState.isSynced)
+        return true
+    }
+
+    const notifySubscribers = () => {
+        const publicState = getState()
+        subscribers.forEach((fn) => fn(publicState))
+    }
+
+    const notify = () => {
+        if (!publishState()) return
+        snapshotBatcher.discardDeferred(notifySubscribers)
+        notifySubscribers()
+    }
+
+    // Snapshots update state at once but batch the subscriber fan-out across
+    // the store, so a burst of snapshots in one task re-renders consumers at
+    // most twice.
+    const snapshotBatcher = getSnapshotBatcher(store)
+
+    const notifySnapshot = () => {
+        if (publishState()) snapshotBatcher.publishSnapshot(notifySubscribers)
     }
 
     const updateState = (
@@ -623,7 +646,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             scheduleAutosave()
         }
 
-        notify()
+        notifySnapshot()
     }
 
     // A document that does not exist is not an error condition — consumers
@@ -658,7 +681,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             state.isLoading = false
         }
         loaded = true
-        notify()
+        notifySnapshot()
     }
 
     const handleError = (error: Error) => {
@@ -731,6 +754,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
             clearTimeout(minLoadTimeout)
             minLoadTimeout = null
         }
+        snapshotBatcher.discardDeferred(notifySubscribers)
         // Drop this subscription's entry from the global sync-state map so
         // an unmounted hook does not leave useIsSynced stuck at false.
         store.unregisterSyncState(syncKey)
