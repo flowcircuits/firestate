@@ -255,10 +255,16 @@ export interface SelectedCollectionHandle<
  * An undo/redo action
  */
 export interface UndoAction {
-    /** Function to undo the change */
-    undo: () => Promise<void> | void
-    /** Function to redo the change */
-    redo: () => Promise<void> | void
+    /**
+     * Function to undo the change. Return `false` when it applied nothing;
+     * the undo manager then drops the action instead of moving it to redo.
+     */
+    undo: () => Promise<void | boolean> | void | boolean
+    /**
+     * Function to redo the change. Return `false` when it applied nothing;
+     * the undo manager then drops the action instead of moving it to undo.
+     */
+    redo: () => Promise<void | boolean> | void | boolean
     /** Optional group ID for batching multiple actions */
     groupId?: string
     /** Optional path/location context for navigation-aware undo */
@@ -349,6 +355,23 @@ export interface CollectionDefinition<TData extends FirestoreObject> {
      * {@link DocumentDefinition.schema} for the full contract.
      */
     schema?: ZodType<TData>
+    /**
+     * Decide whether `update(diff)` may create a document whose id is not in
+     * the collection. Receives the merged new document (with `id`). Return
+     * `false` to drop that entry and report it to
+     * {@link FirestateConfig.onRejectedCreate}.
+     *
+     * Defaults to `schema.safeParse(data)` when `schema` is set, where issues
+     * at fields holding a FieldValue sentinel (`serverTimestamp()`,
+     * `increment()`, `arrayUnion()`, …) do not count, and to rejecting every
+     * such create when it is not. A custom check receives the sentinels as-is.
+     * `add()`, and undo/redo that restores a whole document this client
+     * deleted or created (through `add()`, `remove()` or `update()`), skip
+     * this check. A partial diff for an unknown id (for example an undo of an
+     * edit to a document another client deleted) never becomes a document by
+     * accident.
+     */
+    validateCreate?(data: TData): boolean
     /** Collection path (can include path segments) */
     path: string | ((params: Record<string, string>) => string)
     /** Debounce interval for autosave (ms), default 1000 */
@@ -400,6 +423,27 @@ export interface FirestateConfig {
     onRedo?: (action: UndoAction) => void
     /** Custom error handler */
     onError?: (error: Error, context: ErrorContext) => void
+    /**
+     * Called when a collection write tried to create a document from a diff
+     * that is not a valid whole document, and firestate dropped it. See
+     * {@link CollectionDefinition.validateCreate}. Defaults to `console.warn`.
+     */
+    onRejectedCreate?: (context: RejectedCreateContext) => void
+}
+
+/**
+ * A document create that firestate refused. The write for this id was dropped;
+ * the rest of the diff still applied.
+ */
+export interface RejectedCreateContext {
+    /** Collection path */
+    path: string
+    /** Id of the document that was not created */
+    id: string
+    /** The merged document that failed validation (with `id`) */
+    data: FirestoreObject
+    /** The write that produced it: a handle `update`, or an undo/redo replay */
+    source: 'update' | 'undo' | 'redo'
 }
 
 /**

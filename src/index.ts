@@ -30,6 +30,7 @@ export type {
     FirestoreObject,
     FirestateConfig,
     ErrorContext,
+    RejectedCreateContext,
 } from './types'
 
 // Definition helpers

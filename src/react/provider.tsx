@@ -7,7 +7,7 @@ import React, {
 import type { Firestore } from 'firebase/firestore'
 import { createStore, type FirestateStore } from '../core/store'
 import { FirestateContext } from './hooks'
-import type { ErrorContext, UndoAction } from '../types'
+import type { ErrorContext, RejectedCreateContext, UndoAction } from '../types'
 
 /**
  * Props for FirestateProvider
@@ -68,6 +68,8 @@ export interface FirestateProviderProps {
     onUndo?: (action: UndoAction) => void
     /** Called after a redo action has been successfully applied */
     onRedo?: (action: UndoAction) => void
+    /** Called when a collection write tried to create an invalid document */
+    onRejectedCreate?: (context: RejectedCreateContext) => void
     /** React children */
     children: React.ReactNode
 }
@@ -104,6 +106,7 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
     getUndoPath,
     onUndo,
     onRedo,
+    onRejectedCreate,
     children,
 }) => {
     // Callback props are intentionally excluded from the deps so inline
@@ -121,6 +124,7 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
                 getUndoPath,
                 onUndo,
                 onRedo,
+                onRejectedCreate,
             }),
         [firestore, autosave, minLoadTime, maxUndoLength]
     )
@@ -144,6 +148,10 @@ export const FirestateProvider: React.FC<FirestateProviderProps> = ({
     useEffect(() => {
         store.setOnRedo(onRedo)
     }, [store, onRedo])
+
+    useEffect(() => {
+        store.setOnRejectedCreate(onRejectedCreate)
+    }, [store, onRejectedCreate])
 
     return (
         <FirestateContext.Provider value={store}>

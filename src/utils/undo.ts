@@ -38,19 +38,22 @@ const getGroupedActions = (action: GroupedUndoAction): readonly UndoAction[] =>
  * Apply a group in the required direction. If a member fails, compensate the
  * members already applied so a failed undo/redo does not leave the group
  * partially applied (provided the compensating actions themselves succeed).
+ * Returns `false` when every member applied nothing.
  */
 const applyGroup = async (
     actions: readonly UndoAction[],
     operation: 'undo' | 'redo'
-): Promise<void> => {
+): Promise<boolean> => {
     const ordered = operation === 'undo' ? [...actions].reverse() : actions
     const applied: UndoAction[] = []
+    let appliedAny = false
 
     try {
         for (const action of ordered) {
-            await action[operation]()
+            if ((await action[operation]()) !== false) appliedAny = true
             applied.push(action)
         }
+        return appliedAny
     } catch (error) {
         const compensate = operation === 'undo' ? 'redo' : 'undo'
         for (const action of applied.reverse()) {
@@ -169,7 +172,12 @@ export const createUndoManager = (
             if (action.path && onNavigate) {
                 onNavigate(action.path)
             }
-            await action.undo()
+            // An action that applied nothing (every change it held was
+            // rejected) is dropped: redoing it would apply nothing either.
+            if ((await action.undo()) === false) {
+                notify()
+                return
+            }
         } catch (error) {
             // Put it back on undo stack if it failed
             undoStack.push(action)
@@ -195,7 +203,10 @@ export const createUndoManager = (
             if (action.path && onNavigate) {
                 onNavigate(action.path)
             }
-            await action.redo()
+            if ((await action.redo()) === false) {
+                notify()
+                return
+            }
         } catch (error) {
             // Put it back on redo stack if it failed
             redoStack.push(action)

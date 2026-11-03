@@ -172,6 +172,11 @@ export interface ColEntry<
   path: PathArg<P>;
   /** Zod schema. Required. See {@link DocEntry.schema}. */
   schema: ZodType<T>;
+  /**
+   * Decide whether `update(diff)` may create a document. Defaults to the
+   * schema. See {@link CollectionDefinition.validateCreate}.
+   */
+  validateCreate?(data: T): boolean;
   /** Only subscribe when `load()` is called. */
   lazy?: boolean;
   /** Additional Firestore query constraints. */
@@ -837,6 +842,7 @@ export function buildCollectionDefinition<T extends FirestoreObject>(
   const { path } = entry;
   return defineCollection<T>({
     schema: entry.schema,
+    validateCreate: entry.validateCreate,
     // Function paths pass straight through to defineCollection; static
     // templates are interpolated per-call.
     path:
