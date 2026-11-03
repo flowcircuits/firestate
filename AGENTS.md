@@ -94,9 +94,11 @@ Preserve these unless the task explicitly changes them.
   full writes (`document.set`, `collection.add`) but stores the caller's
   original object. Do not store the parsed result unless intentionally changing
   this contract.
-- Partial `update(diff)` calls are not Zod-validated because diffs may include
-  Firestore sentinels such as `serverTimestamp()`, `arrayUnion()`, or
-  `deleteField()`.
+- Partial `update(diff)` calls that only edit existing documents are not
+  Zod-validated because diffs may include Firestore sentinels such as
+  `serverTimestamp()`, `arrayUnion()`, or `deleteField()`. A collection
+  `update()` entry that creates a new id is checked (see the partial-diff create
+  contract below); the default check ignores schema issues at sentinel fields.
 - Document `update()` requires existing current data. Use `set()` to create or
   replace a document.
 - Collection `add`, `update`, and `remove` require the first snapshot. They
@@ -222,11 +224,16 @@ Preserve these unless the task explicitly changes them.
   never recreate it. A doc absent from the baseline but present locally is a
   genuine create (`batch.set`); an existing doc uses `batch.update`.
 - Collections never create a document from a partial diff. A new id reaches
-  `localState` only through `add()`, the undo/redo of `add()`/`remove()` (whole
-  documents), or an `update()` whose merged document passes `validateCreate`
-  (default `schema.safeParse`; no schema → rejected). Other new ids are dropped
-  in `updateState` and reported to `onRejectedCreate`. This covers undo/redo of
-  partial edits to documents deleted outside this client's undo stack.
+  `localState` only through `add()`, an undo/redo that restores a whole
+  document this client deleted or created itself (`add()`, `remove()`, or an
+  `update()` that deleted/created the whole document), or an `update()` whose
+  merged document passes `validateCreate` (default `schema.safeParse`, ignoring
+  issues at FieldValue sentinel fields; no schema → rejected). Other new ids
+  are dropped in `updateState` and reported to `onRejectedCreate`. This covers
+  undo/redo of partial edits to documents deleted outside this client's undo
+  stack. An undo/redo step that applies nothing because every create in it was
+  rejected returns `false`, and the undo manager drops it (no move to the other
+  stack, no `onUndo`/`onRedo`; `onNavigate` has already run).
 
 ## Test Guide
 

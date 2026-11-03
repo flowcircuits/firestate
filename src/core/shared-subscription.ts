@@ -161,7 +161,11 @@ const sameQuery = (a: Query<unknown>, b: Query<unknown>): boolean => {
 /** Push to the store-global undo manager, gated by the entry's shared flag. */
 const makeOnPushUndo =
     (store: FirestateStore, entry: { undoableEnabled: boolean }) =>
-    (undoAction: () => void, redoAction: () => void, opts?: UpdateOptions) => {
+    (
+        undoAction: () => boolean | void,
+        redoAction: () => boolean | void,
+        opts?: UpdateOptions
+    ) => {
         if (!entry.undoableEnabled) return
         store.undoManager.push({
             undo: undoAction,

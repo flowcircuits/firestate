@@ -329,12 +329,18 @@ it when the delete landed.
 
 A collection write can create a document only as a whole document. In
 `updateState`, every id the merged diff adds to the collection must pass
-`validateCreate` (default `schema.safeParse(doc).success`; no schema → rejected).
-`add()` and the undo/redo of `add()`/`remove()` name the one id they restore
-whole, which skips the check. A failing id is removed from the new
+`validateCreate` (default `schema.safeParse(doc)`, where an issue whose path runs
+through a FieldValue sentinel does not count; no schema → rejected). Undo/redo
+closures carry `restoreIds`: the ids the original write deleted whole (for the
+undo) or created whole (for the redo), from `add()`, `remove()`, or `update()`.
+Those ids skip the check, so restoring a document this client removed works even
+when it fails the current schema. A failing id is removed from the new
 `localState` before the undo entry is computed and reported through
 `store.reportRejectedCreate` (`onRejectedCreate`). So a partial undo/redo for a
 document deleted outside this client's undo stack never reaches `batch.set`.
+When a replay changes nothing because every create in it was rejected,
+`updateState` returns `false`; the undo manager drops an action (or a group whose
+members all return `false`) instead of moving it to the other stack.
 
 Collection sync uses a Firestore write batch:
 

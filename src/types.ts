@@ -255,10 +255,16 @@ export interface SelectedCollectionHandle<
  * An undo/redo action
  */
 export interface UndoAction {
-    /** Function to undo the change */
-    undo: () => Promise<void> | void
-    /** Function to redo the change */
-    redo: () => Promise<void> | void
+    /**
+     * Function to undo the change. Return `false` when it applied nothing;
+     * the undo manager then drops the action instead of moving it to redo.
+     */
+    undo: () => Promise<void | boolean> | void | boolean
+    /**
+     * Function to redo the change. Return `false` when it applied nothing;
+     * the undo manager then drops the action instead of moving it to undo.
+     */
+    redo: () => Promise<void | boolean> | void | boolean
     /** Optional group ID for batching multiple actions */
     groupId?: string
     /** Optional path/location context for navigation-aware undo */
@@ -355,11 +361,15 @@ export interface CollectionDefinition<TData extends FirestoreObject> {
      * `false` to drop that entry and report it to
      * {@link FirestateConfig.onRejectedCreate}.
      *
-     * Defaults to `schema.safeParse(data).success` when `schema` is set, and
-     * to rejecting every such create when it is not. `add()`, and undo/redo of
-     * `add()`/`remove()`, restore whole documents and skip this check. A
-     * partial diff for an unknown id (for example an undo of an edit to a
-     * document another client deleted) never becomes a document by accident.
+     * Defaults to `schema.safeParse(data)` when `schema` is set, where issues
+     * at fields holding a FieldValue sentinel (`serverTimestamp()`,
+     * `increment()`, `arrayUnion()`, …) do not count, and to rejecting every
+     * such create when it is not. A custom check receives the sentinels as-is.
+     * `add()`, and undo/redo that restores a whole document this client
+     * deleted or created (through `add()`, `remove()` or `update()`), skip
+     * this check. A partial diff for an unknown id (for example an undo of an
+     * edit to a document another client deleted) never becomes a document by
+     * accident.
      */
     validateCreate?(data: TData): boolean
     /** Collection path (can include path segments) */

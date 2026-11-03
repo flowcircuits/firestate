@@ -5,6 +5,7 @@ import {
     query,
     writeBatch,
     deleteField,
+    FieldValue,
     type FieldPath,
     WithFieldValue,
     QueryConstraint,
@@ -22,6 +23,7 @@ import type {
     Unsubscribe,
     UpdateOptions,
 } from '../types'
+import type { ZodType } from 'zod'
 import type { FirestateStore } from './store'
 import { getSnapshotBatcher } from './snapshot-batcher'
 import {
@@ -62,6 +64,37 @@ const withDocIds = <TData extends FirestoreObject>(
         }
     }
     return result
+}
+
+/** Whether `path` in `data` runs through or ends at a FieldValue sentinel. */
+const pathHitsSentinel = (
+    data: unknown,
+    path: readonly PropertyKey[]
+): boolean => {
+    let value = data
+    for (const key of path) {
+        if (value instanceof FieldValue) return true
+        if (value === null || typeof value !== 'object') return false
+        value = (value as Record<PropertyKey, unknown>)[key]
+    }
+    return value instanceof FieldValue
+}
+
+/**
+ * Default create check: the merged document must pass the schema, except at
+ * fields that hold a FieldValue sentinel (`serverTimestamp()`, `increment()`,
+ * `arrayUnion()`, …). Firestore resolves those on write, so a typed field is
+ * not expected to match the sentinel itself.
+ */
+const passesSchemaIgnoringSentinels = <TData>(
+    schema: ZodType<TData>,
+    data: TData
+): boolean => {
+    const result = schema.safeParse(data)
+    return (
+        result.success ||
+        result.error.issues.every((issue) => pathHitsSentinel(data, issue.path))
+    )
 }
 
 /**
@@ -106,8 +139,8 @@ export interface CollectionOptions<TData extends FirestoreObject> {
     queryConstraints?: QueryConstraint[]
     /** Callback for pushing undo actions */
     onPushUndo?: (
-        undoAction: () => void,
-        redoAction: () => void,
+        undoAction: () => boolean | void,
+        redoAction: () => boolean | void,
         options?: UpdateOptions
     ) => void
 }
@@ -186,7 +219,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         retryInterval = 5000,
         schema,
         validateCreate = (data: TData) =>
-            schema ? schema.safeParse(data).success : false,
+            schema ? passesSchemaIgnoringSentinels(schema, data) : false,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -324,33 +357,34 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     type UpdateDiff = WithFieldValue<DeepPartial<Record<string, TData>>>
 
     /**
-     * How a write reached updateState. `restoreId` names the one document an
-     * add()/remove() undo or redo restores whole, so it may be created without
-     * validateCreate.
+     * How a write reached updateState. `restoreIds` names the documents an
+     * undo or redo restores whole (a document this client deleted or created
+     * itself), so they may be created again without validateCreate.
      */
     interface WriteSource {
         source: RejectedCreateContext['source']
-        restoreId?: string
+        restoreIds?: ReadonlySet<string>
     }
 
     /**
      * Drop every document the write would create that is not a valid whole
      * document, and report it. A partial diff for an id that is not in the
      * collection (an undo of an edit to a doc another client deleted, say)
-     * would otherwise reach sync() and be written with batch.set.
+     * would otherwise reach sync() and be written with batch.set. Returns the
+     * kept state and whether anything was rejected.
      */
     const dropRejectedCreates = (
         base: Record<string, TData>,
         next: Record<string, TData>,
-        { source, restoreId }: WriteSource
-    ): Record<string, TData> => {
+        { source, restoreIds }: WriteSource
+    ): [Record<string, TData>, boolean] => {
         const rejected = Object.keys(next).filter(
             (docId) =>
                 !(docId in base) &&
-                docId !== restoreId &&
+                !restoreIds?.has(docId) &&
                 !validateCreate(next[docId] as TData)
         )
-        if (!rejected.length) return next
+        if (!rejected.length) return [next, false]
         const kept = { ...next }
         for (const docId of rejected) {
             store.reportRejectedCreate({
@@ -361,18 +395,23 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
             })
             delete kept[docId]
         }
-        return kept
+        return [kept, true]
     }
 
+    /**
+     * Apply a diff. Returns `false` only when the write changed nothing because
+     * every create in it was rejected; an undo/redo step then has nothing to
+     * apply and the undo manager drops it.
+     */
     const updateState = (
         diff: UpdateDiff,
         undoOptions: UpdateOptions = {},
         writeSource: WriteSource = { source: 'update' }
-    ) => {
-        if (isReadOnly) return
+    ): boolean => {
+        if (isReadOnly) return true
         if (state.syncState === undefined) {
             warnNoSnapshot('update')
-            return
+            return true
         }
 
         // Use raw localState as the mutation base so serverTimestamp() sentinels
@@ -382,7 +421,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // applyDiff copies only the changed documents, so every untouched
         // document keeps its identity for downstream memoization.
         const rawBase = state.localState ?? state.syncState ?? {}
-        const newLocalState = dropRejectedCreates(
+        const [newLocalState, rejectedAny] = dropRejectedCreates(
             rawBase,
             withDocIds(
                 applyDiff(
@@ -398,7 +437,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // autosave. rawBase and newLocalState are compared after id injection
         // so both carry ids; valuesEqualForNoOp closes the NaN /
         // explicit-undefined gaps that defeat a naive guard.
-        if (valuesEqualForNoOp(rawBase, newLocalState)) return
+        if (valuesEqualForNoOp(rawBase, newLocalState)) return !rejectedAny
 
         // Push undo eagerly against the pre-mutation snapshot. Cmd+Z within
         // the autosave window pops this entry, applies the inverse via
@@ -413,9 +452,18 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 rawBase as FirestoreObject,
                 newLocalState as FirestoreObject
             )
+            // A document this write deleted whole comes back whole on undo,
+            // and one it created comes back whole on redo, even if it fails
+            // validateCreate (a legacy document, say).
+            const deletedIds = new Set(
+                Object.keys(rawBase).filter((docId) => !(docId in newLocalState))
+            )
+            const createdIds = new Set(
+                Object.keys(newLocalState).filter((docId) => !(docId in rawBase))
+            )
             onPushUndo(
-                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo' }),
-                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo' }),
+                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo', restoreIds: deletedIds }),
+                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo', restoreIds: createdIds }),
                 undoOptions
             )
         }
@@ -424,6 +472,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
         notify()
         scheduleAutosave()
+        return true
     }
 
     // Overloaded: callers can pass (id, data, opts) or (data, opts). The
@@ -495,10 +544,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 currentData as FirestoreObject,
                 newLocalState as FirestoreObject
             )
-            const restoreId = id in currentData ? undefined : id
+            const restoreIds = new Set(id in currentData ? [] : [id])
             onPushUndo(
                 () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo' }),
-                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo', restoreId }),
+                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo', restoreIds }),
                 undoOptions
             )
         }
@@ -535,7 +584,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo', restoreId: id }),
+                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo', restoreIds: new Set([id]) }),
                 () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo' }),
                 undoOptions
             )
@@ -841,7 +890,9 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
     const buildHandle = (): CollectionHandle<TData> => ({
         data: getMergedData(),
-        update: (diff, options) => updateState(diff, options),
+        update: (diff, options) => {
+            updateState(diff, options)
+        },
         add: addDocument,
         remove: removeDocument,
         isLoaded: state.isActive && !state.isLoading,

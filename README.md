@@ -37,7 +37,7 @@ Firestate exposes two layers. Pick one based on what you're building:
     - the param keys (`{ listId }`) inferred from the path template and enforced at call sites
     - runtime validation on `set` / `add` writes — bad data throws at the call site instead of after a Firestore round trip
 
-    Partial `update(diff)` calls are intentionally NOT validated: diffs commonly include Firestore sentinels like `serverTimestamp()` that a strict schema would reject.
+    Partial `update(diff)` edits to existing documents are intentionally NOT validated: diffs commonly include Firestore sentinels like `serverTimestamp()` that a strict schema would reject. A collection `update()` that creates a new id is checked; see [Partial updates never create documents](#partial-updates-never-create-documents).
 
     Treat `createFirestate` as a **per-resource hook factory**, not an app-wide registry: give each document/collection its own module (`firestore/taskList.ts`, `firestore/tasks.ts`, …) with one `createFirestate` call, and export the hooks flat. See [Organizing by resource](#organizing-by-resource).
 
@@ -349,7 +349,7 @@ This distinction is important for collaborative applications where multiple user
 
 #### Collections never create a document from a partial diff
 
-A collection `update(diff)` entry for an id that is not in the collection would create that document. Firestate only allows it when the merged document passes the collection's `validateCreate` — by default `schema.safeParse(doc).success`, or rejected when the collection has no schema. A rejected entry is dropped (the rest of the diff still applies) and reported to `onRejectedCreate` on the provider or store (default: `console.warn`). This covers undo/redo too: undoing an edit to a document another client deleted does not write a fragment of it. `add()`, and undo/redo of `add()` / `remove()`, restore whole documents and skip the check.
+A collection `update(diff)` entry for an id that is not in the collection would create that document. Firestate only allows it when the merged document passes the collection's `validateCreate` — by default `schema.safeParse(doc)`, where issues at fields holding a FieldValue sentinel such as `serverTimestamp()` do not count, or rejected when the collection has no schema. A rejected entry is dropped (the rest of the diff still applies) and reported to `onRejectedCreate` on the provider or store (default: `console.warn`). This covers undo/redo too: undoing an edit to a document another client deleted does not write a fragment of it. `add()`, and undo/redo that restores a whole document this client deleted or created (through `add()`, `remove()`, or `update()`), skip the check. An undo/redo step whose every create is rejected applies nothing and is dropped from the undo history.
 
 ```tsx
 const tasks = col({

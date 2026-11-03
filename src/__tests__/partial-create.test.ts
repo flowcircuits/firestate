@@ -23,6 +23,7 @@ vi.mock('firebase/firestore', async () => {
 })
 
 import { z } from 'zod'
+import { arrayUnion, deleteField, serverTimestamp } from 'firebase/firestore'
 import { createHarness, type BatchOp, type Harness } from './test-harness'
 import { createCollectionSubscription } from '../core/collection'
 import { defineCollection } from '../registry/schema'
@@ -259,5 +260,192 @@ describe('partial updates never create documents', () => {
             expect.stringContaining('[firestate] Rejected a create of items/X')
         )
         sub.stop()
+    })
+
+    it('undo of an update() whole delete restores a doc that fails the current schema', async () => {
+        const sub = makeColl()
+        // X predates the schema: `v` is a string, so it fails ItemSchema.
+        h.fireCollectionSnapshot({
+            X: { name: 'X', v: 'legacy' },
+            Y: { name: 'Y', v: 1 },
+        })
+
+        sub.getHandle().update({ X: deleteField(), Y: { v: 2 } } as never)
+        await syncOps(sub)
+        h.fireCollectionSnapshot({ Y: { name: 'Y', v: 2 } })
+
+        await store.undoManager.undo()
+
+        expect(sub.getState().data.X).toEqual({
+            id: 'X',
+            name: 'X',
+            v: 'legacy',
+        })
+        expect(sub.getState().data.Y?.v).toBe(1)
+        expect(setIds(await syncOps(sub))).toEqual(['X'])
+        expect(rejected).toEqual([])
+        h.fireCollectionSnapshot({
+            X: { name: 'X', v: 'legacy' },
+            Y: { name: 'Y', v: 1 },
+        })
+
+        // Redo deletes X again; a second undo restores it again.
+        await store.undoManager.redo()
+        expect(sub.getState().data.X).toBeUndefined()
+        await syncOps(sub)
+        h.fireCollectionSnapshot({ Y: { name: 'Y', v: 2 } })
+        await store.undoManager.undo()
+        expect(sub.getState().data.X).toEqual({
+            id: 'X',
+            name: 'X',
+            v: 'legacy',
+        })
+        expect(rejected).toEqual([])
+        sub.stop()
+    })
+
+    it('redo of an update() create restores it whole after a remote delete', async () => {
+        const sub = makeColl(
+            defineCollection({
+                path: 'items',
+                schema: ItemSchema,
+                // Only the first create passes; the replay must not re-check.
+                validateCreate: () => !rejectFurther,
+            }) as never
+        )
+        let rejectFurther = false
+        h.fireCollectionSnapshot({})
+
+        sub.getHandle().update({ X: { name: 'X', v: 1 } })
+        rejectFurther = true
+        await syncOps(sub)
+        h.fireCollectionSnapshot({ X: { name: 'X', v: 1 } })
+        await store.undoManager.undo()
+        await syncOps(sub)
+        h.fireCollectionSnapshot({})
+
+        await store.undoManager.redo()
+
+        expect(sub.getState().data.X).toEqual({ id: 'X', name: 'X', v: 1 })
+        expect(setIds(await syncOps(sub))).toEqual(['X'])
+        expect(rejected).toEqual([])
+        sub.stop()
+    })
+
+    describe('default create check with Firestore sentinels', () => {
+        const SentinelSchema = z.object({
+            id: z.string(),
+            name: z.string(),
+            createdAt: z.number(),
+            tags: z.array(z.string()).optional(),
+        })
+        const sentinelDef = defineCollection({
+            path: 'items',
+            schema: SentinelSchema,
+        })
+
+        it('accepts a create whose sentinel fields stand in for typed values', async () => {
+            const sub = makeColl(sentinelDef as never)
+            h.fireCollectionSnapshot({})
+
+            sub.getHandle().update({
+                X: {
+                    name: 'X',
+                    createdAt: serverTimestamp(),
+                    tags: arrayUnion('a'),
+                },
+            } as never)
+
+            expect(sub.getState().data.X?.name).toBe('X')
+            expect(setIds(await syncOps(sub))).toEqual(['X'])
+            expect(rejected).toEqual([])
+            sub.stop()
+        })
+
+        it('still rejects a create that fails the schema outside its sentinels', () => {
+            const sub = makeColl(sentinelDef as never)
+            h.fireCollectionSnapshot({})
+
+            // `name` is missing; the sentinel does not excuse it.
+            sub.getHandle().update({
+                X: { createdAt: serverTimestamp() },
+            } as never)
+
+            expect(sub.getState().data.X).toBeUndefined()
+            expect(rejected.map((r) => r.id)).toEqual(['X'])
+            sub.stop()
+        })
+    })
+
+    describe('undo steps with rejected creates', () => {
+        let onUndo: ReturnType<typeof vi.fn>
+        let onRedo: ReturnType<typeof vi.fn>
+
+        beforeEach(() => {
+            onUndo = vi.fn()
+            onRedo = vi.fn()
+            store = createStore({
+                firestore: {} as never,
+                autosave: 0,
+                onUndo,
+                onRedo,
+                onRejectedCreate: (context) => rejected.push(context),
+            })
+        })
+
+        it('a grouped undo applies the members it can and rejects the rest', async () => {
+            const sub = makeColl()
+            h.fireCollectionSnapshot({
+                X: { name: 'X', v: 1 },
+                Y: { name: 'Y', v: 1 },
+            })
+
+            sub.getHandle().update({ X: { v: 2 } }, { undoGroupId: 'g' })
+            sub.getHandle().update({ Y: { v: 2 } }, { undoGroupId: 'g' })
+            await syncOps(sub)
+            h.fireCollectionSnapshot({
+                X: { name: 'X', v: 2 },
+                Y: { name: 'Y', v: 2 },
+            })
+            h.fireCollectionSnapshot({ Y: { name: 'Y', v: 2 } })
+
+            await store.undoManager.undo()
+
+            expect(sub.getState().data.X).toBeUndefined()
+            expect(sub.getState().data.Y?.v).toBe(1)
+            expect(setIds(await syncOps(sub))).toEqual([])
+            expect(rejected).toEqual([
+                expect.objectContaining({ id: 'X', source: 'undo' }),
+            ])
+            expect(onUndo).toHaveBeenCalledTimes(1)
+            expect(store.undoManager.canRedo).toBe(true)
+            h.fireCollectionSnapshot({ Y: { name: 'Y', v: 1 } })
+
+            await store.undoManager.redo()
+
+            expect(sub.getState().data.X).toBeUndefined()
+            expect(sub.getState().data.Y?.v).toBe(2)
+            expect(rejected.map((r) => r.source)).toEqual(['undo', 'redo'])
+            expect(onRedo).toHaveBeenCalledTimes(1)
+            sub.stop()
+        })
+
+        it('an undo whose every create is rejected is dropped, not moved to redo', async () => {
+            const sub = makeColl()
+            h.fireCollectionSnapshot({ X: { name: 'X', v: 1 } })
+
+            sub.getHandle().update({ X: { v: 2 } })
+            await syncOps(sub)
+            h.fireCollectionSnapshot({ X: { name: 'X', v: 2 } })
+            h.fireCollectionSnapshot({})
+
+            await store.undoManager.undo()
+
+            expect(rejected).toHaveLength(1)
+            expect(store.undoManager.canUndo).toBe(false)
+            expect(store.undoManager.canRedo).toBe(false)
+            expect(onUndo).not.toHaveBeenCalled()
+            sub.stop()
+        })
     })
 })

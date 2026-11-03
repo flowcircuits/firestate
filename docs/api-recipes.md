@@ -162,8 +162,9 @@ partial diffs from creating broken documents.
 
 Collections apply the same rule per id: a collection `update` entry for an id
 that is not in the collection is dropped unless the merged document passes the
-collection's `validateCreate` (default: the `schema`). Create documents with
-`add()`. Watch rejected creates with `onRejectedCreate`.
+collection's `validateCreate` (default: the `schema`, ignoring issues at
+fields that hold a FieldValue sentinel such as `serverTimestamp()`). Create
+documents with `add()`. Watch rejected creates with `onRejectedCreate`.
 
 ## Lazy Collections
 

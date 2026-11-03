@@ -598,4 +598,58 @@ describe('createUndoManager', () => {
             expect(value).toBe('new')
         })
     })
+
+    describe('actions that apply nothing', () => {
+        it('drops an undo that returns false instead of moving it to redo', async () => {
+            const onUndo = vi.fn()
+            const manager = createUndoManager({ onUndo })
+            manager.push({ undo: () => false, redo: vi.fn() })
+
+            await manager.undo()
+
+            expect(manager.canUndo).toBe(false)
+            expect(manager.canRedo).toBe(false)
+            expect(onUndo).not.toHaveBeenCalled()
+        })
+
+        it('drops a redo that returns false instead of moving it to undo', async () => {
+            const onRedo = vi.fn()
+            const manager = createUndoManager({ onRedo })
+            manager.push({ undo: vi.fn(), redo: () => false })
+            await manager.undo()
+
+            await manager.redo()
+
+            expect(manager.canUndo).toBe(false)
+            expect(manager.canRedo).toBe(false)
+            expect(onRedo).not.toHaveBeenCalled()
+        })
+
+        it('keeps a group when only some members apply nothing', async () => {
+            const manager = createUndoManager()
+            const undo = vi.fn()
+            manager.push({ undo: () => false, redo: vi.fn(), groupId: 'g' })
+            manager.push({ undo, redo: vi.fn(), groupId: 'g' })
+
+            await manager.undo()
+
+            expect(undo).toHaveBeenCalledTimes(1)
+            expect(manager.canRedo).toBe(true)
+        })
+
+        it('drops a group when every member applies nothing', async () => {
+            const manager = createUndoManager()
+            manager.push({ undo: () => false, redo: vi.fn(), groupId: 'g' })
+            manager.push({
+                undo: async () => false,
+                redo: vi.fn(),
+                groupId: 'g',
+            })
+
+            await manager.undo()
+
+            expect(manager.canUndo).toBe(false)
+            expect(manager.canRedo).toBe(false)
+        })
+    })
 })
