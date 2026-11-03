@@ -17,6 +17,7 @@ import type {
     CollectionState,
     DeepPartial,
     FirestoreObject,
+    RejectedCreateContext,
     Subscriber,
     Unsubscribe,
     UpdateOptions,
@@ -184,6 +185,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         retryOnError = false,
         retryInterval = 5000,
         schema,
+        validateCreate = (data: TData) =>
+            schema ? schema.safeParse(data).success : false,
     } = definition
 
     const isReadOnly = readOnly ?? definitionReadOnly ?? false
@@ -318,9 +321,53 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         }
     }
 
+    type UpdateDiff = WithFieldValue<DeepPartial<Record<string, TData>>>
+
+    /**
+     * How a write reached updateState. `restoreId` names the one document an
+     * add()/remove() undo or redo restores whole, so it may be created without
+     * validateCreate.
+     */
+    interface WriteSource {
+        source: RejectedCreateContext['source']
+        restoreId?: string
+    }
+
+    /**
+     * Drop every document the write would create that is not a valid whole
+     * document, and report it. A partial diff for an id that is not in the
+     * collection (an undo of an edit to a doc another client deleted, say)
+     * would otherwise reach sync() and be written with batch.set.
+     */
+    const dropRejectedCreates = (
+        base: Record<string, TData>,
+        next: Record<string, TData>,
+        { source, restoreId }: WriteSource
+    ): Record<string, TData> => {
+        const rejected = Object.keys(next).filter(
+            (docId) =>
+                !(docId in base) &&
+                docId !== restoreId &&
+                !validateCreate(next[docId] as TData)
+        )
+        if (!rejected.length) return next
+        const kept = { ...next }
+        for (const docId of rejected) {
+            store.reportRejectedCreate({
+                path: collectionPath,
+                id: docId,
+                data: next[docId] as FirestoreObject,
+                source,
+            })
+            delete kept[docId]
+        }
+        return kept
+    }
+
     const updateState = (
-        diff: WithFieldValue<DeepPartial<Record<string, TData>>>,
-        undoOptions: UpdateOptions = {}
+        diff: UpdateDiff,
+        undoOptions: UpdateOptions = {},
+        writeSource: WriteSource = { source: 'update' }
     ) => {
         if (isReadOnly) return
         if (state.syncState === undefined) {
@@ -335,11 +382,15 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // applyDiff copies only the changed documents, so every untouched
         // document keeps its identity for downstream memoization.
         const rawBase = state.localState ?? state.syncState ?? {}
-        const newLocalState = withDocIds(
-            applyDiff(
-                rawBase as FirestoreObject,
-                diff as WithFieldValue<DeepPartial<FirestoreObject>>
-            ) as Record<string, TData>
+        const newLocalState = dropRejectedCreates(
+            rawBase,
+            withDocIds(
+                applyDiff(
+                    rawBase as FirestoreObject,
+                    diff as WithFieldValue<DeepPartial<FirestoreObject>>
+                ) as Record<string, TData>
+            ),
+            writeSource
         )
 
         // No-op collapse (§3): a write whose merged result equals the current
@@ -363,8 +414,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo' }),
+                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo' }),
                 undoOptions
             )
         }
@@ -433,7 +484,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         // exists with that data) but no write/undo/notify is produced.
         if (valuesEqualForNoOp(currentData, newLocalState)) return id
 
-        // Push undo eagerly. Inverse diff deletes the just-added doc.
+        // Push undo eagerly. Inverse diff deletes the just-added doc. Redo of
+        // a new id replays the whole document, so it may recreate it.
         if (undoOptions?.undoable !== false && onPushUndo) {
             const undoDiff = computeDiff(
                 newLocalState as FirestoreObject,
@@ -443,9 +495,10 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 currentData as FirestoreObject,
                 newLocalState as FirestoreObject
             )
+            const restoreId = id in currentData ? undefined : id
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo' }),
+                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo', restoreId }),
                 undoOptions
             )
         }
@@ -471,7 +524,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const newLocalState = { ...currentData }
         delete newLocalState[id]
 
-        // Push undo eagerly. Inverse diff re-adds the removed doc.
+        // Push undo eagerly. Inverse diff re-adds the whole removed doc.
         if (undoOptions?.undoable !== false && onPushUndo) {
             const undoDiff = computeDiff(
                 newLocalState as FirestoreObject,
@@ -482,8 +535,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff, { undoable: false }, { source: 'undo', restoreId: id }),
+                () => updateState(redoDiff as UpdateDiff, { undoable: false }, { source: 'redo' }),
                 undoOptions
             )
         }
@@ -788,7 +841,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
 
     const buildHandle = (): CollectionHandle<TData> => ({
         data: getMergedData(),
-        update: updateState,
+        update: (diff, options) => updateState(diff, options),
         add: addDocument,
         remove: removeDocument,
         isLoaded: state.isActive && !state.isLoading,

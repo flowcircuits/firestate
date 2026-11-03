@@ -221,6 +221,12 @@ Preserve these unless the task explicitly changes them.
   new snapshot was deleted remotely → drop it (and any local edits to it) and
   never recreate it. A doc absent from the baseline but present locally is a
   genuine create (`batch.set`); an existing doc uses `batch.update`.
+- Collections never create a document from a partial diff. A new id reaches
+  `localState` only through `add()`, the undo/redo of `add()`/`remove()` (whole
+  documents), or an `update()` whose merged document passes `validateCreate`
+  (default `schema.safeParse`; no schema → rejected). Other new ids are dropped
+  in `updateState` and reported to `onRejectedCreate`. This covers undo/redo of
+  partial edits to documents deleted outside this client's undo stack.
 
 ## Test Guide
 
@@ -240,6 +246,8 @@ Add or update focused tests near the behavior being changed:
   and rebases): `src/__tests__/structural-sharing.test.ts`.
 - Snapshot burst batching: `src/__tests__/snapshot-batching.test.ts`.
 - Undo behavior: `src/utils/undo.test.ts`.
+- Partial-diff create guard (`validateCreate`, `onRejectedCreate`):
+  `src/__tests__/partial-create.test.ts`.
 - Store/global sync behavior: `src/core/store.test.ts`.
 - React hook surface — selectors, shared subscriptions, `queryConstraints`
   identity: `src/react/selectors.test.ts`, `src/react/shared-subscription.test.ts`,

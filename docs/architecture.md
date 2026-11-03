@@ -327,6 +327,15 @@ new snapshot was deleted remotely, so it is dropped from `localState` along with
 any pending edits to it and is never recreated — even if this client was editing
 it when the delete landed.
 
+A collection write can create a document only as a whole document. In
+`updateState`, every id the merged diff adds to the collection must pass
+`validateCreate` (default `schema.safeParse(doc).success`; no schema → rejected).
+`add()` and the undo/redo of `add()`/`remove()` name the one id they restore
+whole, which skips the check. A failing id is removed from the new
+`localState` before the undo entry is computed and reported through
+`store.reportRejectedCreate` (`onRejectedCreate`). So a partial undo/redo for a
+document deleted outside this client's undo stack never reaches `batch.set`.
+
 Collection sync uses a Firestore write batch:
 
 - new docs (absent from the server) use `batch.set`

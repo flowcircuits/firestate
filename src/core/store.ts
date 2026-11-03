@@ -2,6 +2,7 @@ import type { Firestore } from 'firebase/firestore'
 import type {
     ErrorContext,
     FirestateConfig,
+    RejectedCreateContext,
     Subscriber,
     UndoAction,
     Unsubscribe,
@@ -52,6 +53,12 @@ export interface FirestateStore {
     setOnUndo: (handler?: (action: UndoAction) => void) => void
     /** Replace the successful-redo handler without recreating the store. */
     setOnRedo: (handler?: (action: UndoAction) => void) => void
+    /** Report a collection create that firestate dropped */
+    reportRejectedCreate: (context: RejectedCreateContext) => void
+    /** Replace the rejected-create handler without recreating the store. */
+    setOnRejectedCreate: (
+        handler?: (context: RejectedCreateContext) => void
+    ) => void
     /** Subscribe to sync state changes */
     subscribeToSyncState: (fn: Subscriber<boolean>) => Unsubscribe
     /** Report a document/collection sync state change */
@@ -98,6 +105,7 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
     let getUndoPath = config.getUndoPath
     let onUndo = config.onUndo
     let onRedo = config.onRedo
+    let onRejectedCreate = config.onRejectedCreate
 
     const undoManager = createUndoManager({
         maxLength: maxUndoLength,
@@ -181,6 +189,21 @@ export const createStore = (config: FirestateConfig): FirestateStore => {
 
         setOnRedo: (handler) => {
             onRedo = handler
+        },
+
+        reportRejectedCreate: (context) => {
+            if (onRejectedCreate) {
+                onRejectedCreate(context)
+            } else {
+                console.warn(
+                    `[firestate] Rejected a create of ${context.path}/${context.id} from ${context.source}: ` +
+                        `the diff is not a valid whole document. Use add() to create documents.`
+                )
+            }
+        },
+
+        setOnRejectedCreate: (handler) => {
+            onRejectedCreate = handler
         },
 
         subscribeToSyncState: (fn) => {

@@ -160,6 +160,11 @@ if (project.data) {
 Document `update` is ignored when there is no current data. This prevents
 partial diffs from creating broken documents.
 
+Collections apply the same rule per id: a collection `update` entry for an id
+that is not in the collection is dropped unless the merged document passes the
+collection's `validateCreate` (default: the `schema`). Create documents with
+`add()`. Watch rejected creates with `onRejectedCreate`.
+
 ## Lazy Collections
 
 Lazy collections do not attach a Firestore listener until `load()` is called.

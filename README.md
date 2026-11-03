@@ -347,6 +347,26 @@ project.set({ name: 'New Project', createdAt: Date.now() })
 
 This distinction is important for collaborative applications where multiple users may be editing simultaneously.
 
+#### Collections never create a document from a partial diff
+
+A collection `update(diff)` entry for an id that is not in the collection would create that document. Firestate only allows it when the merged document passes the collection's `validateCreate` — by default `schema.safeParse(doc).success`, or rejected when the collection has no schema. A rejected entry is dropped (the rest of the diff still applies) and reported to `onRejectedCreate` on the provider or store (default: `console.warn`). This covers undo/redo too: undoing an edit to a document another client deleted does not write a fragment of it. `add()`, and undo/redo of `add()` / `remove()`, restore whole documents and skip the check.
+
+```tsx
+const tasks = col({
+    path: 'taskLists/{listId}/tasks',
+    schema: TaskSchema,
+    // Optional: replace the schema check for update()-creates.
+    validateCreate: (task) => typeof task.title === 'string',
+})
+
+<FirestateProvider
+    firestore={db}
+    onRejectedCreate={({ path, id, source }) =>
+        analytics.track('rejected_create', { path, id, source })
+    }
+>
+```
+
 ### Undo/Redo
 
 Undo tracking is opt-in per resource. Enable it on the hook, then each update

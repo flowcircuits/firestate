@@ -349,6 +349,19 @@ export interface CollectionDefinition<TData extends FirestoreObject> {
      * {@link DocumentDefinition.schema} for the full contract.
      */
     schema?: ZodType<TData>
+    /**
+     * Decide whether `update(diff)` may create a document whose id is not in
+     * the collection. Receives the merged new document (with `id`). Return
+     * `false` to drop that entry and report it to
+     * {@link FirestateConfig.onRejectedCreate}.
+     *
+     * Defaults to `schema.safeParse(data).success` when `schema` is set, and
+     * to rejecting every such create when it is not. `add()`, and undo/redo of
+     * `add()`/`remove()`, restore whole documents and skip this check. A
+     * partial diff for an unknown id (for example an undo of an edit to a
+     * document another client deleted) never becomes a document by accident.
+     */
+    validateCreate?(data: TData): boolean
     /** Collection path (can include path segments) */
     path: string | ((params: Record<string, string>) => string)
     /** Debounce interval for autosave (ms), default 1000 */
@@ -400,6 +413,27 @@ export interface FirestateConfig {
     onRedo?: (action: UndoAction) => void
     /** Custom error handler */
     onError?: (error: Error, context: ErrorContext) => void
+    /**
+     * Called when a collection write tried to create a document from a diff
+     * that is not a valid whole document, and firestate dropped it. See
+     * {@link CollectionDefinition.validateCreate}. Defaults to `console.warn`.
+     */
+    onRejectedCreate?: (context: RejectedCreateContext) => void
+}
+
+/**
+ * A document create that firestate refused. The write for this id was dropped;
+ * the rest of the diff still applied.
+ */
+export interface RejectedCreateContext {
+    /** Collection path */
+    path: string
+    /** Id of the document that was not created */
+    id: string
+    /** The merged document that failed validation (with `id`) */
+    data: FirestoreObject
+    /** The write that produced it: a handle `update`, or an undo/redo replay */
+    source: 'update' | 'undo' | 'redo'
 }
 
 /**
