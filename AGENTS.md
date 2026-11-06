@@ -121,10 +121,17 @@ Preserve these unless the task explicitly changes them.
   (`update`/`set`/`delete`/`add`/`remove`/`load`/`sync`) and `ref` — status
   fields are absent unless the selector folds them in, so a status flip the
   selector ignores (e.g. `isSynced` churning on a save) cannot re-render it.
-  Writers/`ref` are read live from the subscription (the snapshot is the state;
-  the handle is read separately), not from the memoized selection, so a rebuilt
-  subscription always surfaces its own methods even when the selected slice is
-  value-equal.
+  Writers/`ref` are read from the subscription's handle (the snapshot is the
+  state; the handle is read separately), not from the memoized selection.
+- Every method on a hook's handle (`update`/`set`/`delete`/`add`/`remove`/
+  `load`/`sync`) looks up the facade's *current* subscription when it is
+  called, not when the hook renders, and keeps one identity per resolved
+  `shared` facade (safe in `useCallback`/`useEffect` deps). The facade can switch
+  subscriptions after render — `acquire()` adopts a sibling's committed entry,
+  or rebuilds a stopped one after refCount hit 0 — and a value-equal slice never
+  re-runs the handle memo. Methods copied at render time therefore wrote into an
+  abandoned subscription, which dropped the write for want of a snapshot
+  (HSF-1642). Never copy methods off `getHandle()` into the returned handle.
 - A hook called WITHOUT a selector returns the **sync-agnostic default handle**:
   `{ data, isLoaded, error, ...writers, ref }` for a document, plus `isActive`
   for a collection. It deliberately drops `isSynced` (and `isLoading`, folded
