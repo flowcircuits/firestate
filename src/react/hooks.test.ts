@@ -43,12 +43,27 @@ import {
     type Firestore,
     type QueryConstraint,
 } from 'firebase/firestore'
-import { useCollection, FirestateContext } from './hooks'
-import { defineCollection } from '../registry/schema'
+import {
+    useCollection,
+    useCollectionLoadingStatus,
+    useDocument,
+    useDocumentLoadingStatus,
+    FirestateContext,
+} from './hooks'
+import { defineCollection, defineDocument } from '../registry/schema'
 import { createFirestate, col } from '../registry/firestate'
 import { z } from 'zod'
 import { createStore, type FirestateStore } from '../core/store'
-import type { CollectionHandle, FirestoreObject, LoadingStatus } from '../types'
+import type {
+    CollectionHandle,
+    CollectionState,
+    DocumentHandle,
+    DocumentState,
+    FirestoreObject,
+    LoadingStatus,
+    SelectedCollectionHandle,
+    SelectedDocumentHandle,
+} from '../types'
 
 interface Station extends FirestoreObject {
     name: string
@@ -679,5 +694,374 @@ describe('createFirestate .select shares one collection listener (real queries)'
         })
         expect(listeners.length).toBe(1)
         expect(loading).toEqual({ isLoading: true, isLoaded: false })
+    })
+})
+
+describe('hook methods resolve the live subscription at call time', () => {
+    // Regression for HSF-1642 (flowcircuits/hvakr#8248). Hooks on one resource
+    // that render together each build a provisional subscription; on commit,
+    // every hook after the first adopts the first one's entry. The returned
+    // handle used to copy its methods off the provisional subscription at render
+    // time and re-copy them only when its selected slice changed. A hook whose
+    // slice is value-equal across the first snapshot (an empty collection's
+    // `{}`, a missing document's `undefined`, a writer-only selector) therefore
+    // kept calling the abandoned subscription, which has no snapshot and drops
+    // every write. Only onSnapshot is mocked; queries and refs are real.
+    interface Zone extends FirestoreObject {
+        name: string
+    }
+    const zones = defineCollection<Zone>({ path: 'zones', lazy: true })
+    const eagerZones = defineCollection<Zone>({ path: 'eagerZones' })
+    const zone = defineDocument<Zone>({ collection: 'zones', id: 'z1' })
+
+    type ColSelector = (s: CollectionState<Zone>) => unknown
+    type DocSelector = (s: DocumentState<Zone>) => unknown
+    const allData: ColSelector = (s) => s.data
+    const allDocData: DocSelector = (s) => s.data
+    // A hook that only writes (a "Delete" button): its slice never changes.
+    const writerOnly = (): null => null
+
+    let store: FirestateStore
+    const renderers: ReactTestRenderer[] = []
+    let listeners: Array<{
+        deliver: (snapshot: unknown) => void
+        unsubscribe: ReturnType<typeof vi.fn>
+    }>
+    // The latest value each probe rendered.
+    let status: LoadingStatus
+    let writer: SelectedCollectionHandle<Zone, unknown>
+    let reader: CollectionHandle<Zone>
+    let docWriter: SelectedDocumentHandle<Zone, unknown>
+    let docReader: DocumentHandle<Zone>
+
+    const onSnapshotMock = onSnapshot as unknown as ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        vi.useFakeTimers()
+        store = createStore({ firestore, autosave: 0 })
+        listeners = []
+        onSnapshotMock.mockImplementation(
+            (_ref: unknown, onNext: (snapshot: unknown) => void) => {
+                const unsubscribe = vi.fn()
+                listeners.push({ deliver: onNext, unsubscribe })
+                return unsubscribe
+            }
+        )
+    })
+
+    afterEach(() => {
+        act(() => {
+            renderers.splice(0).forEach((r) => r.unmount())
+        })
+        vi.useRealTimers()
+    })
+
+    // Status hook FIRST, writer second: the order that broke Create Zone.
+    const StatusThenWriter = (p: {
+        definition: typeof zones
+        selector: ColSelector
+        readOnly?: boolean
+    }) => {
+        status = useCollectionLoadingStatus({ definition: p.definition })
+        writer = useCollection({
+            definition: p.definition,
+            selector: p.selector,
+            readOnly: p.readOnly,
+        })
+        return null
+    }
+
+    const WriterThenStatus = (p: {
+        definition: typeof zones
+        selector: ColSelector
+    }) => {
+        writer = useCollection({
+            definition: p.definition,
+            selector: p.selector,
+        })
+        status = useCollectionLoadingStatus({ definition: p.definition })
+        return null
+    }
+
+    const Reader = (p: { definition: typeof zones }) => {
+        reader = useCollection({ definition: p.definition })
+        return null
+    }
+
+    const DocStatusThenWriter = (p: { selector: DocSelector }) => {
+        status = useDocumentLoadingStatus({ definition: zone })
+        docWriter = useDocument({ definition: zone, selector: p.selector })
+        return null
+    }
+
+    const DocReader = () => {
+        docReader = useDocument({ definition: zone })
+        return null
+    }
+
+    const wrap = (node: ReactElement): ReactElement =>
+        createElement(FirestateContext.Provider, { value: store }, node)
+
+    const mount = (node: ReactElement): ReactTestRenderer => {
+        let renderer!: ReactTestRenderer
+        act(() => {
+            renderer = create(wrap(node))
+        })
+        renderers.push(renderer)
+        return renderer
+    }
+
+    /** Deliver a snapshot on the newest listener and settle minLoadTime. */
+    const deliver = (snapshot: unknown): void => {
+        act(() => {
+            listeners[listeners.length - 1]!.deliver(snapshot)
+            vi.runAllTimers()
+        })
+    }
+
+    const colSnap = (docs: Record<string, Zone>) => ({
+        docs: Object.entries(docs).map(([id, data]) => ({
+            id,
+            data: () => data,
+        })),
+    })
+
+    const docSnap = (data: Zone | null) => ({
+        exists: () => data !== null,
+        data: () => data ?? undefined,
+        metadata: { fromCache: false, hasPendingWrites: false },
+    })
+
+    /**
+     * Mount the writer tree, then a reader in its own renderer. The reader
+     * renders after the writer tree commits, so it resolves the committed entry
+     * directly; its `load()` is never stale, which pins any failure on the
+     * writer.
+     */
+    const loadCollection = (
+        writerTree: ReactElement,
+        docs: Record<string, Zone>
+    ): void => {
+        mount(writerTree)
+        mount(createElement(Reader, { definition: zones }))
+        act(() => reader.load())
+        expect(listeners).toHaveLength(1)
+        deliver(colSnap(docs))
+        expect(reader.isLoaded).toBe(true)
+        expect(status.isLoaded).toBe(true)
+    }
+
+    const loadDocument = (selector: DocSelector, data: Zone | null): void => {
+        mount(createElement(DocStatusThenWriter, { selector }))
+        mount(createElement(DocReader))
+        expect(listeners).toHaveLength(1)
+        deliver(docSnap(data))
+        expect(docReader.isLoaded).toBe(true)
+        expect(status.isLoaded).toBe(true)
+    }
+
+    it('collection, empty: update() from a writer mounted after a status hook reaches the live subscription', () => {
+        loadCollection(
+            createElement(StatusThenWriter, {
+                definition: zones,
+                selector: allData,
+            }),
+            {}
+        )
+
+        act(() => writer.update({ first: { name: 'x' } }))
+        expect(reader.data.first?.name).toBe('x')
+    })
+
+    it('collection, empty: add() from a writer mounted after a status hook reaches the live subscription', () => {
+        loadCollection(
+            createElement(StatusThenWriter, {
+                definition: zones,
+                selector: allData,
+            }),
+            {}
+        )
+
+        act(() => {
+            writer.add('first', { name: 'x' })
+        })
+        expect(reader.data.first?.name).toBe('x')
+    })
+
+    it('collection: remove() from a writer-only hook mounted after a status hook reaches the live subscription', () => {
+        // remove() needs an existing doc, and a slice that changes on the first
+        // snapshot re-copied the methods. A writer-only slice never changes.
+        loadCollection(
+            createElement(StatusThenWriter, {
+                definition: zones,
+                selector: writerOnly,
+            }),
+            { first: { name: 'x' } }
+        )
+
+        act(() => writer.remove('first'))
+        expect(reader.data.first).toBeUndefined()
+    })
+
+    it('document, missing: set() from a writer mounted after a status hook reaches the live subscription', () => {
+        // A missing doc's data is `undefined` before and after the snapshot.
+        loadDocument(allDocData, null)
+
+        act(() => docWriter.set({ name: 'x' }))
+        expect(docReader.data).toEqual({ name: 'x' })
+    })
+
+    it('document: update() from a writer-only hook mounted after a status hook reaches the live subscription', () => {
+        loadDocument(writerOnly, { name: 'a' })
+
+        act(() => docWriter.update({ name: 'b' }))
+        expect(docReader.data).toEqual({ name: 'b' })
+    })
+
+    it('read-only: load() reaches the live subscription and writers stay blocked', () => {
+        mount(
+            createElement(StatusThenWriter, {
+                definition: zones,
+                selector: writerOnly,
+                readOnly: true,
+            })
+        )
+        expect(listeners).toHaveLength(0)
+
+        // load() passes through the read-only facade to the ONE shared
+        // subscription, the same one the status hook reads.
+        act(() => writer.load())
+        expect(listeners).toHaveLength(1)
+        expect(status).toEqual({ isLoading: true, isLoaded: false })
+        deliver(colSnap({ first: { name: 'x' } }))
+        expect(status).toEqual({ isLoading: false, isLoaded: true })
+
+        mount(createElement(Reader, { definition: zones }))
+        act(() => {
+            writer.update({ first: { name: 'nope' } })
+            writer.add('second', { name: 'nope' })
+            writer.remove('first')
+        })
+        expect(Object.keys(reader.data)).toEqual(['first'])
+        expect(reader.data.first?.name).toBe('x')
+        expect(store.isSynced).toBe(true)
+    })
+
+    it('replacement: a method held across refCount 0 and re-acquire calls the rebuilt subscription', () => {
+        // Re-keying the screen unmounts every old hook and mounts new ones in
+        // ONE commit. The new hooks render first and resolve the still-live
+        // entry; then the old hooks release (refCount 0 stops the entry and
+        // evicts it) and the new ones re-acquire it, which rebuilds `ent.sub`.
+        // The new handles were built at render time, from the stopped sub.
+        // (StrictMode's effect double-run and offscreen take the same path.)
+        // Behavior chosen: the held method keeps its identity AND reaches the
+        // rebuilt subscription, because identity is tied to the facade
+        // (`shared`), which survives the rebuild.
+        const Screen = () => {
+            writer = useCollection({
+                definition: eagerZones,
+                selector: allData,
+            })
+            reader = useCollection({ definition: eagerZones })
+            return null
+        }
+        const r = mount(createElement(Screen, { key: 'a' }))
+        deliver(colSnap({}))
+        expect(reader.isLoaded).toBe(true)
+
+        act(() => r.update(wrap(createElement(Screen, { key: 'b' }))))
+        // The first subscription stopped at refCount 0; the second is the one
+        // rebuilt on re-acquire.
+        expect(listeners).toHaveLength(2)
+        expect(listeners[0]!.unsubscribe).toHaveBeenCalledTimes(1)
+        const held = writer.update
+
+        deliver(colSnap({}))
+        expect(reader.isLoaded).toBe(true)
+
+        act(() => held({ first: { name: 'x' } }))
+        expect(reader.data.first?.name).toBe('x')
+        expect(writer.update).toBe(held)
+    })
+
+    it('keeps method identity across rerenders while the resource is unchanged', () => {
+        // Before the fix, the first snapshot re-ran the merge memo and swapped
+        // every method from the provisional to the adopted subscription: a new
+        // identity mid-life that re-fired effects depending on it.
+        let full!: CollectionHandle<Zone>
+        const StatusThenDefaultWriter = (p: { definition: typeof zones }) => {
+            status = useCollectionLoadingStatus({ definition: p.definition })
+            full = useCollection({ definition: p.definition })
+            return null
+        }
+        const r = mount(
+            createElement(StatusThenDefaultWriter, { definition: eagerZones })
+        )
+        const held = {
+            update: full.update,
+            add: full.add,
+            remove: full.remove,
+            load: full.load,
+            sync: full.sync,
+        }
+
+        // Rerenders: a snapshot, a local edit, and a parent rerender.
+        deliver(colSnap({ first: { name: 'x' } }))
+        act(() => full.update({ first: { name: 'y' } }))
+        act(() =>
+            r.update(
+                wrap(
+                    createElement(StatusThenDefaultWriter, {
+                        definition: eagerZones,
+                    })
+                )
+            )
+        )
+
+        expect(full.update).toBe(held.update)
+        expect(full.add).toBe(held.add)
+        expect(full.remove).toBe(held.remove)
+        expect(full.load).toBe(held.load)
+        expect(full.sync).toBe(held.sync)
+        expect(full.data.first?.name).toBe('y')
+
+        // A different resource resolves a different `shared`: new methods.
+        act(() =>
+            r.update(
+                wrap(
+                    createElement(StatusThenDefaultWriter, {
+                        definition: zones,
+                    })
+                )
+            )
+        )
+        expect(full.update).not.toBe(held.update)
+    })
+
+    it('control: writer mounted before the status hook', () => {
+        loadCollection(
+            createElement(WriterThenStatus, {
+                definition: zones,
+                selector: allData,
+            }),
+            {}
+        )
+
+        act(() => writer.update({ first: { name: 'x' } }))
+        expect(reader.data.first?.name).toBe('x')
+    })
+
+    it('control: collection with data in its first snapshot', () => {
+        loadCollection(
+            createElement(StatusThenWriter, {
+                definition: zones,
+                selector: allData,
+            }),
+            { first: { name: 'a' } }
+        )
+
+        act(() => writer.update({ first: { name: 'b' } }))
+        expect(reader.data.first?.name).toBe('b')
     })
 })

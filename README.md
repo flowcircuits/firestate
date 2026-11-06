@@ -756,6 +756,12 @@ const id = add({ name: 'New Space', area: 500, floor: 1 })
 remove('oldSpaceId')
 ```
 
+Handle methods (`update`, `set`, `delete`, `add`, `remove`, `load`, `sync`) keep
+their identity while the hook's resource (definition, path, and query) stays the
+same, so they are safe in `useCallback` and `useEffect` dependency lists. Every
+call reaches the resource's live subscription, whatever order the hooks on that
+resource mounted in.
+
 #### Selecting a slice (`selector` + `isEqual`)
 
 By default a component re-renders when the data, the load state (`isLoaded`), or
