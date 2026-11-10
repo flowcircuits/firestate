@@ -257,6 +257,19 @@ const defaultDataEqual = valuesEqualForNoOp as <TSelected>(
 ) => boolean
 
 /**
+ * A stand-in for `getHandle()[key]` that looks the method up when it is
+ * CALLED, not when the hook renders. The facade behind `getHandle` can switch
+ * subscriptions after render: `acquire()` adopts a sibling's committed entry, or
+ * rebuilds the entry's stopped subscription. A copied method would still point
+ * at the abandoned subscription, which has no snapshot and drops every write.
+ * Built once per `getHandle` (that is, per `shared`), so identity is stable for
+ * `useCallback`/`useEffect` deps.
+ */
+const callLive = <H, K extends keyof H>(getHandle: () => H, key: K): H[K] =>
+    ((...args: unknown[]) =>
+        (getHandle()[key] as (...a: unknown[]) => unknown)(...args)) as H[K]
+
+/**
  * Context for providing the Firestate store
  */
 export const FirestateContext = createContext<FirestateStore | null>(null)
@@ -574,9 +587,22 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
         equal
     )
 
-    // Re-wrap into a handle. Methods and `ref` are read *live* via getHandle()
-    // (keyed on `shared`) so a rebuild always hands back the new subscription's
-    // methods even when the projection was value-equal (see DefaultSelection).
+    // Methods resolve the facade's CURRENT subscription on each call (see
+    // callLive), not the one it had at render time. One set per `shared`, so
+    // identity holds across rerenders.
+    const methods = useMemo(
+        () => ({
+            update: callLive(getHandle, 'update'),
+            set: callLive(getHandle, 'set'),
+            delete: callLive(getHandle, 'delete'),
+            sync: callLive(getHandle, 'sync'),
+        }),
+        [getHandle]
+    )
+
+    // Re-wrap into a handle. `ref` is read via getHandle() (keyed on `shared`)
+    // so a rebuild hands back the new subscription's ref even when the
+    // projection was value-equal (see DefaultSelection).
     //
     // Keyed on selector *presence*, never its identity: an inline selector is a
     // fresh function each render yet yields a value-equal `selection`, so the
@@ -584,32 +610,32 @@ export function useDocument<TData extends FirestoreObject, TSelected>(
     // the handle's shape — selected vs full — depends on the selector.
     const hasSelector = selector != null
     return useMemo(() => {
-        const handle = getHandle()
+        const { ref } = getHandle()
         if (hasSelector) {
             // Pure selected handle: `data` is the slice; status is intentionally
             // absent (select it to react to it). Writers act on the full doc.
             return {
                 data: selection as TSelected,
-                update: handle.update,
-                set: handle.set,
-                delete: handle.delete,
-                sync: handle.sync,
-                ref: handle.ref,
+                update: methods.update,
+                set: methods.set,
+                delete: methods.delete,
+                sync: methods.sync,
+                ref,
             }
         }
         // Default handle: sync-agnostic — data + isLoaded + error (no isSynced).
         const s = selection as DefaultSelection<TData | undefined>
         return {
             data: s.data,
-            update: handle.update,
-            set: handle.set,
-            delete: handle.delete,
+            update: methods.update,
+            set: methods.set,
+            delete: methods.delete,
             isLoaded: s.isLoaded,
-            sync: handle.sync,
+            sync: methods.sync,
             error: s.error,
-            ref: handle.ref,
+            ref,
         }
-    }, [selection, getHandle, hasSelector])
+    }, [selection, getHandle, hasSelector, methods])
 }
 
 /**
@@ -928,40 +954,52 @@ export function useCollection<TData extends FirestoreObject, TSelected>(
         equal
     )
 
+    // See useDocument: methods resolve the current subscription per call.
+    const methods = useMemo(
+        () => ({
+            update: callLive(getHandle, 'update'),
+            add: callLive(getHandle, 'add'),
+            remove: callLive(getHandle, 'remove'),
+            load: callLive(getHandle, 'load'),
+            sync: callLive(getHandle, 'sync'),
+        }),
+        [getHandle]
+    )
+
     // See useDocument: keyed on selector *presence*, not identity, so an inline
-    // selector still yields a stable handle. Methods/`ref` read live from
-    // getHandle; only the handle's shape depends on the selector.
+    // selector still yields a stable handle. Only the handle's shape depends on
+    // the selector.
     const hasSelector = selector != null
     return useMemo(() => {
-        const handle = getHandle()
+        const { ref } = getHandle()
         if (hasSelector) {
             // Pure selected handle: status is absent (select it to react to it);
             // writers and `load` act on the full collection.
             return {
                 data: selection as TSelected,
-                update: handle.update,
-                add: handle.add,
-                remove: handle.remove,
-                load: handle.load,
-                sync: handle.sync,
-                ref: handle.ref,
+                update: methods.update,
+                add: methods.add,
+                remove: methods.remove,
+                load: methods.load,
+                sync: methods.sync,
+                ref,
             }
         }
         // Default handle: sync-agnostic — data + isLoaded + isActive + error.
         const s = selection as DefaultSelection<Record<string, TData>>
         return {
             data: s.data,
-            update: handle.update,
-            add: handle.add,
-            remove: handle.remove,
+            update: methods.update,
+            add: methods.add,
+            remove: methods.remove,
             isLoaded: s.isLoaded,
             isActive: s.isActive ?? false,
-            load: handle.load,
-            sync: handle.sync,
+            load: methods.load,
+            sync: methods.sync,
             error: s.error,
-            ref: handle.ref,
+            ref,
         }
-    }, [selection, getHandle, hasSelector])
+    }, [selection, getHandle, hasSelector, methods])
 }
 
 // ---------------------------------------------------------------------------

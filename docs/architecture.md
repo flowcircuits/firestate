@@ -240,12 +240,19 @@ Important details:
   or the standalone `useDocumentSyncStatus`/… helpers) are thin readers over
   `useDocument`/`useCollection` with a fixed read-only selector, so they resolve
   the same shared entry — one listener — and read the same optimistic state.
-- Either way the projection deliberately excludes methods and `ref`; those are
-  read *live* from the current subscription's `getHandle()` at render time (a
-  separate read from the state snapshot). Otherwise a subscription rebuild whose
-  projection happened to be value-equal would be collapsed by `isEqual`, and the
-  hook would keep handing back the previous subscription's methods (e.g. `load()`
-  against torn-down constraints).
+- Either way the projection deliberately excludes methods and `ref`. Otherwise a
+  subscription rebuild whose projection happened to be value-equal would be
+  collapsed by `isEqual`, and the hook would keep handing back the previous
+  subscription's methods (e.g. `load()` against torn-down constraints). `ref` is
+  read from `getHandle()` when the handle is built. Methods are wrappers built
+  once per `shared` facade that call `getHandle()[method]` when invoked, so they
+  always reach the facade's *current* subscription. This matters because the
+  facade can switch subscriptions after render without the projection changing:
+  hooks that render together each build a provisional entry, and `acquire()`
+  makes every hook after the first adopt the first one's entry. Likewise, a
+  re-acquire after refCount hit 0 rebuilds the entry's stopped subscription.
+  Methods copied at render time would keep calling the abandoned subscription,
+  which has no snapshot and drops the write.
 - Disabled hooks do not resolve params or create subscriptions.
 - Toggling `undoable` should not rebuild Firestore listeners.
 - `queryConstraints` are keyed by semantic query identity, not array
