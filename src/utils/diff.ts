@@ -42,6 +42,19 @@ const isFirestoreOpaque = (
     )
 }
 
+/**
+ * Compare two Firestore opaque values with `.isEqual`, but only when both
+ * have the same prototype. Some SDK types (`VectorValue`, `Bytes`) read the
+ * argument's private fields without a type check, so their `.isEqual` throws
+ * when it gets a value of another kind (for example a `serverTimestamp()`
+ * sentinel).
+ */
+const opaqueEqual = (a: unknown, b: unknown): boolean =>
+    isFirestoreOpaque(a) &&
+    isFirestoreOpaque(b) &&
+    Object.getPrototypeOf(a) === Object.getPrototypeOf(b) &&
+    a.isEqual(b)
+
 // Reference sentinels used to identify specific FieldValue kinds. The
 // Firebase SDK does not export the sentinel subclasses; the only stable
 // way to ask "is this a serverTimestamp / deleteField?" is to construct a
@@ -51,10 +64,10 @@ const SERVER_TIMESTAMP_REF = serverTimestamp()
 const DELETE_FIELD_REF = deleteField()
 
 const isDeleteField = (value: unknown): boolean =>
-    isFirestoreOpaque(value) && value.isEqual(DELETE_FIELD_REF)
+    opaqueEqual(value, DELETE_FIELD_REF)
 
 const isServerTimestamp = (value: unknown): boolean =>
-    isFirestoreOpaque(value) && value.isEqual(SERVER_TIMESTAMP_REF)
+    opaqueEqual(value, SERVER_TIMESTAMP_REF)
 
 /**
  * Check if two values are deeply equal
@@ -73,7 +86,7 @@ export const isDeepEqual = (a: unknown, b: unknown): boolean => {
     // Timestamp, DocumentReference, GeoPoint, Bytes, VectorValue and
     // every FieldValue sentinel kind.
     if (isFirestoreOpaque(a) && isFirestoreOpaque(b)) {
-        return a.isEqual(b)
+        return opaqueEqual(a, b)
     }
 
     if (isPlainObject(a) && isPlainObject(b)) {
@@ -110,9 +123,7 @@ export const valuesEqualForNoOp = (a: unknown, b: unknown): boolean => {
 
     // Opaque Firestore types compare by their own identity semantics.
     if (isFirestoreOpaque(a) || isFirestoreOpaque(b)) {
-        return (
-            isFirestoreOpaque(a) && isFirestoreOpaque(b) && a.isEqual(b)
-        )
+        return opaqueEqual(a, b)
     }
 
     if (Array.isArray(a) || Array.isArray(b)) {
@@ -213,10 +224,7 @@ export const computeDiff = <T extends FirestoreObject>(
         // through unchanged so sentinels survive into the write payload
         // for the server to expand.
         if (isFirestoreOpaque(toValue)) {
-            if (
-                !isFirestoreOpaque(fromValue) ||
-                !toValue.isEqual(fromValue)
-            ) {
+            if (!opaqueEqual(toValue, fromValue)) {
                 diff[key] = toValue
             }
             continue
@@ -277,7 +285,7 @@ export const dropCommittedSentinels = (
         const value = edits[key]
         const sent = committed[key]
         if (isFirestoreOpaque(value)) {
-            if (isFirestoreOpaque(sent) && value.isEqual(sent)) {
+            if (opaqueEqual(value, sent)) {
                 delete edits[key]
             }
         } else if (isPlainObject(value) && isPlainObject(sent)) {
@@ -618,7 +626,7 @@ export const replaceEqualDeep = <T>(prev: unknown, next: T): T => {
     if (Object.is(prev, next)) return next
 
     if (isFirestoreOpaque(prev) && isFirestoreOpaque(next)) {
-        return (prev.isEqual(next) ? prev : next) as T
+        return (opaqueEqual(prev, next) ? prev : next) as T
     }
 
     if (Array.isArray(prev) && Array.isArray(next)) {
