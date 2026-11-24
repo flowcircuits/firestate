@@ -659,7 +659,7 @@ describe('diff utilities', () => {
                 () => Bytes.fromUint8Array(new Uint8Array([3, 4])),
             ],
         ] as const
-        const others = () => [
+        const others = [
             serverTimestamp(),
             deleteField(),
             Timestamp.fromMillis(0),
@@ -685,8 +685,9 @@ describe('diff utilities', () => {
             })
 
             it('compares unequal to every other Firestore type without a throw', () => {
-                for (const other of others()) {
-                    if (Object.getPrototypeOf(other) === Object.getPrototypeOf(make())) continue
+                const proto = Object.getPrototypeOf(make())
+                for (const other of others) {
+                    if (Object.getPrototypeOf(other) === proto) continue
                     expect(isDeepEqual(make(), other)).toBe(false)
                     expect(isDeepEqual(other, make())).toBe(false)
                     expect(valuesEqualForNoOp(make(), other)).toBe(false)
