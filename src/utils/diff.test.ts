@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
+    Bytes,
     deleteField,
     GeoPoint,
     serverTimestamp,
     Timestamp,
+    vector,
 } from 'firebase/firestore'
 import {
     computeDiff,
@@ -23,8 +25,10 @@ import {
     extractDiffValue,
     createDiffAtPath,
     computeUndoDiff,
+    dropCommittedSentinels,
     freezeDeepInDevelopment,
     replaceEqualDeep,
+    valuesEqualForNoOp,
 } from './diff'
 
 describe('diff utilities', () => {
@@ -640,6 +644,87 @@ describe('diff utilities', () => {
             const diff = computeDiff(from, to) as Record<string, unknown>
 
             expect(diff.home).toBe(to.home)
+        })
+    })
+
+    // VectorValue.isEqual and Bytes.isEqual read the argument's private fields
+    // without a type check, so they throw when compared with a value of another
+    // Firestore type. Every helper must compare across types without a crash.
+    describe('Firestore value types with unguarded isEqual', () => {
+        const cases = [
+            ['VectorValue', () => vector([1, 2, 3]), () => vector([4, 5, 6])],
+            [
+                'Bytes',
+                () => Bytes.fromUint8Array(new Uint8Array([1, 2])),
+                () => Bytes.fromUint8Array(new Uint8Array([3, 4])),
+            ],
+        ] as const
+        const others = [
+            serverTimestamp(),
+            deleteField(),
+            Timestamp.fromMillis(0),
+            new GeoPoint(1, 2),
+            vector([1, 2, 3]),
+            Bytes.fromUint8Array(new Uint8Array([1, 2])),
+        ]
+
+        describe.each(cases)('%s', (_, make, makeOther) => {
+            it('is not taken for a serverTimestamp() sentinel', () => {
+                const overrides = new Map<string, unknown>()
+                const state = { embedding: make(), nested: { embedding: make() } }
+
+                expect(collectServerTimestampPaths(state).size).toBe(0)
+                reconcileDisplayOverrides(state, overrides)
+                expect(overrides.size).toBe(0)
+            })
+
+            it('compares equal to an equal value of the same type', () => {
+                expect(isDeepEqual(make(), make())).toBe(true)
+                expect(valuesEqualForNoOp(make(), make())).toBe(true)
+                expect(isDeepEqual(make(), makeOther())).toBe(false)
+            })
+
+            it('compares unequal to every other Firestore type without a throw', () => {
+                const proto = Object.getPrototypeOf(make())
+                for (const other of others) {
+                    if (Object.getPrototypeOf(other) === proto) continue
+                    expect(isDeepEqual(make(), other)).toBe(false)
+                    expect(isDeepEqual(other, make())).toBe(false)
+                    expect(valuesEqualForNoOp(make(), other)).toBe(false)
+                    expect(valuesEqualForNoOp(other, make())).toBe(false)
+                }
+            })
+
+            it('computeDiff emits the new value when the type changes', () => {
+                const to: Record<string, unknown> = { field: make() }
+                expect(computeDiff({ field: Timestamp.fromMillis(0) }, to)).toEqual(to)
+                expect(computeDiff({ field: make() }, to)).toEqual({})
+                const back = { field: serverTimestamp() }
+                expect(
+                    (computeDiff({ field: make() }, back) as Record<string, unknown>).field
+                ).toBe(back.field)
+            })
+
+            it('applyDiff stores the value and does not treat it as deleteField()', () => {
+                const value = make()
+                const start: Record<string, unknown> = { a: 1 }
+                expect(applyDiff(start, { field: value })).toEqual({ a: 1, field: value })
+            })
+
+            it('replaceEqualDeep keeps the previous instance only when equal', () => {
+                const prev = make()
+                expect(replaceEqualDeep(prev, make())).toBe(prev)
+                const next = Timestamp.fromMillis(0)
+                expect(replaceEqualDeep(prev, next)).toBe(next)
+                const sentinel = serverTimestamp()
+                expect(replaceEqualDeep(sentinel, prev)).toBe(prev)
+            })
+
+            it('dropCommittedSentinels keeps an edit that differs in type', () => {
+                const edits = { field: make() }
+                dropCommittedSentinels(edits, { field: serverTimestamp() })
+                expect('field' in edits).toBe(true)
+            })
         })
     })
 

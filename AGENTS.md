@@ -224,6 +224,11 @@ Preserve these unless the task explicitly changes them.
   the pending `localState`. Never mutate `syncState`, `localState`, or published
   data in place; outside production `notify()` deep-freezes them so a mutation
   throws.
+- Firestore opaque values (sentinels, `Timestamp`, `VectorValue`, `Bytes`, …)
+  compare only through `opaqueEqual` in `src/utils/diff.ts`, which requires the
+  same prototype before it calls `.isEqual`. `VectorValue.isEqual` and
+  `Bytes.isEqual` throw when they get a value of another type, so never call
+  `.isEqual` across types directly.
 - Collections enforce deletes-win: a doc in the baseline but absent from the
   new snapshot was deleted remotely → drop it (and any local edits to it) and
   never recreate it. A doc absent from the baseline but present locally is a
