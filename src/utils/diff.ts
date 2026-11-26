@@ -5,7 +5,8 @@ import {
     Timestamp,
     WithFieldValue,
 } from 'firebase/firestore'
-import type { DeepPartial, FirestoreObject } from '../types'
+import type { DeepPartial, FirestoreObject, UpdateDiff } from '../types'
+import { isReplaceField, replaceField } from './replace-field'
 
 /**
  * Check if a value is a plain object (not array, null, or special Firestore type)
@@ -316,6 +317,18 @@ export const applyDiffMutable = (
     for (const key of Object.keys(diff)) {
         const value = (diff as Record<string, unknown>)[key]
 
+        // `replaceField(value)` sets the whole value; see applyDiff.
+        if (isReplaceField(value)) {
+            if (isDeleteField(value.value)) {
+                delete (target as Record<string, unknown>)[key]
+            } else {
+                ;(target as Record<string, unknown>)[key] = toReplacement(
+                    value.value
+                )
+            }
+            continue
+        }
+
         // Firestore opaque values: FieldValue sentinels and value types.
         if (isFirestoreOpaque(value)) {
             // `deleteField()` is structural — actually drop the key from
@@ -377,6 +390,10 @@ export const deepClone = <T>(value: T): T => {
         return value
     }
 
+    if (isReplaceField(value)) {
+        return replaceField(deepClone(value.value)) as T
+    }
+
     if (Array.isArray(value)) {
         return value.map(deepClone) as T
     }
@@ -432,6 +449,13 @@ export const flattenDiff = (
         const value = diff[key]
         const path = prefix ? `${prefix}.${key}` : key
 
+        // A `replaceField` value is written whole at its path, which is how
+        // Firestore's update replaces a map.
+        if (isReplaceField(value)) {
+            result[path] = toReplacement(value.value)
+            continue
+        }
+
         // Arrays, FieldValue sentinels, and Firestore value types are
         // opaque from flatten's perspective — kept at the path verbatim.
         if (Array.isArray(value) || isFirestoreOpaque(value)) {
@@ -485,6 +509,12 @@ export const flattenDiffToFieldPaths = (
         const value = diff[key]
         const segments = [...prefix, key]
 
+        // A `replaceField` value is written whole at its path; see flattenDiff.
+        if (isReplaceField(value)) {
+            result.push({ segments, value: toReplacement(value.value) })
+            continue
+        }
+
         // Arrays, FieldValue sentinels, and Firestore value types are
         // opaque from flatten's perspective — kept at the path verbatim.
         if (Array.isArray(value) || isFirestoreOpaque(value)) {
@@ -522,29 +552,43 @@ export const diffToFieldPathArgs = (
     ])
 
 /**
- * Merge two diffs together, with the second taking precedence
+ * Merge two diffs together, with the second taking precedence.
+ *
+ * Applying the result equals applying `first`, then `second`. A
+ * `replaceField` in `second` replaces whatever `first` set at that path. A
+ * nested diff in `second` after a `replaceField` in `first` is applied to the
+ * replacement.
  */
 export const mergeDiffs = <T extends FirestoreObject>(
-    first: WithFieldValue<DeepPartial<T>>,
-    second: WithFieldValue<DeepPartial<T>>
-): WithFieldValue<DeepPartial<T>> => {
+    first: UpdateDiff<T>,
+    second: UpdateDiff<T>
+): UpdateDiff<T> => {
     const result = deepClone(first) as Record<string, unknown>
 
     for (const key of Object.keys(second)) {
         const firstValue = result[key]
         const secondValue = (second as Record<string, unknown>)[key]
 
-        if (isPlainObject(firstValue) && isPlainObject(secondValue)) {
+        if (isReplaceField(firstValue) && isPlainObject(secondValue)) {
+            result[key] = replaceField(
+                applyDiff(
+                    (isPlainObject(firstValue.value)
+                        ? firstValue.value
+                        : {}) as FirestoreObject,
+                    secondValue as UpdateDiff<FirestoreObject>
+                )
+            )
+        } else if (isPlainObject(firstValue) && isPlainObject(secondValue)) {
             result[key] = mergeDiffs(
-                firstValue as WithFieldValue<DeepPartial<FirestoreObject>>,
-                secondValue as WithFieldValue<DeepPartial<FirestoreObject>>
+                firstValue as UpdateDiff<FirestoreObject>,
+                secondValue as UpdateDiff<FirestoreObject>
             )
         } else {
             result[key] = secondValue
         }
     }
 
-    return result as WithFieldValue<DeepPartial<T>>
+    return result as UpdateDiff<T>
 }
 
 /**
@@ -568,13 +612,16 @@ export const mergeDiffs = <T extends FirestoreObject>(
  */
 export const applyDiff = <T extends FirestoreObject>(
     state: T,
-    diff: WithFieldValue<DeepPartial<T>>
+    diff: UpdateDiff<T>
 ): T => {
     const source = state as Record<string, unknown>
     let result: Record<string, unknown> | undefined
 
     for (const key of Object.keys(diff)) {
-        const value = (diff as Record<string, unknown>)[key]
+        const diffValue = (diff as Record<string, unknown>)[key]
+        // `replaceField(value)` sets `value` whole instead of merging it.
+        const isReplace = isReplaceField(diffValue)
+        const value = isReplace ? diffValue.value : diffValue
         const current = source[key]
 
         // `deleteField()` drops the key; see applyDiffMutable.
@@ -586,14 +633,17 @@ export const applyDiff = <T extends FirestoreObject>(
             continue
         }
 
-        // Opaque values and primitives replace by reference; plain objects
+        // A replacement keeps every current subtree it equals. Otherwise,
+        // opaque values and primitives replace by reference; plain objects
         // merge recursively onto the current plain value (or a new one). An
         // array keeps the current one when equal, otherwise it is copied so
         // the caller's array never becomes (frozen) state.
-        const next = isPlainObject(value)
+        const next = isReplace
+            ? replaceEqualDeep(current, toReplacement(value))
+            : isPlainObject(value)
             ? applyDiff(
                   (isPlainObject(current) ? current : {}) as FirestoreObject,
-                  value as WithFieldValue<DeepPartial<FirestoreObject>>
+                  value as UpdateDiff<FirestoreObject>
               )
             : Array.isArray(value)
               ? isDeepEqual(current, value)
@@ -609,6 +659,19 @@ export const applyDiff = <T extends FirestoreObject>(
 
     return (result ?? state) as T
 }
+
+/**
+ * The value a `replaceField` marker sets. Plain objects and arrays are copied,
+ * so the caller's objects never become (frozen) state. Inside a plain object,
+ * a `deleteField()` drops its key and a nested marker is unwrapped. Opaque
+ * values are kept by reference.
+ */
+const toReplacement = (value: unknown): unknown =>
+    isPlainObject(value)
+        ? applyDiff({}, value as UpdateDiff<FirestoreObject>)
+        : Array.isArray(value)
+          ? deepClone(value)
+          : value
 
 /**
  * Return `next`, but reuse every subtree of `prev` that is deeply equal to the
@@ -703,7 +766,7 @@ const freezeDeep = (value: unknown): void => {
  */
 export const computeUndoDiff = <T extends FirestoreObject>(
     startState: T,
-    diff: WithFieldValue<DeepPartial<T>>
+    diff: UpdateDiff<T>
 ): WithFieldValue<DeepPartial<T>> => {
     const endState = applyDiff(startState, diff)
     return computeDiff(endState, startState)
@@ -731,6 +794,8 @@ export const diffContainsPath = (
     let current: unknown = diff
 
     for (const part of parts) {
+        // A path below a `replaceField` reads the replacement.
+        if (isReplaceField(current)) current = current.value
         if (current === null || typeof current !== 'object') {
             return false
         }
@@ -765,6 +830,8 @@ export const extractDiffValue = (
     let current: unknown = diff
 
     for (const part of parts) {
+        // A path below a `replaceField` reads the replacement.
+        if (isReplaceField(current)) current = current.value
         if (current === null || typeof current !== 'object') {
             return undefined
         }

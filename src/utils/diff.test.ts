@@ -30,6 +30,8 @@ import {
     replaceEqualDeep,
     valuesEqualForNoOp,
 } from './diff'
+import { isReplaceField, replaceField } from './replace-field'
+import type { FirestoreObject, UpdateDiff } from '../types'
 
 describe('diff utilities', () => {
     describe('isDeepEqual', () => {
@@ -930,5 +932,270 @@ describe('diff utilities', () => {
                 expect(result.b).toBe(merged.b)
             })
         })
+    })
+})
+
+describe('replaceField', () => {
+    type Load =
+        | { method: 'DENSITY'; density: number }
+        | { method: 'POWER'; power: number; tags?: string[]; at?: unknown }
+    interface Stored {
+        name: string
+        load?: Load
+        other?: { kept: boolean }
+    }
+    type Infiltration =
+        | { method: 'ACH'; ach: number }
+        | { method: 'FLOW_RATE'; flowRate: number }
+    type Requirements = Record<
+        'COOLING' | 'HEATING',
+        { infiltration?: Infiltration }
+    >
+
+    const stored: Stored = {
+        name: 'Office',
+        load: { method: 'DENSITY', density: 2 },
+        other: { kept: true },
+    }
+
+    describe('applyDiff', () => {
+        it('replaces the field instead of merging into it', () => {
+            const result = applyDiff(stored, {
+                load: replaceField({ method: 'POWER', power: 300 }),
+            })
+
+            expect(result).toEqual({
+                name: 'Office',
+                load: { method: 'POWER', power: 300 },
+                other: { kept: true },
+            })
+            expect(result.other).toBe(stored.other)
+        })
+
+        it('replaces a field at any depth and leaves its siblings', () => {
+            const state: { requirements: Requirements } = {
+                requirements: {
+                    COOLING: { infiltration: { method: 'ACH', ach: 0.5 } },
+                    HEATING: { infiltration: { method: 'ACH', ach: 1 } },
+                },
+            }
+
+            const result = applyDiff(state, {
+                requirements: {
+                    COOLING: {
+                        infiltration: replaceField({
+                            method: 'FLOW_RATE',
+                            flowRate: 50,
+                        }),
+                    },
+                },
+            })
+
+            expect(result.requirements).toEqual({
+                COOLING: { infiltration: { method: 'FLOW_RATE', flowRate: 50 } },
+                HEATING: { infiltration: { method: 'ACH', ach: 1 } },
+            })
+            expect(result.requirements.HEATING).toBe(state.requirements.HEATING)
+        })
+
+        it('keeps the current value when the replacement equals it', () => {
+            const result = applyDiff(stored, {
+                load: replaceField({ method: 'DENSITY', density: 2 }),
+            })
+
+            expect(result).toBe(stored)
+        })
+
+        it('copies the replacement so the caller keeps ownership of it', () => {
+            const replacement: Load = { method: 'POWER', power: 300, tags: ['a'] }
+            const result = applyDiff(stored, { load: replaceField(replacement) })
+
+            expect(result.load).toEqual(replacement)
+            expect(result.load).not.toBe(replacement)
+            expect(result.load?.method === 'POWER' && result.load.tags).not.toBe(
+                replacement.tags
+            )
+        })
+
+        it('drops a deleteField() key and unwraps a nested marker in the replacement', () => {
+            const result = applyDiff<FirestoreObject>(
+                { a: { x: 1 } },
+                {
+                    a: replaceField({
+                        y: 2,
+                        z: deleteField(),
+                        nested: replaceField({ k: 1 }),
+                    }),
+                }
+            )
+
+            expect(result).toEqual({ a: { y: 2, nested: { k: 1 } } })
+        })
+
+        it('deletes the field for replaceField(deleteField())', () => {
+            const result = applyDiff<FirestoreObject>(stored, {
+                load: replaceField(deleteField()),
+            })
+
+            expect(result).toEqual({ name: 'Office', other: { kept: true } })
+        })
+
+        it('keeps a serverTimestamp() in the replacement by reference', () => {
+            const sentinel = serverTimestamp()
+            const result = applyDiff(stored, {
+                load: replaceField({ method: 'POWER', power: 1, at: sentinel }),
+            })
+
+            expect(result.load?.method === 'POWER' && result.load.at).toBe(
+                sentinel
+            )
+        })
+    })
+
+    it('applyDiffMutable replaces the field', () => {
+        const target = deepClone(stored)
+        applyDiffMutable(target, {
+            load: replaceField({ method: 'POWER', power: 300 }),
+            other: replaceField<FirestoreObject>(deleteField()),
+        })
+
+        expect(target).toEqual({
+            name: 'Office',
+            load: { method: 'POWER', power: 300 },
+        })
+    })
+
+    it('makes computeDiff write a deleteField() for each removed key only', () => {
+        const next = applyDiff(stored, {
+            load: replaceField({ method: 'POWER', power: 300 }),
+        })
+
+        const write = computeDiff(stored, next)
+
+        expect(write).toEqual({
+            load: { method: 'POWER', power: 300, density: deleteField() },
+        })
+        expect(flattenDiffToFieldPaths(write)).toEqual([
+            { segments: ['load', 'method'], value: 'POWER' },
+            { segments: ['load', 'power'], value: 300 },
+            { segments: ['load', 'density'], value: deleteField() },
+        ])
+    })
+
+    it('computeUndoDiff restores the replaced object exactly', () => {
+        const diff = { load: replaceField({ method: 'POWER', power: 300 }) }
+        const undo = computeUndoDiff(stored, diff)
+
+        expect(applyDiff(applyDiff(stored, diff), undo)).toEqual(stored)
+    })
+
+    describe('mergeDiffs', () => {
+        const apply = (...diffs: UpdateDiff<Stored>[]) =>
+            diffs.reduce((state, diff) => applyDiff(state, diff), stored)
+
+        const cases: {
+            name: string
+            first: UpdateDiff<Stored>
+            second: UpdateDiff<Stored>
+        }[] = [
+            {
+                name: 'a replace after a merge',
+                first: { load: { density: 5 } },
+                second: { load: replaceField({ method: 'POWER', power: 300 }) },
+            },
+            {
+                name: 'a merge after a replace',
+                first: { load: replaceField({ method: 'POWER', power: 300 }) },
+                second: { load: { power: 400 } },
+            },
+            {
+                name: 'a key deleted after a replace',
+                first: { load: replaceField({ method: 'POWER', power: 300 }) },
+                second: { load: { power: deleteField() } },
+            },
+            {
+                name: 'two replaces',
+                first: { load: replaceField({ method: 'POWER', power: 300 }) },
+                second: { load: replaceField({ method: 'DENSITY', density: 1 }) },
+            },
+            {
+                name: 'a delete after a replace',
+                first: { load: replaceField({ method: 'POWER', power: 300 }) },
+                second: { load: deleteField() },
+            },
+        ]
+
+        it.each(cases)(
+            '$name applies like the two diffs in order',
+            ({ first, second }) => {
+                expect(apply(mergeDiffs<Stored>(first, second))).toEqual(
+                    apply(first, second)
+                )
+            }
+        )
+
+        it('keeps a merge after a replace as one replacement', () => {
+            const merged = mergeDiffs<Stored>(
+                { load: replaceField({ method: 'POWER', power: 300 }) },
+                { load: { power: 400 } }
+            )
+
+            expect(isReplaceField((merged as Record<string, unknown>).load)).toBe(
+                true
+            )
+            expect(apply(merged)).toEqual({
+                ...stored,
+                load: { method: 'POWER', power: 400 },
+            })
+        })
+    })
+
+    it('flattenDiff writes the replacement whole at its path', () => {
+        const flat = flattenDiff({
+            load: replaceField<FirestoreObject>({
+                method: 'POWER',
+                power: 300,
+                x: deleteField(),
+            }),
+            name: 'Lab',
+        })
+
+        expect(flat).toEqual({
+            load: { method: 'POWER', power: 300 },
+            name: 'Lab',
+        })
+        expect(Object.values(flat).some(isReplaceField)).toBe(false)
+    })
+
+    it('flattenDiffToFieldPaths writes the replacement whole at its path', () => {
+        expect(
+            flattenDiffToFieldPaths({
+                a: { load: replaceField({ method: 'POWER', power: 300 }) },
+            })
+        ).toEqual([
+            {
+                segments: ['a', 'load'],
+                value: { method: 'POWER', power: 300 },
+            },
+        ])
+    })
+
+    it('deepClone keeps the marker and copies its value', () => {
+        const value = { method: 'POWER', power: 300 }
+        const clone = deepClone({ load: replaceField(value) })
+
+        expect(isReplaceField(clone.load)).toBe(true)
+        expect(clone.load.value).toEqual(value)
+        expect(clone.load.value).not.toBe(value)
+    })
+
+    it('diffContainsPath and extractDiffValue read through the marker', () => {
+        const marker = replaceField({ method: 'POWER', power: 300 })
+        const diff = { load: marker }
+
+        expect(extractDiffValue(diff, 'load')).toBe(marker)
+        expect(extractDiffValue(diff, 'load.power')).toBe(300)
+        expect(diffContainsPath(diff, 'load.power')).toBe(true)
+        expect(diffContainsPath(diff, 'load.density')).toBe(false)
     })
 })

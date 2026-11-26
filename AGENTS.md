@@ -212,6 +212,15 @@ Preserve these unless the task explicitly changes them.
   redo oldest to newest.
 - Firestore updates use flattened diffs for `updateDoc`; full document
   replacement and creation use `setDoc`.
+- `replaceField(value)` in an `update()` diff sets that field to `value`
+  instead of merging into it. It only shapes `localState`: `applyDiff` and
+  `applyDiffMutable` unwrap it, and the write stays `computeDiff(syncState,
+  localState)`, so each dropped key goes out as a `deleteField()` leaf and
+  sibling fields are not written. The marker must never reach Firestore,
+  `syncState`, or `localState`. Every utility that walks a caller's diff
+  (`mergeDiffs`, `flattenDiff`, `flattenDiffToFieldPaths`, `deepClone`,
+  `diffContainsPath`, `extractDiffValue`) handles it; utilities that walk
+  states never see it.
 - Pending `localState` is rebased onto **every** incoming snapshot, not only
   the one confirming an inflight write. The prior `syncState` is the baseline:
   `localState = applyDiff(newSnapshot, computeDiff(baseline, localState))`, then
@@ -248,6 +257,8 @@ Add or update focused tests near the behavior being changed:
   `src/__tests__/conflict-resolution.test.ts`,
   `src/__tests__/reconcile.test.ts`, and `src/__tests__/fieldpath.test.ts`.
 - Diff behavior: `src/utils/diff.test.ts`.
+- `replaceField` through document and collection subscriptions (write, undo,
+  coalescing, rebase): `src/__tests__/replace-field.test.ts`.
 - Structural sharing and dev-mode freezing (identity across edits, snapshots,
   and rebases): `src/__tests__/structural-sharing.test.ts`.
 - Snapshot burst batching: `src/__tests__/snapshot-batching.test.ts`.

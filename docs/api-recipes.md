@@ -160,6 +160,22 @@ if (project.data) {
 Document `update` is ignored when there is no current data. This prevents
 partial diffs from creating broken documents.
 
+### Replace a nested value
+
+`update()` merges nested objects. To replace a field whole, for example to
+switch a discriminated union to another variant, wrap the value in
+`replaceField()`. The keys of the old value that the new one lacks are written
+as `deleteField()`:
+
+```ts
+import { replaceField } from '@hvakr/firestate'
+
+project.update({ load: replaceField({ method: 'POWER', power: 300 }) })
+```
+
+Use it at the deepest path you mean to replace. A marker at a higher path
+replaces everything below it.
+
 ## Lazy Collections
 
 Lazy collections do not attach a Firestore listener until `load()` is called.

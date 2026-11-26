@@ -27,6 +27,7 @@ export type {
     // Utility types
     UpdateOptions,
     DeepPartial,
+    UpdateDiff,
     FirestoreObject,
     FirestateConfig,
     ErrorContext,
@@ -81,6 +82,10 @@ export {
     isDiffEmpty,
     mergeDiffs,
 } from './utils/diff'
+
+// Replace a field's whole value in an update() diff
+export { replaceField, isReplaceField } from './utils/replace-field'
+export type { ReplaceField } from './utils/replace-field'
 
 // Selector equality helper (for use as a hook `isEqual`)
 export { shallow } from './utils/shallow'

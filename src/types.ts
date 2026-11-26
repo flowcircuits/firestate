@@ -1,17 +1,35 @@
 import type {
     CollectionReference,
     DocumentReference,
+    FieldValue,
     Firestore,
     QueryConstraint,
     WithFieldValue,
 } from 'firebase/firestore'
 import type { ZodType } from 'zod'
+import type { ReplaceField } from './utils/replace-field'
 
 /**
  * Deep partial type that works with Records and nested objects
  */
 export type DeepPartial<T> = T extends object
     ? { [P in keyof T]?: DeepPartial<T[P]> }
+    : T
+
+/**
+ * A partial update for `T`, as `update()` takes it. Each field may be a nested
+ * partial, a Firestore `FieldValue` such as `deleteField()`, or a
+ * `replaceField(value)` marker that replaces the field's whole value.
+ */
+export type UpdateDiff<T> = WithFieldValue<DeepPartial<T>> | ReplaceableDiff<T>
+
+type ReplaceableDiff<T> = T extends object
+    ? {
+          [P in keyof T]?:
+              | ReplaceableDiff<T[P]>
+              | ReplaceField<Exclude<T[P], undefined>>
+              | FieldValue
+      }
     : T
 
 /**
@@ -121,7 +139,7 @@ export interface DocumentHandle<T extends FirestoreObject> {
     data: T | undefined
     /** Update the document with a partial diff */
     update: (
-        diff: WithFieldValue<DeepPartial<T>>,
+        diff: UpdateDiff<T>,
         options?: UpdateOptions
     ) => void
     /** Set the document data (creates or overwrites) */
@@ -160,7 +178,7 @@ export interface CollectionHandle<T extends FirestoreObject> {
     data: Record<string, T>
     /** Update one or more documents with partial diffs */
     update: (
-        diff: WithFieldValue<DeepPartial<Record<string, T>>>,
+        diff: UpdateDiff<Record<string, T>>,
         options?: UpdateOptions
     ) => void
     /**
