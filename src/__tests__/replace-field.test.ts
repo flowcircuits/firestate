@@ -22,6 +22,7 @@ import {
     deleteField,
     FieldPath,
     serverTimestamp,
+    type Timestamp,
     type WithFieldValue,
 } from 'firebase/firestore'
 import { createHarness, type Harness } from './test-harness'
@@ -297,6 +298,9 @@ interface TypedDoc {
     load?: Load
     obj?: { nested: { x: number; y?: number } }
     rows?: { x: number; tags?: string[] }[]
+    at?: Timestamp
+    pair?: [string, number]
+    readonlyPair?: readonly [string, number]
 }
 
 /**
@@ -306,6 +310,7 @@ interface TypedDoc {
  */
 const typeChecks = (
     update: (diff: UpdateDiff<TypedDoc>) => void,
+    updateCollection: (diff: UpdateDiff<Record<string, TypedDoc>>) => void,
     next: Load,
     legacy: WithFieldValue<DeepPartial<TypedDoc>>
 ) => {
@@ -338,5 +343,26 @@ const typeChecks = (
     update({ obj: replaceField({ nested: replaceField({ x: 'one' }) }) })
     // @ts-expect-error `method` must be a known variant
     update({ load: replaceField({ method: 'OTHER', power: 1 }) })
+
+    // A sentinel can be the whole replacement.
+    update({ at: replaceField(serverTimestamp()), load: replaceField(deleteField()) })
+    updateCollection({
+        a: { at: replaceField(serverTimestamp()), load: replaceField(deleteField()) },
+    })
+    // @ts-expect-error a Timestamp field does not take a number
+    update({ at: replaceField(42) })
+
+    // Tuples keep their length and positions, mutable or readonly.
+    update({ pair: replaceField(['a', 1]), readonlyPair: replaceField(['a', 1]) })
+    // @ts-expect-error too short
+    update({ pair: replaceField([]) })
+    // @ts-expect-error wrong order
+    update({ pair: replaceField([42, 'wrong']) })
+    // @ts-expect-error too short
+    update({ readonlyPair: replaceField([]) })
+    // @ts-expect-error wrong order
+    update({ readonlyPair: replaceField([42, 'wrong']) })
+    // @ts-expect-error too long
+    updateCollection({ a: { pair: replaceField(['ok', 1, 2]) } })
 }
 void typeChecks

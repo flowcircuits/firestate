@@ -27,21 +27,32 @@ type Leaf =
  * A value {@link replaceField} accepts for a field of type `T`: `T`, where any
  * nested field may also be a Firestore `FieldValue` such as `deleteField()`,
  * or another `replaceField` marker. Sentinels and Firestore value types are
- * leaves, never mapped.
+ * leaves, never mapped. Tuples keep their length and positions, and arrays
+ * and tuples are `readonly`, so a literal inferred as `const` fits.
  */
 export type ReplacementValue<T> = unknown extends T
     ? T
     : T extends Leaf
       ? T
-      : T extends readonly (infer E)[]
-        ? readonly ReplacementMember<E>[]
+      : T extends readonly unknown[]
+        ? { readonly [K in keyof T]: ReplacementMember<T[K]> }
         : { [K in keyof T]: ReplacementMember<T[K]> }
 
-type ReplacementMember<T> =
-    | ReplacementValue<T>
-    | FieldValue
-    | ReplaceField<ReplacementValue<T>>
+/**
+ * What a marker for a field of type `T` may hold: a {@link ReplacementValue},
+ * or a `FieldValue` sentinel that replaces the field (`deleteField()` deletes
+ * it, `serverTimestamp()` sets the server time).
+ */
+export type ReplacementPayload<T> = ReplacementValue<T> | FieldValue
 
+type ReplacementMember<T> =
+    | ReplacementPayload<T>
+    | ReplaceField<ReplacementPayload<T>>
+
+/**
+ * A diff value that replaces a field's whole value instead of merging into it.
+ * Create one with {@link replaceField}.
+ */
 /**
  * A diff value that replaces a field's whole value instead of merging into it.
  * Create one with {@link replaceField}.
