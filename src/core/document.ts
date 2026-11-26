@@ -7,16 +7,15 @@ import {
     deleteDoc,
     DocumentReference,
     type FieldPath,
-    WithFieldValue,
 } from 'firebase/firestore'
 import type {
-    DeepPartial,
     DocumentDefinition,
     DocumentHandle,
     DocumentState,
     FirestoreObject,
     Subscriber,
     Unsubscribe,
+    UpdateDiff,
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
@@ -295,7 +294,7 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
     }
 
     const updateState = (
-        diff: WithFieldValue<DeepPartial<TData>>,
+        diff: UpdateDiff<TData>,
         undoOptions: UpdateOptions = {}
     ) => {
         if (isReadOnly) return
@@ -345,8 +344,8 @@ export const createDocumentSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<TData>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff<TData>, { undoable: false }),
+                () => updateState(redoDiff as UpdateDiff<TData>, { undoable: false }),
                 undoOptions
             )
         }

@@ -6,7 +6,6 @@ import {
     writeBatch,
     deleteField,
     type FieldPath,
-    WithFieldValue,
     QueryConstraint,
     type CollectionReference,
     type Query,
@@ -15,10 +14,10 @@ import type {
     CollectionDefinition,
     CollectionHandle,
     CollectionState,
-    DeepPartial,
     FirestoreObject,
     Subscriber,
     Unsubscribe,
+    UpdateDiff,
     UpdateOptions,
 } from '../types'
 import type { FirestateStore } from './store'
@@ -319,7 +318,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
     }
 
     const updateState = (
-        diff: WithFieldValue<DeepPartial<Record<string, TData>>>,
+        diff: UpdateDiff<Record<string, TData>>,
         undoOptions: UpdateOptions = {}
     ) => {
         if (isReadOnly) return
@@ -338,7 +337,7 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
         const newLocalState = withDocIds(
             applyDiff(
                 rawBase as FirestoreObject,
-                diff as WithFieldValue<DeepPartial<FirestoreObject>>
+                diff as UpdateDiff<FirestoreObject>
             ) as Record<string, TData>
         )
 
@@ -363,8 +362,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
+                () => updateState(redoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
                 undoOptions
             )
         }
@@ -444,8 +443,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
+                () => updateState(redoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
                 undoOptions
             )
         }
@@ -482,8 +481,8 @@ export const createCollectionSubscription = <TData extends FirestoreObject>(
                 newLocalState as FirestoreObject
             )
             onPushUndo(
-                () => updateState(undoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
-                () => updateState(redoDiff as WithFieldValue<DeepPartial<Record<string, TData>>>, { undoable: false }),
+                () => updateState(undoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
+                () => updateState(redoDiff as UpdateDiff<Record<string, TData>>, { undoable: false }),
                 undoOptions
             )
         }

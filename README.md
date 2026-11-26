@@ -347,6 +347,47 @@ project.set({ name: 'New Project', createdAt: Date.now() })
 
 This distinction is important for collaborative applications where multiple users may be editing simultaneously.
 
+#### Replacing a nested value: `replaceField(value)`
+
+`update()` merges a nested object into the stored one, so keys the diff leaves
+out survive. When a field's value must be replaced whole, such as switching a
+discriminated union to another variant, wrap the new value in
+`replaceField()`. Like `deleteField()`, it can sit at any depth and affects only
+that field:
+
+```tsx
+import { replaceField } from '@hvakr/firestate'
+
+// stored: { name: 'Office', load: { method: 'DENSITY', density: 2 } }
+project.update({ load: replaceField({ method: 'POWER', power: 300 }) })
+// result: { name: 'Office', load: { method: 'POWER', power: 300 } }
+
+// Deep in a collection diff, siblings untouched:
+spaces.update({
+    [spaceId]: {
+        requirements: {
+            COOLING: { infiltration: replaceField({ method: 'FLOW_RATE', flowRate: 50 }) },
+        },
+    },
+})
+```
+
+The marker never reaches Firestore. It shapes local state, and the write is the
+difference between the server state and local state. So the write is
+`load.method`, `load.power`, and `load.density: deleteField()`. Sibling fields
+are not written, so a collaborator's concurrent edit to them survives. Undo and
+redo restore the exact previous and replaced values. A later `update()` that
+merges into the field applies to the replacement.
+
+Markers anywhere in a value, including inside arrays, are unwrapped before the
+value reaches local state, so none is ever written. An empty map in the
+replacement is written as an empty map. The value keeps its literal types, and
+TypeScript checks it against the field's type (`ReplacementPayload<T>`): nested
+markers and `FieldValue` sentinels such as `deleteField()` are allowed, also as
+the whole value, tuples keep their length and positions, and a value of the
+wrong shape is rejected. A marker's value is private, so a marker never passes
+as a plain partial diff; read it with `replaceFieldValue(marker)`.
+
 ### Undo/Redo
 
 Undo tracking is opt-in per resource. Enable it on the hook, then each update
@@ -1012,6 +1053,10 @@ const flat = flattenDiff(nested)
 // Unflatten back to nested structure
 const restored = unflattenDiff(flat)
 // { building: { floors: 5, height: 100 } }
+
+// An empty object is a value, as in Firestore's update(): it writes an empty map
+flattenDiff({ building: {} })
+// { building: {} }
 ```
 
 ### Path-Based Utilities
@@ -1044,7 +1089,9 @@ import {
     isDeepEqual,
     deepClone,
     isDiffEmpty,
+    isReplaceField,
     mergeDiffs,
+    replaceFieldValue,
 } from '@hvakr/firestate'
 
 // Deep equality check (handles Timestamps, arrays, nested objects)
@@ -1056,8 +1103,12 @@ const clone = deepClone(original)
 // Check if a diff has no changes
 if (isDiffEmpty(diff)) return
 
-// Merge two diffs (second takes precedence)
+// Merge two diffs (second takes precedence). A merge after a replaceField
+// applies to the replacement.
 const combined = mergeDiffs(diff1, diff2)
+
+// Whether a diff value is a replaceField() marker, and the value it holds
+if (isReplaceField(value)) console.log(replaceFieldValue(value))
 ```
 
 ## Notes

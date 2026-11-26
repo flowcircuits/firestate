@@ -352,6 +352,12 @@ Collection sync uses a Firestore write batch:
 - `applyDiff` and `applyOverridesAtPaths` copy only the changed path
 - `replaceEqualDeep` reuses every equal subtree of the previous value
 - Firestore sentinels are preserved while flattening
+- a `replaceField(value)` marker in a caller's diff makes `applyDiff` set the
+  field to `value` instead of merging into it; the marker stays out of state
+  (markers inside arrays are unwrapped too), and the sync's `computeDiff` turns
+  each dropped key into `deleteField()`
+- an empty map that replaces a value of another type is written as `{}`, and
+  flattening keeps an empty object as a value
 
 These helpers are shared by document sync, collection sync, and undo.
 
