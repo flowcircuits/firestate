@@ -1,14 +1,56 @@
-import type { WithFieldValue } from 'firebase/firestore'
+import type {
+    Bytes,
+    DocumentReference,
+    FieldValue,
+    GeoPoint,
+    Timestamp,
+    VectorValue,
+} from 'firebase/firestore'
+
+/** Values written whole: never mapped field by field. */
+type Leaf =
+    | string
+    | number
+    | boolean
+    | bigint
+    | symbol
+    | null
+    | undefined
+    | FieldValue
+    | Timestamp
+    | GeoPoint
+    | Bytes
+    | DocumentReference
+    | VectorValue
+
+/**
+ * A value {@link replaceField} accepts for a field of type `T`: `T`, where any
+ * nested field may also be a Firestore `FieldValue` such as `deleteField()`,
+ * or another `replaceField` marker. Sentinels and Firestore value types are
+ * leaves, never mapped.
+ */
+export type ReplacementValue<T> = unknown extends T
+    ? T
+    : T extends Leaf
+      ? T
+      : T extends readonly (infer E)[]
+        ? readonly ReplacementMember<E>[]
+        : { [K in keyof T]: ReplacementMember<T[K]> }
+
+type ReplacementMember<T> =
+    | ReplacementValue<T>
+    | FieldValue
+    | ReplaceField<ReplacementValue<T>>
 
 /**
  * A diff value that replaces a field's whole value instead of merging into it.
  * Create one with {@link replaceField}.
  */
 export class ReplaceField<T> {
-    readonly value: WithFieldValue<T>
+    readonly value: T
 
     /** @internal Use {@link replaceField}. */
-    constructor(value: WithFieldValue<T>) {
+    constructor(value: T) {
         this.value = value
     }
 }
@@ -26,6 +68,9 @@ export class ReplaceField<T> {
  * the difference between the server state and local state, so each removed key
  * is written as `deleteField()` and sibling keys are not touched.
  *
+ * `value` keeps its literal types, and TypeScript checks it against the
+ * field's type (see {@link ReplacementValue}).
+ *
  * @example
  * ```ts
  * // stored: { load: { method: 'DENSITY', density: 2 } }
@@ -33,7 +78,7 @@ export class ReplaceField<T> {
  * // result: { load: { method: 'POWER', power: 300 } }
  * ```
  */
-export const replaceField = <T>(value: WithFieldValue<T>): ReplaceField<T> =>
+export const replaceField = <const V>(value: V): ReplaceField<V> =>
     new ReplaceField(value)
 
 /** Whether `value` is a {@link replaceField} marker. */

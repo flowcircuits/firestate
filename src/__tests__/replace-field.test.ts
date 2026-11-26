@@ -18,14 +18,19 @@ vi.mock('firebase/firestore', async () => {
     return buildFirestoreMock(actual as unknown as Record<string, unknown>)
 })
 
-import { deleteField, FieldPath } from 'firebase/firestore'
+import {
+    deleteField,
+    FieldPath,
+    serverTimestamp,
+    type WithFieldValue,
+} from 'firebase/firestore'
 import { createHarness, type Harness } from './test-harness'
 import { createCollectionSubscription } from '../core/collection'
 import { createDocumentSubscription } from '../core/document'
 import { defineCollection, defineDocument } from '../registry/schema'
 import { createStore, type FirestateStore } from '../core/store'
 import { replaceField } from '../utils/replace-field'
-import type { UpdateDiff } from '../types'
+import type { DeepPartial, UpdateDiff } from '../types'
 
 type Load =
     | { method: 'DENSITY'; density: number }
@@ -231,3 +236,51 @@ describe('replaceField', () => {
         sub.update({ load: replaceField({ method: 'POWER', power: 'high' }) })
     })
 })
+
+interface TypedDoc {
+    load?: Load
+    obj?: { nested: { x: number; y?: number } }
+    rows?: { x: number; tags?: string[] }[]
+}
+
+/**
+ * Compile-only (never called): `update()` diffs accept every replacement
+ * payload the runtime supports, keep legacy diffs assignable, and reject a
+ * value of the wrong type for its field.
+ */
+const typeChecks = (
+    update: (diff: UpdateDiff<TypedDoc>) => void,
+    next: Load,
+    legacy: WithFieldValue<DeepPartial<TypedDoc>>
+) => {
+    // Literals keep their types, so a union field accepts them.
+    update({ load: replaceField({ method: 'POWER', power: 300 }) })
+    const standalone = replaceField({ method: 'DENSITY', density: 1 })
+    update({ load: standalone })
+    // A value typed as a union.
+    update({ load: replaceField(next) })
+    // Nested markers, and sentinels inside a replacement.
+    update({ obj: replaceField({ nested: replaceField({ x: 1 }) }) })
+    update({ obj: replaceField({ nested: { x: deleteField() } }) })
+    update({ obj: replaceField({ nested: { x: 1, y: serverTimestamp() } }) })
+    update({ obj: { nested: replaceField({ x: 2 }) } })
+    // Arrays, with markers inside their members.
+    update({ rows: replaceField([{ x: 1, tags: ['a'] }]) })
+    update({ rows: [{ x: replaceField(2) }] })
+    // Diffs typed the pre-0.3.0 way.
+    update(legacy)
+    const widen = <T extends object>(
+        diff: WithFieldValue<DeepPartial<T>>
+    ): UpdateDiff<T> => diff
+    void widen
+
+    // @ts-expect-error `power` must be a number
+    update({ load: replaceField({ method: 'POWER', power: 'high' }) })
+    // @ts-expect-error a POWER load needs `power`
+    update({ load: replaceField({ method: 'POWER' }) })
+    // @ts-expect-error `x` must be a number, even in a nested marker
+    update({ obj: replaceField({ nested: replaceField({ x: 'one' }) }) })
+    // @ts-expect-error `method` must be a known variant
+    update({ load: replaceField({ method: 'OTHER', power: 1 }) })
+}
+void typeChecks

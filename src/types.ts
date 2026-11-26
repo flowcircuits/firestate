@@ -7,7 +7,7 @@ import type {
     WithFieldValue,
 } from 'firebase/firestore'
 import type { ZodType } from 'zod'
-import type { ReplaceField } from './utils/replace-field'
+import type { ReplaceField, ReplacementValue } from './utils/replace-field'
 
 /**
  * Deep partial type that works with Records and nested objects
@@ -27,7 +27,7 @@ type ReplaceableDiff<T> = T extends object
     ? {
           [P in keyof T]?:
               | ReplaceableDiff<T[P]>
-              | ReplaceField<Exclude<T[P], undefined>>
+              | ReplaceField<ReplacementValue<Exclude<T[P], undefined>>>
               | FieldValue
       }
     : T
