@@ -6,7 +6,7 @@ import {
     WithFieldValue,
 } from 'firebase/firestore'
 import type { DeepPartial, FirestoreObject, UpdateDiff } from '../types'
-import { isReplaceField, replaceField } from './replace-field'
+import { isReplaceField, replaceField, replaceFieldValue } from './replace-field'
 
 /**
  * Check if a value is a plain object (not array, null, or special Firestore type)
@@ -323,11 +323,11 @@ export const applyDiffMutable = (
 
         // `replaceField(value)` sets the whole value; see applyDiff.
         if (isReplaceField(value)) {
-            if (isDeleteField(value.value)) {
+            if (isDeleteField(replaceFieldValue(value))) {
                 delete (target as Record<string, unknown>)[key]
             } else {
                 ;(target as Record<string, unknown>)[key] = toStateValue(
-                    value.value
+                    replaceFieldValue(value)
                 )
             }
             continue
@@ -397,7 +397,7 @@ export const deepClone = <T>(value: T): T => {
     }
 
     if (isReplaceField(value)) {
-        return replaceField(deepClone(value.value)) as T
+        return replaceField(deepClone(replaceFieldValue(value))) as T
     }
 
     if (Array.isArray(value)) {
@@ -458,7 +458,7 @@ export const flattenDiff = (
         // A `replaceField` value is written whole at its path, which is how
         // Firestore's update replaces a map.
         if (isReplaceField(value)) {
-            result[path] = toStateValue(value.value)
+            result[path] = toStateValue(replaceFieldValue(value))
             continue
         }
 
@@ -522,7 +522,10 @@ export const flattenDiffToFieldPaths = (
 
         // A `replaceField` value is written whole at its path; see flattenDiff.
         if (isReplaceField(value)) {
-            result.push({ segments, value: toStateValue(value.value) })
+            result.push({
+                segments,
+                value: toStateValue(replaceFieldValue(value)),
+            })
             continue
         }
 
@@ -589,7 +592,7 @@ export const mergeDiffs = <T extends FirestoreObject>(
         if (isReplaceField(firstValue) && isPlainObject(secondValue)) {
             // Resolve the replacement as applyDiff would (nested markers
             // unwrapped) before the later diff is applied to it.
-            const replacement = toStateValue(firstValue.value)
+            const replacement = toStateValue(replaceFieldValue(firstValue))
             result[key] = replaceField(
                 applyDiff(
                     (isPlainObject(replacement) ? replacement : {}) as FirestoreObject,
@@ -639,7 +642,7 @@ export const applyDiff = <T extends FirestoreObject>(
         const diffValue = (diff as Record<string, unknown>)[key]
         // `replaceField(value)` sets `value` whole instead of merging it.
         const isReplace = isReplaceField(diffValue)
-        const value = isReplace ? diffValue.value : diffValue
+        const value = isReplace ? replaceFieldValue(diffValue) : diffValue
         const current = source[key]
 
         // `deleteField()` drops the key; see applyDiffMutable.
@@ -682,7 +685,7 @@ export const applyDiff = <T extends FirestoreObject>(
  * `deleteField()` drops its key. Opaque values are kept by reference.
  */
 const toStateValue = (value: unknown): unknown => {
-    if (isReplaceField(value)) return toStateValue(value.value)
+    if (isReplaceField(value)) return toStateValue(replaceFieldValue(value))
     if (Array.isArray(value)) return value.map(toStateValue)
     if (isPlainObject(value))
         return applyDiff({}, value as UpdateDiff<FirestoreObject>)
@@ -811,7 +814,7 @@ export const diffContainsPath = (
 
     for (const part of parts) {
         // A path below a `replaceField` reads the replacement.
-        if (isReplaceField(current)) current = current.value
+        if (isReplaceField(current)) current = replaceFieldValue(current)
         if (current === null || typeof current !== 'object') {
             return false
         }
@@ -847,7 +850,7 @@ export const extractDiffValue = (
 
     for (const part of parts) {
         // A path below a `replaceField` reads the replacement.
-        if (isReplaceField(current)) current = current.value
+        if (isReplaceField(current)) current = replaceFieldValue(current)
         if (current === null || typeof current !== 'object') {
             return undefined
         }

@@ -301,6 +301,8 @@ interface TypedDoc {
     at?: Timestamp
     pair?: [string, number]
     readonlyPair?: readonly [string, number]
+    measured?: { value: number; label: string }
+    counts?: Record<string, number>
 }
 
 /**
@@ -364,5 +366,17 @@ const typeChecks = (
     update({ readonlyPair: replaceField([42, 'wrong']) })
     // @ts-expect-error too long
     updateCollection({ a: { pair: replaceField(['ok', 1, 2]) } })
+
+    // A marker is checked by its payload, not by its own properties, even
+    // when the field's object has a `value` key or an index signature.
+    update({ measured: replaceField({ value: 1, label: 'kW' }) })
+    update({ measured: { value: 2 }, counts: { a: 1 } })
+    update({ counts: replaceField({ a: 1 }) })
+    // @ts-expect-error a number is not a { value, label } object
+    update({ measured: replaceField(123) })
+    // @ts-expect-error a number is not a { value, label } object
+    updateCollection({ a: { measured: replaceField(123) } })
+    // @ts-expect-error a string is not a Record<string, number>
+    update({ counts: replaceField('x') })
 }
 void typeChecks

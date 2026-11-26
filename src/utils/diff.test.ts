@@ -30,7 +30,7 @@ import {
     replaceEqualDeep,
     valuesEqualForNoOp,
 } from './diff'
-import { isReplaceField, replaceField } from './replace-field'
+import { isReplaceField, replaceField, replaceFieldValue } from './replace-field'
 import type { FirestoreObject, UpdateDiff } from '../types'
 
 describe('diff utilities', () => {
@@ -1273,8 +1273,8 @@ describe('replaceField', () => {
         const clone = deepClone({ load: replaceField(value) })
 
         expect(isReplaceField(clone.load)).toBe(true)
-        expect(clone.load.value).toEqual(value)
-        expect(clone.load.value).not.toBe(value)
+        expect(replaceFieldValue(clone.load)).toEqual(value)
+        expect(replaceFieldValue(clone.load)).not.toBe(value)
     })
 
     it('diffContainsPath and extractDiffValue read through the marker', () => {

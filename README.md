@@ -382,9 +382,11 @@ merges into the field applies to the replacement.
 Markers anywhere in a value, including inside arrays, are unwrapped before the
 value reaches local state, so none is ever written. An empty map in the
 replacement is written as an empty map. The value keeps its literal types, and
-TypeScript checks it against the field's type (`ReplacementValue<T>`): nested
-markers and `FieldValue` sentinels such as `deleteField()` are allowed, and a
-value of the wrong shape is rejected.
+TypeScript checks it against the field's type (`ReplacementPayload<T>`): nested
+markers and `FieldValue` sentinels such as `deleteField()` are allowed, also as
+the whole value, tuples keep their length and positions, and a value of the
+wrong shape is rejected. A marker's value is private, so a marker never passes
+as a plain partial diff; read it with `replaceFieldValue(marker)`.
 
 ### Undo/Redo
 
@@ -1089,6 +1091,7 @@ import {
     isDiffEmpty,
     isReplaceField,
     mergeDiffs,
+    replaceFieldValue,
 } from '@hvakr/firestate'
 
 // Deep equality check (handles Timestamps, arrays, nested objects)
@@ -1104,8 +1107,8 @@ if (isDiffEmpty(diff)) return
 // applies to the replacement.
 const combined = mergeDiffs(diff1, diff2)
 
-// Whether a diff value is a replaceField() marker
-if (isReplaceField(value)) console.log(value.value)
+// Whether a diff value is a replaceField() marker, and the value it holds
+if (isReplaceField(value)) console.log(replaceFieldValue(value))
 ```
 
 ## Notes

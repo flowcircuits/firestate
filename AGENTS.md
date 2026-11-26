@@ -223,7 +223,12 @@ Preserve these unless the task explicitly changes them.
   (`mergeDiffs`, `flattenDiff`, `flattenDiffToFieldPaths`, `deepClone`,
   `diffContainsPath`, `extractDiffValue`) handles it; utilities that walk
   states never see it. `deepClone` keeps markers on purpose (diff utilities
-  clone caller diffs).
+  clone caller diffs). `ReplaceField`'s payload is private, so a marker never
+  structurally matches a plain partial diff (for example a schema with a
+  `value` key); read it with `replaceFieldValue`. A type-only `unique symbol`
+  member carries the payload type in emitted declarations, which drop the
+  types of private members. Check public type changes against the built
+  `dist/index.d.mts`, not only the source.
 - `computeDiff` writes `{}` when a map replaces a value of another type and
   has no keys to diff, and flattening keeps an empty object as a value, so an
   empty map reaches the server. A map that was already a map is diffed key by

@@ -84,7 +84,11 @@ export {
 } from './utils/diff'
 
 // Replace a field's whole value in an update() diff
-export { replaceField, isReplaceField } from './utils/replace-field'
+export {
+    replaceField,
+    replaceFieldValue,
+    isReplaceField,
+} from './utils/replace-field'
 export type {
     ReplaceField,
     ReplacementPayload,

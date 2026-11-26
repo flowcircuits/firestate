@@ -54,15 +54,26 @@ type ReplacementMember<T> =
  * Create one with {@link replaceField}.
  */
 /**
- * A diff value that replaces a field's whole value instead of merging into it.
- * Create one with {@link replaceField}.
+ * Type-only key for a marker's payload type. Emitted declarations drop the
+ * types of private members, so without it any marker would match any slot.
  */
+declare const payloadType: unique symbol
+
 export class ReplaceField<T> {
-    readonly value: T
+    // Private, so a marker never matches a plain object type structurally
+    // (such as `{ value?: number }` or a `Record`) and skips the payload
+    // check. Read it with {@link replaceFieldValue}.
+    private readonly value: T
+    declare readonly [payloadType]: T
 
     /** @internal Use {@link replaceField}. */
     constructor(value: T) {
         this.value = value
+    }
+
+    /** @internal Use {@link replaceFieldValue}. */
+    static read<T>(marker: ReplaceField<T>): T {
+        return marker.value
     }
 }
 
@@ -91,6 +102,10 @@ export class ReplaceField<T> {
  */
 export const replaceField = <const V>(value: V): ReplaceField<V> =>
     new ReplaceField(value)
+
+/** The value a {@link replaceField} marker holds. */
+export const replaceFieldValue = <T>(marker: ReplaceField<T>): T =>
+    ReplaceField.read(marker)
 
 /** Whether `value` is a {@link replaceField} marker. */
 export const isReplaceField = (value: unknown): value is ReplaceField<unknown> =>
