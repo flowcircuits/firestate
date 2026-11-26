@@ -1052,6 +1052,49 @@ describe('replaceField', () => {
         })
     })
 
+    describe('markers inside arrays', () => {
+        /** Whether a ReplaceField instance is anywhere in `value`. */
+        const hasMarker = (value: unknown): boolean =>
+            isReplaceField(value) ||
+            (Array.isArray(value) && value.some(hasMarker)) ||
+            (typeof value === 'object' &&
+                value !== null &&
+                Object.getPrototypeOf(value) === Object.prototype &&
+                Object.values(value).some(hasMarker))
+
+        const rows = [
+            { x: replaceField(2) },
+            replaceField({ x: 3 }),
+            [replaceField({ y: 4 })],
+        ]
+        const unwrapped = [{ x: 2 }, { x: 3 }, [{ y: 4 }]]
+
+        it('applyDiff unwraps them, also inside a replacement', () => {
+            const result = applyDiff<FirestoreObject>(
+                {},
+                { rows, obj: replaceField({ rows }) }
+            )
+
+            expect(result).toEqual({ rows: unwrapped, obj: { rows: unwrapped } })
+            expect(hasMarker(result)).toBe(false)
+        })
+
+        it('applyDiffMutable unwraps them', () => {
+            const target: FirestoreObject = {}
+            applyDiffMutable(target, { rows })
+
+            expect(target).toEqual({ rows: unwrapped })
+            expect(hasMarker(target)).toBe(false)
+        })
+
+        it('flattening unwraps them', () => {
+            expect(flattenDiff({ rows })).toEqual({ rows: unwrapped })
+            expect(flattenDiffToFieldPaths({ a: { rows } })).toEqual([
+                { segments: ['a', 'rows'], value: unwrapped },
+            ])
+        })
+    })
+
     it('applyDiffMutable replaces the field', () => {
         const target = deepClone(stored)
         applyDiffMutable(target, {

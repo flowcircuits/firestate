@@ -29,7 +29,7 @@ import { createCollectionSubscription } from '../core/collection'
 import { createDocumentSubscription } from '../core/document'
 import { defineCollection, defineDocument } from '../registry/schema'
 import { createStore, type FirestateStore } from '../core/store'
-import { replaceField } from '../utils/replace-field'
+import { isReplaceField, replaceField } from '../utils/replace-field'
 import type { DeepPartial, UpdateDiff } from '../types'
 
 type Load =
@@ -39,6 +39,7 @@ type Load =
 interface Doc {
     name?: string
     load?: Load
+    rows?: { x: number }[]
 }
 
 interface Item extends Doc {
@@ -50,6 +51,15 @@ const itemsDef = defineCollection<Item>({ path: 'items' })
 
 const OLD: Doc = { name: 'Office', load: { method: 'DENSITY', density: 2 } }
 const POWER = replaceField<Load>({ method: 'POWER', power: 300 })
+
+/** Whether a ReplaceField instance is anywhere in `value`. */
+const hasMarker = (value: unknown): boolean =>
+    isReplaceField(value) ||
+    (Array.isArray(value) && value.some(hasMarker)) ||
+    (typeof value === 'object' &&
+        value !== null &&
+        Object.getPrototypeOf(value) === Object.prototype &&
+        Object.values(value).some(hasMarker))
 
 /** The write for a replaced `load`: the new keys, then the dropped one. */
 const replacedLoadArgs = (power: number) => [
@@ -163,6 +173,23 @@ describe('replaceField', () => {
                     load: { method: 'POWER', power: 300 },
                 })
                 expect(await sub.syncArgs()).toEqual(replacedLoadArgs(300))
+            })
+
+            it('unwraps markers inside an array before state and the write', async () => {
+                const sub = subscribe()
+
+                sub.update({
+                    rows: [{ x: replaceField(2) }, replaceField({ x: 3 })],
+                })
+
+                expect(sub.data()?.rows).toEqual([{ x: 2 }, { x: 3 }])
+                expect(hasMarker(sub.data())).toBe(false)
+                const args = await sub.syncArgs()
+                expect(args).toEqual([
+                    new FieldPath('rows'),
+                    [{ x: 2 }, { x: 3 }],
+                ])
+                expect(hasMarker(args)).toBe(false)
             })
 
             it('restores the replaced object exactly on undo, and the replacement on redo', async () => {

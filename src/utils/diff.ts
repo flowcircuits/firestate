@@ -322,7 +322,7 @@ export const applyDiffMutable = (
             if (isDeleteField(value.value)) {
                 delete (target as Record<string, unknown>)[key]
             } else {
-                ;(target as Record<string, unknown>)[key] = toReplacement(
+                ;(target as Record<string, unknown>)[key] = toStateValue(
                     value.value
                 )
             }
@@ -366,8 +366,10 @@ export const applyDiffMutable = (
             continue
         }
 
-        // Handle primitives and arrays
-        ;(target as Record<string, unknown>)[key] = value
+        // Arrays are normalized like a replacement; primitives are set as is.
+        ;(target as Record<string, unknown>)[key] = Array.isArray(value)
+            ? toStateValue(value)
+            : value
     }
 }
 
@@ -452,13 +454,17 @@ export const flattenDiff = (
         // A `replaceField` value is written whole at its path, which is how
         // Firestore's update replaces a map.
         if (isReplaceField(value)) {
-            result[path] = toReplacement(value.value)
+            result[path] = toStateValue(value.value)
             continue
         }
 
-        // Arrays, FieldValue sentinels, and Firestore value types are
-        // opaque from flatten's perspective — kept at the path verbatim.
-        if (Array.isArray(value) || isFirestoreOpaque(value)) {
+        // Arrays are written whole, without any marker inside them.
+        // FieldValue sentinels and Firestore value types are kept verbatim.
+        if (Array.isArray(value)) {
+            result[path] = toStateValue(value)
+            continue
+        }
+        if (isFirestoreOpaque(value)) {
             result[path] = value
             continue
         }
@@ -511,13 +517,18 @@ export const flattenDiffToFieldPaths = (
 
         // A `replaceField` value is written whole at its path; see flattenDiff.
         if (isReplaceField(value)) {
-            result.push({ segments, value: toReplacement(value.value) })
+            result.push({ segments, value: toStateValue(value.value) })
             continue
         }
 
-        // Arrays, FieldValue sentinels, and Firestore value types are
-        // opaque from flatten's perspective — kept at the path verbatim.
-        if (Array.isArray(value) || isFirestoreOpaque(value)) {
+        // Arrays are written whole, without any marker inside them; see
+        // flattenDiff. FieldValue sentinels and Firestore value types are
+        // kept verbatim.
+        if (Array.isArray(value)) {
+            result.push({ segments, value: toStateValue(value) })
+            continue
+        }
+        if (isFirestoreOpaque(value)) {
             result.push({ segments, value })
             continue
         }
@@ -633,23 +644,19 @@ export const applyDiff = <T extends FirestoreObject>(
             continue
         }
 
-        // A replacement keeps every current subtree it equals. Otherwise,
-        // opaque values and primitives replace by reference; plain objects
-        // merge recursively onto the current plain value (or a new one). An
-        // array keeps the current one when equal, otherwise it is copied so
-        // the caller's array never becomes (frozen) state.
-        const next = isReplace
-            ? replaceEqualDeep(current, toReplacement(value))
-            : isPlainObject(value)
-            ? applyDiff(
-                  (isPlainObject(current) ? current : {}) as FirestoreObject,
-                  value as UpdateDiff<FirestoreObject>
-              )
-            : Array.isArray(value)
-              ? isDeepEqual(current, value)
-                  ? current
-                  : deepClone(value)
-              : value
+        // A replacement or an array is normalized (see toStateValue) and
+        // keeps every current subtree it equals. Plain objects merge
+        // recursively onto the current plain value (or a new one). Opaque
+        // values and primitives replace by reference.
+        const next =
+            isReplace || Array.isArray(value)
+                ? replaceEqualDeep(current, toStateValue(value))
+                : isPlainObject(value)
+                  ? applyDiff(
+                        (isPlainObject(current) ? current : {}) as FirestoreObject,
+                        value as UpdateDiff<FirestoreObject>
+                    )
+                  : value
 
         if (!(key in source) || !Object.is(next, current)) {
             result ??= { ...source }
@@ -661,17 +668,19 @@ export const applyDiff = <T extends FirestoreObject>(
 }
 
 /**
- * The value a `replaceField` marker sets. Plain objects and arrays are copied,
- * so the caller's objects never become (frozen) state. Inside a plain object,
- * a `deleteField()` drops its key and a nested marker is unwrapped. Opaque
- * values are kept by reference.
+ * A caller's whole value (a replacement, or an array) as state. Every
+ * `replaceField` marker in it is unwrapped, at any depth and inside arrays,
+ * so none reaches state or Firestore. Plain objects and arrays are copied, so
+ * the caller's objects never become (frozen) state, and in a plain object a
+ * `deleteField()` drops its key. Opaque values are kept by reference.
  */
-const toReplacement = (value: unknown): unknown =>
-    isPlainObject(value)
-        ? applyDiff({}, value as UpdateDiff<FirestoreObject>)
-        : Array.isArray(value)
-          ? deepClone(value)
-          : value
+const toStateValue = (value: unknown): unknown => {
+    if (isReplaceField(value)) return toStateValue(value.value)
+    if (Array.isArray(value)) return value.map(toStateValue)
+    if (isPlainObject(value))
+        return applyDiff({}, value as UpdateDiff<FirestoreObject>)
+    return value
+}
 
 /**
  * Return `next`, but reuse every subtree of `prev` that is deeply equal to the
