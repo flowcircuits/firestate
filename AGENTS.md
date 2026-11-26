@@ -217,10 +217,17 @@ Preserve these unless the task explicitly changes them.
   `applyDiffMutable` unwrap it, and the write stays `computeDiff(syncState,
   localState)`, so each dropped key goes out as a `deleteField()` leaf and
   sibling fields are not written. The marker must never reach Firestore,
-  `syncState`, or `localState`. Every utility that walks a caller's diff
+  `syncState`, or `localState`: a caller's whole value (a replacement or an
+  array) goes through `toStateValue`, which unwraps markers at any depth,
+  including inside arrays. Every utility that walks a caller's diff
   (`mergeDiffs`, `flattenDiff`, `flattenDiffToFieldPaths`, `deepClone`,
   `diffContainsPath`, `extractDiffValue`) handles it; utilities that walk
-  states never see it.
+  states never see it. `deepClone` keeps markers on purpose (diff utilities
+  clone caller diffs).
+- `computeDiff` writes `{}` when a map replaces a value of another type and
+  has no keys to diff, and flattening keeps an empty object as a value, so an
+  empty map reaches the server. A map that was already a map is diffed key by
+  key as before.
 - Pending `localState` is rebased onto **every** incoming snapshot, not only
   the one confirming an inflight write. The prior `syncState` is the baseline:
   `localState = applyDiff(newSnapshot, computeDiff(baseline, localState))`, then

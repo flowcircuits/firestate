@@ -377,8 +377,14 @@ difference between the server state and local state. So the write is
 `load.method`, `load.power`, and `load.density: deleteField()`. Sibling fields
 are not written, so a collaborator's concurrent edit to them survives. Undo and
 redo restore the exact previous and replaced values. A later `update()` that
-merges into the field applies to the replacement. TypeScript checks the value
-against the field's type.
+merges into the field applies to the replacement.
+
+Markers anywhere in a value, including inside arrays, are unwrapped before the
+value reaches local state, so none is ever written. An empty map in the
+replacement is written as an empty map. The value keeps its literal types, and
+TypeScript checks it against the field's type (`ReplacementValue<T>`): nested
+markers and `FieldValue` sentinels such as `deleteField()` are allowed, and a
+value of the wrong shape is rejected.
 
 ### Undo/Redo
 
@@ -1045,6 +1051,10 @@ const flat = flattenDiff(nested)
 // Unflatten back to nested structure
 const restored = unflattenDiff(flat)
 // { building: { floors: 5, height: 100 } }
+
+// An empty object is a value, as in Firestore's update(): it writes an empty map
+flattenDiff({ building: {} })
+// { building: {} }
 ```
 
 ### Path-Based Utilities
