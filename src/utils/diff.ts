@@ -587,11 +587,12 @@ export const mergeDiffs = <T extends FirestoreObject>(
         const secondValue = (second as Record<string, unknown>)[key]
 
         if (isReplaceField(firstValue) && isPlainObject(secondValue)) {
+            // Resolve the replacement as applyDiff would (nested markers
+            // unwrapped) before the later diff is applied to it.
+            const replacement = toStateValue(firstValue.value)
             result[key] = replaceField(
                 applyDiff(
-                    (isPlainObject(firstValue.value)
-                        ? firstValue.value
-                        : {}) as FirestoreObject,
+                    (isPlainObject(replacement) ? replacement : {}) as FirestoreObject,
                     secondValue as UpdateDiff<FirestoreObject>
                 )
             )

@@ -1208,6 +1208,20 @@ describe('replaceField', () => {
             }
         )
 
+        it('applies a merge after a replacement that holds a nested marker', () => {
+            type Nested = { a?: { nested?: { x?: number; y?: number } } }
+            const first: UpdateDiff<Nested> = {
+                a: replaceField({ nested: replaceField({ x: 1 }) }),
+            }
+            const second: UpdateDiff<Nested> = { a: { nested: { y: 2 } } }
+            const sequential = applyDiff(applyDiff<Nested>({}, first), second)
+
+            expect(sequential).toEqual({ a: { nested: { x: 1, y: 2 } } })
+            expect(applyDiff<Nested>({}, mergeDiffs(first, second))).toEqual(
+                sequential
+            )
+        })
+
         it('keeps a merge after a replace as one replacement', () => {
             const merged = mergeDiffs<Stored>(
                 { load: replaceField({ method: 'POWER', power: 300 }) },
