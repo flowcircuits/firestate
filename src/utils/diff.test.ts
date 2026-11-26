@@ -1052,6 +1052,37 @@ describe('replaceField', () => {
         })
     })
 
+    describe('empty maps', () => {
+        it('computeDiff writes an empty map that replaces another value', () => {
+            expect(computeDiff({ obj: null }, { obj: {} })).toEqual({ obj: {} })
+            expect(
+                computeDiff<FirestoreObject>(
+                    { obj: { old: 1 } },
+                    { obj: { empty: {} } }
+                )
+            ).toEqual({ obj: { empty: {}, old: deleteField() } })
+        })
+
+        it('computeDiff writes no map for an explicit undefined key', () => {
+            expect(
+                computeDiff<FirestoreObject>(
+                    { obj: { a: 1 } },
+                    { obj: { a: 1, b: undefined } }
+                )
+            ).toEqual({})
+        })
+
+        it('flattening keeps an empty map as a value', () => {
+            expect(flattenDiff({ obj: {}, a: { b: {} } })).toEqual({
+                obj: {},
+                'a.b': {},
+            })
+            expect(flattenDiffToFieldPaths({ obj: {} })).toEqual([
+                { segments: ['obj'], value: {} },
+            ])
+        })
+    })
+
     describe('markers inside arrays', () => {
         /** Whether a ReplaceField instance is anywhere in `value`. */
         const hasMarker = (value: unknown): boolean =>

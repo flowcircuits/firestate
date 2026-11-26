@@ -204,15 +204,19 @@ export const computeDiff = <T extends FirestoreObject>(
             continue
         }
 
-        // Nested objects get recursive diff
+        // Nested objects get recursive diff. A map that replaces a value of
+        // another type (absent, null, a primitive, an array) and has no keys to
+        // diff is written whole, so an empty map reaches the server.
         if (isPlainObject(toValue)) {
             if (!isDeepEqual(fromValue, toValue)) {
                 const nestedDiff = computeDiff(
-                    (fromValue as Record<string, unknown>) ?? {},
+                    isPlainObject(fromValue) ? fromValue : {},
                     toValue
                 )
                 if (Object.keys(nestedDiff).length > 0) {
                     diff[key] = nestedDiff
+                } else if (!isPlainObject(fromValue)) {
+                    diff[key] = {}
                 }
             }
             continue
@@ -469,8 +473,9 @@ export const flattenDiff = (
             continue
         }
 
-        // Plain objects are recursively flattened
-        if (isPlainObject(value)) {
+        // Plain objects are recursively flattened. An empty one is a value:
+        // like Firestore's own update(), it writes an empty map.
+        if (isPlainObject(value) && Object.keys(value).length > 0) {
             const nested = flattenDiff(value, path)
             Object.assign(result, nested)
             continue
@@ -533,8 +538,9 @@ export const flattenDiffToFieldPaths = (
             continue
         }
 
-        // Plain objects are recursively flattened
-        if (isPlainObject(value)) {
+        // Plain objects are recursively flattened. An empty one is a value;
+        // see flattenDiff.
+        if (isPlainObject(value) && Object.keys(value).length > 0) {
             result.push(...flattenDiffToFieldPaths(value, segments))
             continue
         }

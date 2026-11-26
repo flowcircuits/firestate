@@ -40,6 +40,7 @@ interface Doc {
     name?: string
     load?: Load
     rows?: { x: number }[]
+    obj?: Record<string, unknown> | null
 }
 
 interface Item extends Doc {
@@ -157,9 +158,9 @@ describe('replaceField', () => {
     describe.each(Object.keys(subscriptions) as (keyof typeof subscriptions)[])(
         'on a %s',
         (kind) => {
-            const subscribe = () => {
+            const subscribe = (initial: Doc = OLD) => {
                 const sub = subscriptions[kind]()
-                sub.fireSnapshot(OLD)
+                sub.fireSnapshot(initial)
                 return sub
             }
 
@@ -190,6 +191,34 @@ describe('replaceField', () => {
                     [{ x: 2 }, { x: 3 }],
                 ])
                 expect(hasMarker(args)).toBe(false)
+            })
+
+            it('writes an empty map that replaces null', async () => {
+                const sub = subscribe({ ...OLD, obj: null })
+
+                sub.update({ obj: replaceField({}) })
+
+                expect(sub.data()?.obj).toEqual({})
+                expect(await sub.syncArgs()).toEqual([new FieldPath('obj'), {}])
+            })
+
+            it('writes an empty map inside a replacement, and redoes it', async () => {
+                const sub = subscribe({ ...OLD, obj: { old: 1 } })
+
+                sub.update({ obj: replaceField({ empty: {} }) })
+                expect(sub.data()?.obj).toEqual({ empty: {} })
+
+                await store.undoManager.undo()
+                expect(sub.data()?.obj).toEqual({ old: 1 })
+                await store.undoManager.redo()
+                expect(sub.data()?.obj).toEqual({ empty: {} })
+
+                expect(await sub.syncArgs()).toEqual([
+                    new FieldPath('obj', 'empty'),
+                    {},
+                    new FieldPath('obj', 'old'),
+                    deleteField(),
+                ])
             })
 
             it('restores the replaced object exactly on undo, and the replacement on redo', async () => {
